@@ -59,8 +59,10 @@ public enum TextKit {
 
     /// Whole sentences per chunk; first chunk short; never splits a token.
     ///
-    /// Chunk ranges are contiguous: each runs from its first token's start to the next chunk's first token's start (so the
-    /// whitespace between chunks belongs to the earlier chunk); the last ends at the text's end minus trailing whitespace. The first chunk is
+    /// Chunk ranges are contiguous: each begins where the previous one ends, at the start of the non-whitespace run holding
+    /// its first token (so a prefix such as "£45", "\"Hello" or "(see" is spoken with its token; never a sentence/clause
+    /// mark or a joiner glued to the previous token), and the whitespace between chunks belongs to the earlier chunk; the last ends
+    /// at the text's end minus trailing whitespace. The first chunk is
     /// only the first sentence (fast first audio), cut to `firstMax` if longer; after that a chunk holds whole sentences
     /// while its range fits `max`. A sentence that does not fit is cut at the last clause boundary (`, ; : — –` then a
     /// space) that fits, else at the last whitespace, else at any token boundary; the rest of it starts the next chunk.
@@ -68,14 +70,23 @@ public enum TextKit {
         chunks(text, tokens: tokens, from: 0, firstMax: firstMax, max: max)
     }
 
-    /// Same, but the first chunk begins exactly at `tokens[startToken]` (resume / seek, mid-sentence allowed).
+    /// Same, but the first chunk begins at `tokens[startToken]` (resume / seek, mid-sentence allowed), with its prefix.
     public static func chunks(_ text: String, tokens: [Token], from startToken: Int, firstMax: Int = 120, max: Int = 300) -> [Chunk] {
         guard tokens.indices.contains(startToken) else { return [] }
         let ns = text as NSString
         let count = tokens.count
+        /// Where a chunk opening with tokens[i] begins: back over the token's prefix to whitespace or a sentence or clause
+        /// mark. A token glued to the previous one ("well-known", "and/or") has a joiner, not a prefix: it starts bare.
+        func lead(_ i: Int) -> Int {
+            let floor = i > 0 ? tokens[i - 1].range.upperBound : 0
+            var p = tokens[i].range.lowerBound
+            while p > floor, let scalar = Unicode.Scalar(ns.character(at: p - 1)), !CharacterSet.whitespacesAndNewlines.contains(scalar),
+                  !sentenceEnders.contains(Character(scalar)), !clauseMarks.contains(Character(scalar)) { p -= 1 }
+            return p == floor && i > 0 ? tokens[i].range.lowerBound : p
+        }
         /// UTF-16 length of the chunk made of tokens[a..<b], including the whitespace that follows it.
         func length(_ a: Int, _ b: Int) -> Int {
-            (b < count ? tokens[b].range.lowerBound : tokens[b - 1].range.upperBound) - tokens[a].range.lowerBound
+            (b < count ? lead(b) : tokens[b - 1].range.upperBound) - lead(a)
         }
         /// Where to cut tokens[a..<b], which is too long: the first token of the next chunk, or nil when it is one token.
         func cut(_ a: Int, _ b: Int, _ limit: Int) -> Int? {
@@ -111,8 +122,7 @@ public enum TextKit {
               let scalar = Unicode.Scalar(ns.character(at: textEnd - 1)), CharacterSet.whitespacesAndNewlines.contains(scalar) { textEnd -= 1 }
         return starts.indices.map { k in
             let s = starts[k], e = k + 1 < starts.count ? starts[k + 1] : count
-            let hi = k + 1 < starts.count ? tokens[e].range.lowerBound : textEnd
-            return Chunk(range: tokens[s].range.lowerBound ..< hi, tokens: s ..< e)
+            return Chunk(range: lead(s) ..< (k + 1 < starts.count ? lead(e) : textEnd), tokens: s ..< e)
         }
     }
 }

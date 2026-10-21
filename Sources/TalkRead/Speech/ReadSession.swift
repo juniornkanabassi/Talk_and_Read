@@ -40,8 +40,11 @@ import TalkReadCore
         self.startToken = startToken
         player.rate = rate
         player.onInterrupted = { [weak self] in
-            // Device change: the player dropped its queue; resume restarts at the word that was playing.
-            guard let self, self.state == .playing || self.state == .preparing else { return }
+            // Device change, paused or not: the player dropped its queue, so the producer and its bookkeeping are stale.
+            // Stop them; resume restarts synthesis at the word that was playing.
+            guard let self, [State.playing, .preparing, .paused].contains(self.state) else { return }
+            self.generation += 1
+            self.producer?.cancel()
             self.needsRestart = true
             self.userPaused = true
             self.state = .paused
@@ -68,8 +71,7 @@ import TalkReadCore
         } else if chunkEnds.isEmpty {
             state = .preparing   // first chunk still synthesising; it starts playing when queued
         } else {
-            player.play()
-            state = .playing
+            startPlayback()
         }
     }
 
@@ -84,7 +86,8 @@ import TalkReadCore
     func skip(sentences: Int) {
         guard let last = tokens.last else { return }
         let current = currentSentence ?? tokens[min(max(startToken, 0), tokens.count - 1)].sentence
-        let target = min(max(current + sentences, 0), last.sentence)
+        // Clamped before the addition: any Int arrives from the CLI or socket and must not overflow.
+        let target = min(max(current + min(max(sentences, -last.sentence - 1), last.sentence + 1), 0), last.sentence)
         if let first = tokens.firstIndex(where: { $0.sentence >= target }) { restart(from: first) }
     }
 
@@ -175,9 +178,15 @@ import TalkReadCore
     }
 
     private func firstAudio() {
-        if firstAudioMs == nil, let startedAt { firstAudioMs = Int(Date().timeIntervalSince(startedAt) * 1000) }
-        guard !userPaused else { return }
+        if !userPaused { startPlayback() }
+    }
+
+    /// An output that will not start (no device, engine error) fails the read rather than leaving it "playing" with a
+    /// frozen clock; first audio is when sound really starts.
+    private func startPlayback() {
         player.play()
+        guard player.isPlaying else { return fail("The audio output did not start.") }
+        if firstAudioMs == nil, let startedAt { firstAudioMs = Int(Date().timeIntervalSince(startedAt) * 1000) }
         state = .playing
     }
 
@@ -202,6 +211,7 @@ import TalkReadCore
 
     private func fail(_ message: String) {
         generation += 1
+        producer?.cancel()
         ticker?.cancel()
         player.reset()
         state = .failed(message)

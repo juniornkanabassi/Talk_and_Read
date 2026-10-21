@@ -123,18 +123,29 @@ final class NeuralEngine: SpeechEngine {
             // ponytail: proportional pairing when even per-word phonemes disagree; never seen on the fixture.
             owner = groups.indices.map { $0 * words.count / groups.count }
         }
-        var out: [SpokenWord] = []
-        var lastOwner = -1
+        var spans: [(word: Int, groups: [(start: Double, end: Double)])] = []
         for (g, w) in zip(groups, owner) {   // owner never decreases, so a word's groups are adjacent
             let start = min(max(g.start + offset, 0), duration), end = min(max(g.end + offset, start), duration)
-            if w == lastOwner, let last = out.last {
-                out[out.count - 1] = SpokenWord(text: last.text, start: last.start, end: end)
-            } else {
-                out.append(SpokenWord(text: words[w], start: start, end: end))
-                lastOwner = w
-            }
+            if spans.last?.word == w { spans[spans.count - 1].groups.append((start, end)) } else { spans.append((w, [(start, end)])) }
         }
-        return out
+        return spans.flatMap { split(words[$0.word], $0.groups) }
+    }
+
+    /// A hyphenated compound becomes one word per part ("well-known" -> "well", "known"), so every source token it
+    /// covers gets its own time (Alignment keeps one source token per spoken word): each part takes its own group when
+    /// the phonemiser gave one per part, else the compound's span is split by character length.
+    static func split(_ word: String, _ groups: [(start: Double, end: Double)]) -> [SpokenWord] {
+        let parts = word.split(separator: "-").map(String.init)
+        let a = groups[0].start, b = groups[groups.count - 1].end
+        guard parts.count > 1 else { return [SpokenWord(text: word, start: a, end: b)] }
+        if groups.count == parts.count { return zip(parts, groups).map { SpokenWord(text: $0, start: $1.start, end: $1.end) } }
+        let total = Double(parts.reduce(0) { $0 + $1.count })
+        var used = 0.0
+        return parts.map { part in
+            let start = a + (b - a) * used / total
+            used += Double(part.count)
+            return SpokenWord(text: part, start: start, end: used == total ? b : a + (b - a) * used / total)
+        }
     }
 }
 
