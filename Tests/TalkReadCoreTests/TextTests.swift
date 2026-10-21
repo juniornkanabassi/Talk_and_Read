@@ -36,7 +36,9 @@ final class TextTests: XCTestCase {
     private func assertWellFormed(_ chunks: [Chunk], _ tokens: [Token], from start: Int = 0, file: StaticString = #filePath, line: UInt = #line) {
         guard let first = chunks.first, let last = chunks.last else { return }
         XCTAssertEqual(first.range.lowerBound, tokens[start].range.lowerBound, file: file, line: line)
-        XCTAssertEqual(last.range.upperBound, tokens.last!.range.upperBound, file: file, line: line)
+        // The last chunk runs past the last token only to keep closing punctuation ("?", ".\""), never trailing whitespace.
+        XCTAssertGreaterThanOrEqual(last.range.upperBound, tokens.last!.range.upperBound, file: file, line: line)
+        XCTAssertLessThanOrEqual(last.range.upperBound - tokens.last!.range.upperBound, 3, file: file, line: line)
         XCTAssertEqual(first.tokens.lowerBound, start, file: file, line: line)
         XCTAssertEqual(last.tokens.upperBound, tokens.count, file: file, line: line)
         for (a, b) in zip(chunks, chunks.dropFirst()) {
@@ -59,12 +61,12 @@ final class TextTests: XCTestCase {
         XCTAssertEqual(TextKit.chunks("one two", tokens: t, from: -1), [])
     }
 
-    func testFirstChunkIsTheFirstSentenceAndTheLastEndsAtTheLastToken() {
+    func testFirstChunkIsTheFirstSentenceAndTheLastKeepsClosingPunctuation() {
         let s = "Hello there. How are you?"
         let t = TextKit.tokenize(s)
         let chunks = TextKit.chunks(s, tokens: t)
-        XCTAssertEqual(chunks, [Chunk(range: 0..<13, tokens: 0..<2), Chunk(range: 13..<24, tokens: 2..<5)])
-        XCTAssertEqual(text(of: chunks[1], in: s), "How are you")
+        XCTAssertEqual(chunks, [Chunk(range: 0..<13, tokens: 0..<2), Chunk(range: 13..<25, tokens: 2..<5)])
+        XCTAssertEqual(text(of: chunks[1], in: s), "How are you?")
         XCTAssertEqual(TextKit.chunks("Just one sentence", tokens: TextKit.tokenize("Just one sentence")), [Chunk(range: 0..<17, tokens: 0..<3)])
     }
 
@@ -155,7 +157,7 @@ final class TextTests: XCTestCase {
         XCTAssertEqual(c[0].range.lowerBound, t[2].range.lowerBound)
         XCTAssertEqual(c[0].tokens.lowerBound, 2)
         XCTAssertEqual(text(of: c[0], in: s), "gamma delta epsilon. ")   // runs to that sentence's end
-        XCTAssertEqual(text(of: c[1], in: s), "Zeta eta theta. Iota kappa")
+        XCTAssertEqual(text(of: c[1], in: s), "Zeta eta theta. Iota kappa.")
         // the original signature is `from: 0`
         XCTAssertEqual(TextKit.chunks(s, tokens: t), TextKit.chunks(s, tokens: t, from: 0))
         // the first chunk is cut short as usual when the rest of the sentence is long
