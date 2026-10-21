@@ -82,7 +82,9 @@ extension AppModel {
             return ["state": .string(r.command == "pause" ? "paused" : "playing")]
 
         case "skip":
-            guard let n = Int(a["sentences"] ?? "1") else { throw AppError.badArgs("sentences must be a whole number.") }
+            guard let n = Int(a["sentences"] ?? "1"), (-AppModel.maxSkip...AppModel.maxSkip).contains(n) else {
+                throw AppError.badArgs("sentences must be a whole number from -\(AppModel.maxSkip) to \(AppModel.maxSkip).")
+            }
             try claim(r)
             guard let s = liveSession else { throw AppError(code: "not_reading", message: "Nothing is being read.") }
             s.skip(sentences: n)

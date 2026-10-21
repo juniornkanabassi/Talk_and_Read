@@ -68,6 +68,9 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     private var activity: NSObjectProtocol?
     private var unloadTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
+    /// Idle time before the models unload; nil = `settings.unloadAfterMinutes` (the control self-test shortens it).
+    var unloadDelay: Duration?
+    var unloadPending: Bool { unloadTask != nil }
 
     nonisolated static let voiceMegabytes = 90, dictationMegabytes = 590
     /// FluidAudio's macOS TTS cache (`TtsCacheDirectory`); watched only for download progress.
@@ -79,11 +82,9 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         library = Self.loadJSON(Paths.library) ?? []
         recentReads = Self.loadJSON(Paths.reads) ?? []
         refreshModelStates()
-        dictationWatch = dictation.$state.sink { [weak self] state in
-            switch state {
-            case .recording, .transcribing: self?.dictating = true
-            default: self?.dictating = false
-            }
+        // Recording, transcribing (live or a file) or typing: one flag from the dictation's admission slot (Sol #16).
+        dictationWatch = dictation.$isBusy.sink { [weak self] busy in
+            self?.dictating = busy
             self?.updateActivity()
         }
     }
@@ -159,8 +160,10 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
             guard !Task.isCancelled else { return }   // cancelModelDownload has already reset the states
             modelsWarm = true
             downloadTask = nil
+            updateActivity()                          // the idle unload starts counting now (Sol #16)
             await loadVoices()
         }
+        updateActivity()
     }
 
     /// Stops waiting for the download; whatever finished stays, the rest shows as missing again.
@@ -168,6 +171,7 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         downloadTask?.cancel()
         downloadTask = nil
         refreshModelStates()
+        updateActivity()
     }
 
     /// The transcriber reports its own progress; Kokoro's `prepare` reports none through the contract, so its progress
@@ -341,10 +345,13 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
 
     func stopReading() { stopSession() }
 
+    /// The control route refuses a larger skip; every other path clamps to it (Sol #5).
+    nonisolated static let maxSkip = 10_000
+
     func skip(_ sentences: Int) {
         guard let s = liveSession else { return }
         owner?.caller = "user"
-        s.skip(sentences: sentences)
+        s.skip(sentences: min(max(sentences, -Self.maxSkip), Self.maxSkip))
     }
 
     func setSpeed(_ s: Float) {
@@ -362,38 +369,71 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     /// Additive: the Dictation pane's delete. The history belongs to DictationController (WP5).
     func deleteDictation(_ id: UUID) { dictation.delete(id) }
 
+    /// Additive: the Dictation history's "Insert again" (Sol #17). Hides Talk and Read so the app the user came from is
+    /// frontmost again, then types the entry there through the guarded Inserter (secure fields refused, clipboard restored).
+    func insertAgain(_ id: UUID) {
+        NSApp.hide(nil)
+        Task {
+            guard let app = await Self.otherFrontmostApp(within: 1) else {
+                return MiniPlayer.shared.flash("Click where the text should go, then try again")
+            }
+            switch await dictation.reinsert(id, targetPID: app.processIdentifier) {
+            case .inserted: break
+            case .refusedSecure: MiniPlayer.shared.flash("Not typed: password field")
+            case .failed(let reason): MiniPlayer.shared.flash(reason)
+            }
+        }
+    }
+
+    /// The frontmost app once it is not Talk and Read, waiting up to `seconds`; nil if none comes forward.
+    static func otherFrontmostApp(within seconds: Double) async -> NSRunningApplication? {
+        let deadline = Date().addingTimeInterval(seconds)
+        while true {
+            if let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid() { return app }
+            if Date() >= deadline { return nil }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     func pauseForSleep() {
         if let s = liveSession, s.state != .paused { s.pause() }
     }
 
     // MARK: Activity token and idle unload
 
-    /// Holds a `.userInitiatedAllowingIdleSystemSleep` activity only while reading or dictating, and unloads the
-    /// speech models after `unloadAfterMinutes` with nothing reading, paused or dictating.
+    /// Reading, dictating (recording, transcribing a file, typing) or downloading models.
+    private var busy: Bool { readState == .preparing || readState == .playing || dictating || downloadTask != nil }
+    /// Nothing that uses the models, not even a paused read.
+    private var idle: Bool { !busy && readState != .paused }
+
+    /// Holds a `.userInitiatedAllowingIdleSystemSleep` activity only while busy, and unloads the speech models after
+    /// `unloadAfterMinutes` idle. Every busy source calls this when it starts and ends (Sol #16).
     private func updateActivity() {
-        let busy = readState == .preparing || readState == .playing || dictating
         if busy, activity == nil {
-            activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Reading aloud or dictating")
+            activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Reading aloud, dictating or downloading speech models")
         } else if !busy, let a = activity {
             ProcessInfo.processInfo.endActivity(a)
             activity = nil
         }
-        if dictating { modelsWarm = true }
-        let idle = !busy && readState != .paused
+        if dictating || downloadTask != nil { modelsWarm = true }
         if !idle {
             unloadTask?.cancel()
             unloadTask = nil
         } else if modelsWarm, unloadTask == nil {
-            let minutes = settings.unloadAfterMinutes
+            let delay = unloadDelay ?? .seconds(Double(settings.unloadAfterMinutes) * 60)
             unloadTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(Double(minutes) * 60))
-                guard !Task.isCancelled, let self else { return }
-                engines.neural.unload()
-                engines.system.unload()
-                dictation.unloadModel()
-                modelsWarm = false
-                unloadTask = nil
-                Log.write("speech models unloaded after \(minutes) idle minutes")
+                while true {
+                    try? await Task.sleep(for: delay)
+                    guard !Task.isCancelled, let self else { return }
+                    guard idle else { continue }   // busy without telling us: wait another period rather than give up
+                    engines.neural.unload()
+                    engines.system.unload()
+                    dictation.unloadModel()
+                    modelsWarm = false
+                    unloadTask = nil
+                    Log.write("speech models unloaded after \(delay) idle")
+                    return
+                }
             }
         }
     }

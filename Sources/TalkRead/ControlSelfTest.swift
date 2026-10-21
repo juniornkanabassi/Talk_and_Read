@@ -1,6 +1,6 @@
 // `TalkRead --selftest-control [clip.wav]`: drives the control handlers through the real socket and the real CLI.
 // Headless (Junior, 21 Oct): no status item, windows or hotkeys, and reads use a silent engine, so nothing is heard.
-import Foundation
+import AppKit
 import TalkReadCore
 
 /// Speaks silence, `secondsPerWord` per word, so a read stays live long enough to test ownership.
@@ -24,7 +24,7 @@ final class SilentEngine: SpeechEngine {
 }
 
 enum ControlSelfTest {
-    enum Expect { case ok, audio, busy, replayed }
+    enum Expect { case ok, audio, busy, replayed, badArgs }
     struct Outcome { let status: Int32; let response: ControlResponse?; let text: String }
 
     @MainActor static func run(clip: String?) async -> Int32 {
@@ -86,24 +86,85 @@ enum ControlSelfTest {
         print("\(stored ? "PASS" : "FAIL")  library: PDF copied as \(item?.fileName ?? "-"), text \(text.utf16.count) UTF-16 units")
         await step("a read-file sample.txt", ["read-file", docs.appendingPathComponent("sample.txt").path, "--caller", "a"], .audio)
         await step("b skip while a reads", ["skip", "--caller", "b"], .busy)
+        // Sol #5: an absurd skip is refused before it reaches the session, and the app stays up.
+        await step("a skip Int.max", ["skip", String(Int.max), "--caller", "a"], .badArgs)
+        await step("a skip Int.min", ["skip", String(Int.min), "--caller", "a"], .badArgs)
+        await step("a skip 10001", ["skip", "10001", "--caller", "a"], .badArgs)
+        await step("a skip -2 (still reading)", ["skip", "-2", "--caller", "a"], .ok)
         await step("a stop", ["stop", "--caller", "a"], .ok)
 
         // Two callers transcribe at once: the shared transcriber admits one, the other is told busy.
+        // Sol #16: with a 1 s idle unload, nothing may be pending while the file keeps dictation busy; after it, the
+        // unload is scheduled and fires.
+        model.unloadDelay = .seconds(1)
         if let clip = clip ?? fixture() {
+            let watch = Task { @MainActor () -> (busy: Bool, overlap: Bool) in
+                var seen = (busy: false, overlap: false)
+                while !Task.isCancelled {
+                    if model.dictation.isBusy { seen.busy = true; if model.unloadPending { seen.overlap = true } }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                return seen
+            }
             async let first = call(cli, ["dictate-file", clip, "--caller", "a"])
             async let second = call(cli, ["dictate-file", clip, "--caller", "b"])
             let both = await [first, second]
+            watch.cancel()
             let done = both.filter { $0.response?.ok == true && !($0.response?.data?["text"]?.stringValue ?? "").isEmpty }.count
             let busy = both.filter { $0.response?.code == "busy" }.count
             let pass = done == 1 && busy == 1
             print("\(pass ? "PASS" : "FAIL")  a and b dictate-file at once (one done, one busy)")
             for (who, o) in zip(["a", "b"], both) { print("      \(who): \(o.text)") }
             results.append(pass)
+            let seen = await watch.value
+            let loaded = model.dictation.asr.isLoaded, scheduled = model.unloadPending
+            let unloaded = await waitUntil(3) { !model.unloadPending && !model.dictation.asr.isLoaded }
+            let idle = seen.busy && !seen.overlap && loaded && scheduled && unloaded
+            print("\(idle ? "PASS" : "FAIL")  idle unload around dictate-file: busy seen \(seen.busy), unload pending while busy \(seen.overlap), "
+                  + "after: loaded \(loaded), scheduled \(scheduled), unloaded within 3 s \(unloaded)")
+            results.append(idle)
         } else {
             print("FAIL  dictate-file: no clip given and no Tests/Fixtures/dictation/*.wav in the current folder")
             results.append(false)
         }
+        // Sol #16: a finished download starts the idle countdown. Only when both models are installed (no network).
+        if model.voiceModel == .ready, model.dictationModel == .ready {
+            await step("models download (installed: no network)", ["models", "download"], .ok)
+            let scheduled = model.unloadPending
+            let fired = await waitUntil(3) { !model.unloadPending }
+            print("\(scheduled && fired ? "PASS" : "FAIL")  idle unload after a download: scheduled \(scheduled), fired within 3 s \(fired)")
+            results.append(scheduled && fired)
+        } else {
+            print("SKIP  idle unload after a download: a model is missing and the check must not download")
+        }
+        model.unloadDelay = nil
         model.stopReading()
+
+        // Sol #4: quitting waits for the pasteboard gate's restore. A private pasteboard, never the user's clipboard.
+        let board = NSPasteboard(name: NSPasteboard.Name("talkread-fix1d-quit-\(UUID().uuidString)"))
+        board.clearContents()
+        board.setString("the user's clipboard", forType: .string)
+        let gate = PasteboardGate(pasteboard: board)
+        let paste = Task { await gate.transaction { gate.write("dictated text"); try? await Task.sleep(for: .milliseconds(400)) } }
+        try? await Task.sleep(for: .milliseconds(100))
+        let during = board.string(forType: .string)
+        let quitStart = Date()
+        let atQuit: String? = await withCheckedContinuation { c in
+            AppDelegate.afterPasteboardIdle(gate) { c.resume(returning: board.string(forType: .string)) }
+        }
+        let waited = Int(Date().timeIntervalSince(quitStart) * 1000)
+        await paste.value
+        board.releaseGlobally()
+        let quitOK = during == "dictated text" && atQuit == "the user's clipboard"
+        print("\(quitOK ? "PASS" : "FAIL")  quit during a paste: clipboard during \"\(during ?? "-")\", at quit \"\(atQuit ?? "-")\" after \(waited) ms")
+        results.append(quitOK)
+
+        // Sol #17: "Insert again" targets the app that comes forward once Talk and Read hides (never itself).
+        let t17 = Date()
+        let target = await AppModel.otherFrontmostApp(within: 1)
+        let found = target != nil && target?.processIdentifier != getpid()
+        print("\(found ? "PASS" : "FAIL")  insert-again target: another app, found in \(Int(Date().timeIntervalSince(t17) * 1000)) ms")
+        results.append(found)
 
         // E3: with nothing reading or dictating, the model, engines and control server must sit still.
         let cpu0 = cpuSeconds(), t0 = Date()
@@ -125,6 +186,7 @@ enum ControlSelfTest {
         case .audio: pass = r?.ok == true && r?.data?["firstAudioMs"]?.numberValue != nil
         case .busy: pass = r?.ok == false && r?.code == "busy"
         case .replayed: pass = r?.ok == true && r?.data?["replayed"]?.boolValue == true
+        case .badArgs: pass = r?.ok == false && r?.code == "bad_args"
         }
         let shown = o.text.count > 300 ? String(o.text.prefix(300)) + "…" : o.text
         print("\(pass ? "PASS" : "FAIL")  \(label.padding(toLength: 36, withPad: " ", startingAt: 0)) \(shown)")
@@ -146,6 +208,15 @@ enum ControlSelfTest {
             return Outcome(status: p.terminationStatus, response: try? JSONDecoder().decode(ControlResponse.self, from: data),
                            text: String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
         }.value
+    }
+
+    @MainActor private static func waitUntil(_ seconds: Double, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !condition() {
+            if Date() >= deadline { return false }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return true
     }
 
     private static func cpuSeconds() -> Double {

@@ -166,18 +166,20 @@ private func readLine(_ fd: Int32, limit: Int, until deadline: TimeInterval) -> 
 // MARK: Replay cache (PLAN decision 11)
 
 /// Remembers the last 64 mutating (caller, id) keys for 5 minutes. The in-flight task is stored, so a duplicate that
-/// arrives while the first is still running waits for it and replays its response.
+/// arrives while the first is still running waits for it and replays its response. Lookup comes before eviction, and
+/// only finished entries are evicted (oldest first, when a new key is admitted), so in-flight work always replays.
 actor ReplayCache {
     private struct Entry { let fingerprint: Int; let task: Task<ControlResponse, Never>; var finished: Date? }
     private var entries: [String: Entry] = [:]
-    private var order: [String] = []
+    private var order: [String] = []   // admission order, oldest first
     private let ttl: TimeInterval, limit: Int
 
     init(ttl: TimeInterval = 300, limit: Int = 64) { self.ttl = ttl; self.limit = limit }
 
     func run(caller: String, id: String, fingerprint: Int, _ work: @escaping @Sendable () async -> ControlResponse) async -> ControlResponse {
         let key = caller + "\u{0}" + id
-        prune()
+        let cutoff = Date().addingTimeInterval(-ttl)
+        for k in order where entries[k]?.finished.map({ $0 < cutoff }) == true { drop(k) }
         if let entry = entries[key] {
             guard entry.fingerprint == fingerprint else {
                 return ControlResponse(ok: false, code: "request_id_conflict",
@@ -187,24 +189,20 @@ actor ReplayCache {
             response.data = (response.data ?? [:]).merging(["replayed": .bool(true)]) { $1 }
             return response
         }
+        // Room for the new key, oldest finished first; while every entry is still running the cache briefly exceeds the limit.
+        while entries.count >= limit, let oldest = order.first(where: { entries[$0]?.finished != nil }) { drop(oldest) }
         let task = Task.detached { await work() }
         entries[key] = Entry(fingerprint: fingerprint, task: task, finished: nil)
         order.append(key)
         let response = await task.value
         // A refusal because another caller owns the session is not an effect: let the same id retry later.
-        if response.code == "busy" { entries[key] = nil; order.removeAll { $0 == key } } else { entries[key]?.finished = Date() }
+        if response.code == "busy" { drop(key) } else { entries[key]?.finished = Date() }
         return response
     }
 
-    private func prune() {
-        let cutoff = Date().addingTimeInterval(-ttl)
-        order.removeAll { key in
-            let expired = entries[key]?.finished.map { $0 < cutoff } ?? false
-            if expired { entries[key] = nil }
-            return entries[key] == nil
-        }
-        // ponytail: oldest-first eviction can drop an in-flight key if 64 newer ones arrive during one request.
-        while order.count >= limit { entries[order.removeFirst()] = nil }
+    private func drop(_ key: String) {
+        entries[key] = nil
+        order.removeAll { $0 == key }
     }
 }
 

@@ -4,17 +4,39 @@ import AppKit
 import SwiftUI
 import TalkReadCore
 
+/// Which recorder is listening: one at a time, and the global hotkeys stand down meanwhile (Sol #15), so recording
+/// ⌃⌥R does not also start a read.
+@MainActor final class RecorderFocus: ObservableObject {
+    static let shared = RecorderFocus()
+    @Published private(set) var active: UUID?
+
+    /// Takes over from any other recorder (which then stops listening).
+    func begin(_ id: UUID) {
+        active = id
+        AppModel.shared.hotkeysPaused = true
+    }
+
+    /// Finish, cancel or disappear; ignored unless `id` is the one listening.
+    func end(_ id: UUID) {
+        guard active == id else { return }
+        active = nil
+        AppModel.shared.hotkeysPaused = false
+    }
+}
+
 struct ShortcutRecorder: View {
     @Binding var shortcut: TalkReadCore.Settings.Shortcut
     /// Name of another action using the same chord, if any.
     let clash: String?
-    @State private var recording = false
+    @ObservedObject private var focus = RecorderFocus.shared
+    @State private var id = UUID()
     @State private var monitor: Any?
+    private var recording: Bool { focus.active == id }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
             HStack(spacing: 6) {
-                Button { recording.toggle() } label: {
+                Button { recording ? focus.end(id) : focus.begin(id) } label: {
                     Text(recording ? "Type a shortcut…" : (shortcut.display.isEmpty ? "Off" : shortcut.display))
                         .font(.body.monospaced())
                         .frame(minWidth: 120)
@@ -31,16 +53,22 @@ struct ShortcutRecorder: View {
             if let clash { Text("Also used by \(clash)").font(.caption).foregroundStyle(.orange) }
         }
         .onChange(of: recording) { _, on in on ? startMonitor() : stopMonitor() }
-        .onDisappear(perform: stopMonitor)
+        .onDisappear {
+            stopMonitor()
+            focus.end(id)
+        }
+        // Leaving the app cancels, so the hotkeys are never left paused behind a forgotten recorder.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in focus.end(id) }
     }
 
     private func startMonitor() {
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        stopMonitor()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [focus, id] event in
             if event.keyCode == 53, event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.function).isEmpty {
-                recording = false   // Esc alone cancels
+                focus.end(id)   // Esc alone cancels
             } else if let s = Self.make(keyCode: event.keyCode, flags: event.modifierFlags, characters: event.charactersIgnoringModifiers) {
                 shortcut = s
-                recording = false
+                focus.end(id)
             } else {
                 NSSound.beep()   // needs ⌃, ⌥ or ⌘
             }
