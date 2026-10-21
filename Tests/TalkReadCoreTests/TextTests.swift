@@ -29,13 +29,37 @@ final class TextTests: XCTestCase {
         XCTAssertEqual(sentences("It cost 3. Then 4"), [0, 0, 0, 1, 1])
     }
 
+    func testNumbersAbbreviationsAndInitialsDoNotEndSentences() {
+        func sentences(_ s: String) -> [Int] { TextKit.tokenize(s).map(\.sentence) }
+        XCTAssertEqual(sentences("It cost £3.5 million. Then"), [0, 0, 0, 0, 0, 1])   // "3" and "5" share sentence 0
+        XCTAssertEqual(sentences("We met at 9 a.m. on Monday."), [0, 0, 0, 0, 0, 0, 0, 0])
+        XCTAssertEqual(sentences("Mr. Patel replied. Good."), [0, 0, 0, 1])
+        XCTAssertEqual(sentences("Use e.g. this one."), [0, 0, 0, 0, 0])
+        XCTAssertEqual(sentences("It ended 2.1. Next"), [0, 0, 0, 0, 1])
+        XCTAssertEqual(sentences("Version 1,000 people"), [0, 0, 0, 0])
+        XCTAssertEqual(sentences("6:45 train"), [0, 0, 0])
+        XCTAssertEqual(sentences("On 21.10.2026 it rained."), [0, 0, 0, 0, 0, 0])
+        XCTAssertEqual(sentences("the U.S.A is big"), [0, 0, 0, 0, 0, 0])   // dotted initials never break
+        XCTAssertEqual(sentences("See No. 5, i.e. this. Then"), [0, 0, 0, 0, 0, 0, 1])
+        XCTAssertEqual(sentences("It ended. 5 won"), [0, 0, 1, 1])   // a plain full stop still ends the sentence
+        XCTAssertEqual(sentences("I said no.\nThen"), [0, 0, 0, 1])
+    }
+
     // MARK: chunks
 
     private func text(of chunk: Chunk, in s: String) -> String { (s as NSString).substring(with: NSRange(location: chunk.range.lowerBound, length: chunk.range.count)) }
 
-    private func assertWellFormed(_ chunks: [Chunk], _ tokens: [Token], from start: Int = 0, file: StaticString = #filePath, line: UInt = #line) {
+    /// A chunk begins at its first token or at that token's prefix: no whitespace between, never before the previous token.
+    private func assertBegins(_ c: Chunk, _ tokens: [Token], in s: String, file: StaticString = #filePath, line: UInt = #line) {
+        let i = c.tokens.lowerBound, token = tokens[i].range
+        XCTAssertLessThanOrEqual(c.range.lowerBound, token.lowerBound, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(c.range.lowerBound, i > 0 ? tokens[i - 1].range.upperBound : 0, file: file, line: line)
+        let prefix = (s as NSString).substring(with: NSRange(location: c.range.lowerBound, length: token.lowerBound - c.range.lowerBound))
+        XCTAssertFalse(prefix.contains(where: \.isWhitespace), "prefix \(prefix.debugDescription)", file: file, line: line)
+    }
+
+    private func assertWellFormed(_ chunks: [Chunk], _ tokens: [Token], _ s: String, from start: Int = 0, file: StaticString = #filePath, line: UInt = #line) {
         guard let first = chunks.first, let last = chunks.last else { return }
-        XCTAssertEqual(first.range.lowerBound, tokens[start].range.lowerBound, file: file, line: line)
         // The last chunk runs past the last token only to keep closing punctuation ("?", ".\""), never trailing whitespace.
         XCTAssertGreaterThanOrEqual(last.range.upperBound, tokens.last!.range.upperBound, file: file, line: line)
         XCTAssertLessThanOrEqual(last.range.upperBound - tokens.last!.range.upperBound, 3, file: file, line: line)
@@ -47,9 +71,8 @@ final class TextTests: XCTestCase {
         }
         for c in chunks {   // a token is never split
             XCTAssertFalse(c.tokens.isEmpty, file: file, line: line)
-            XCTAssertLessThanOrEqual(c.range.lowerBound, tokens[c.tokens.lowerBound].range.lowerBound, file: file, line: line)
             XCTAssertGreaterThanOrEqual(c.range.upperBound, tokens[c.tokens.upperBound - 1].range.upperBound, file: file, line: line)
-            XCTAssertEqual(c.range.lowerBound, tokens[c.tokens.lowerBound].range.lowerBound, file: file, line: line)
+            assertBegins(c, tokens, in: s, file: file, line: line)
         }
     }
 
@@ -75,7 +98,7 @@ final class TextTests: XCTestCase {
         let s = (0..<12).map { _ in sentence }.joined(separator: "  \n")
         let t = TextKit.tokenize(s)
         let chunks = TextKit.chunks(s, tokens: t)
-        assertWellFormed(chunks, t)
+        assertWellFormed(chunks, t, s)
         XCTAssertGreaterThan(chunks.count, 2)
         for c in chunks {
             XCTAssertLessThanOrEqual(c.range.count, c == chunks.first ? 120 : 300)
@@ -91,7 +114,7 @@ final class TextTests: XCTestCase {
         let s = "When the harbour woke slowly and the first ferry had left carrying passengers, the baker opened up and the whole quay smelled of warm bread. Done."
         let t = TextKit.tokenize(s)
         let chunks = TextKit.chunks(s, tokens: t)
-        assertWellFormed(chunks, t)
+        assertWellFormed(chunks, t, s)
         XCTAssertEqual(text(of: chunks[0], in: s), "When the harbour woke slowly and the first ferry had left carrying passengers, ")
         XCTAssertLessThanOrEqual(chunks[0].range.count, 120)
         XCTAssertEqual(chunks.count, 2)   // the rest of the sentence and "Done." share the second chunk (they fit in 300)
@@ -112,7 +135,7 @@ final class TextTests: XCTestCase {
         let plain = Array(repeating: "wordy", count: 40).joined(separator: " ")
         let t = TextKit.tokenize(plain)
         let c = TextKit.chunks(plain, tokens: t, firstMax: 50, max: 80)
-        assertWellFormed(c, t)
+        assertWellFormed(c, t, plain)
         XCTAssertEqual(c[0].range.count, 48)   // 8 words x 6
         XCTAssertTrue(c.dropFirst().dropLast().allSatisfy { $0.range.count <= 80 })
     }
@@ -129,7 +152,7 @@ final class TextTests: XCTestCase {
         let s = "Short start \(giant) end of it."
         let t = TextKit.tokenize(s)
         let c = TextKit.chunks(s, tokens: t, firstMax: 120, max: 300)
-        assertWellFormed(c, t)
+        assertWellFormed(c, t, s)
         let alone = c.first { $0.tokens.count == 1 && t[$0.tokens.lowerBound].text == giant }
         XCTAssertNotNil(alone)
         XCTAssertEqual(TextKit.chunks(giant, tokens: TextKit.tokenize(giant)).count, 1)
@@ -142,7 +165,7 @@ final class TextTests: XCTestCase {
         XCTAssertGreaterThan(t.count, 100)
         for (firstMax, max) in [(120, 300), (60, 100), (30, 40)] {
             let c = TextKit.chunks(s, tokens: t, firstMax: firstMax, max: max)
-            assertWellFormed(c, t)
+            assertWellFormed(c, t, s)
             if c[0].tokens.count > 1 { XCTAssertLessThanOrEqual(c[0].range.count, firstMax) }
             for chunk in c.dropFirst() where chunk.tokens.count > 1 { XCTAssertLessThanOrEqual(chunk.range.count, max) }
         }
@@ -153,7 +176,7 @@ final class TextTests: XCTestCase {
         let t = TextKit.tokenize(s)
         XCTAssertEqual(t[2].text, "gamma")
         let c = TextKit.chunks(s, tokens: t, from: 2)
-        assertWellFormed(c, t, from: 2)
+        assertWellFormed(c, t, s, from: 2)
         XCTAssertEqual(c[0].range.lowerBound, t[2].range.lowerBound)
         XCTAssertEqual(c[0].tokens.lowerBound, 2)
         XCTAssertEqual(text(of: c[0], in: s), "gamma delta epsilon. ")   // runs to that sentence's end
@@ -164,9 +187,31 @@ final class TextTests: XCTestCase {
         let long = "Intro words here and then " + Array(repeating: "tail", count: 60).joined(separator: " ") + ". Next."
         let lt = TextKit.tokenize(long)
         let lc = TextKit.chunks(long, tokens: lt, from: 3, firstMax: 50, max: 100)
-        assertWellFormed(lc, lt, from: 3)
+        assertWellFormed(lc, lt, long, from: 3)
         XCTAssertLessThanOrEqual(lc[0].range.count, 50)
         XCTAssertEqual(lt[lc[0].tokens.lowerBound].text, "and")
+    }
+
+    /// Sol #14: a chunk carries its first token's prefix (currency, quote, bracket), at the text start, at every later
+    /// chunk start and on a restart; the prefix never pulls in a sentence or clause mark or the previous token.
+    func testChunksKeepTheirFirstTokensPrefix() {
+        func texts(_ s: String, from start: Int = 0, firstMax: Int = 120) -> [String] {
+            let t = TextKit.tokenize(s)
+            let c = TextKit.chunks(s, tokens: t, from: start, firstMax: firstMax)
+            assertWellFormed(c, t, s, from: start)
+            return c.map { text(of: $0, in: s) }
+        }
+        XCTAssertEqual(texts("£45 was the price. Paid."), ["£45 was the price. ", "Paid."])
+        XCTAssertEqual(texts("He paid. £45 was the price."), ["He paid. ", "£45 was the price."])
+        XCTAssertEqual(texts("He paid.£45 was the price."), ["He paid.", "£45 was the price."])
+        XCTAssertEqual(texts("She left. \"Hello there,\" he said."), ["She left. ", "\"Hello there,\" he said."])
+        XCTAssertEqual(texts("Look it up (see the index) now.", from: 3), ["(see the index) now."])
+        XCTAssertEqual(texts("A well-known fact.", from: 2), ["known fact."])   // a joiner, not a prefix: no "-known"
+        XCTAssertEqual(texts("Yes and/or no.", from: 2), ["or no."])
+        // a cut chunk keeps the prefix of the token that opens the next one
+        let cut = texts("Prices rose fast and the total was sixty, £45 more than before.", firstMax: 45)
+        XCTAssertEqual(cut.count, 2)
+        XCTAssertTrue(cut[1].hasPrefix("£45"), cut[1])
     }
 
     func testLargeInputIsFast() {
@@ -175,6 +220,6 @@ final class TextTests: XCTestCase {
         let start = Date()
         let c = TextKit.chunks(s, tokens: t)
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
-        assertWellFormed(c, t)
+        assertWellFormed(c, t, s)
     }
 }

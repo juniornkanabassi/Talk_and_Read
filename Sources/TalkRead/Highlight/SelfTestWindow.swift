@@ -17,7 +17,7 @@ enum SelfTestWindow {
             app.setActivationPolicy(.prohibited)
             Task { @MainActor in exit(await SelfTestClient.run(host: host, pane: args[i + 2], pasteboard: args[i + 3])) }
         } else {
-            app.setActivationPolicy(.accessory)
+            app.setActivationPolicy(.prohibited)   // never activated: Junior's app keeps focus (COMMON)
             Task { @MainActor in exit(await SelfTestHost().run()) }
         }
         app.run()
@@ -29,6 +29,7 @@ enum SelfTestWindow {
     static let webParagraph = "Talk and Read draws a yellow box on each word as the voice reads it aloud. \(phrase) When it cannot be sure, it hides the box instead."
     static let ocrSentence = "Reading aloud keeps the eye and the ear together on every line."
     static let ocrText = "\(ocrSentence) A different sentence sits between the two copies. \(ocrSentence)"
+    static let turned = "Sideways pages keep their boxes."
 
     /// Text drawn black on white into a 1x sRGB bitmap, optionally with the selection colour behind `highlight` (line
     /// fragments, like a real selection). `rect` gives a character range's glyph rect in image points, top-left origin.
@@ -88,6 +89,7 @@ enum SelfTestWindow {
         await pasteboardChecks()
         let probe = CGRect(x: 100, y: 50, width: 200, height: 20)
         record("Coordinate flip", Locator.convert(topLeftScreenRect: Locator.convert(topLeftScreenRect: probe)) == probe, "AX/CG top-left <-> Cocoa is its own inverse")
+        pageBaseCheck()
         await screenshotTextCheck()
         await ocrHighlightCheck()
         if let screen = NSScreen.screens.first(where: { $0.localizedName.contains("Prompter") }) {
@@ -177,20 +179,106 @@ enum SelfTestWindow {
         record("Pasteboard external change kept", pb.string(forType: .string) == "The user's new copy" && pb.pasteboardItems?.count == 1,
                "a change by someone else during the transaction is left alone")
 
+        func copy(_ text: String) {
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+        }
         original = fill()
-        let copied = await gate.transaction { () -> String? in
+        let copied = await gate.transaction { () -> TextCapture.Copied in
             let before = pb.changeCount
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {   // the app answering Edit ▸ Copy
-                pb.clearContents()
-                pb.setString("copied by the app", forType: .string)
-            }
-            return await gate.waitForChange(from: before, timeout: 0.3) ? pb.string(forType: .string) : nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { copy("copied by the app") }   // the app answering Edit ▸ Copy
+            return await TextCapture.readCopy(gate: gate, before: before)
         }
         let start = Date()
         let changed = await gate.transaction { await gate.waitForChange(from: pb.changeCount, timeout: 0.3) }
         let waited = Date().timeIntervalSince(start)
-        record("Pasteboard copy wait", copied == "copied by the app" && contents() == original && !changed && (0.28...0.6).contains(waited),
-               "read \"\(copied ?? "nil")\" then restored; no change times out after \(Int(waited * 1000)) ms")
+        record("Pasteboard copy wait", copied == .text("copied by the app") && contents() == original && !changed && (0.28...0.6).contains(waited),
+               "read \(copied) then restored; no change times out after \(Int(waited * 1000)) ms")
+
+        // Sol #3: Junior copies just after the app answered (inside the 20 ms settle, or between the wait and the read).
+        // Not ours: nothing is read and his newer copy is never restored over.
+        _ = fill()
+        let duringSettle = await gate.transaction { () -> TextCapture.Copied in
+            let before = pb.changeCount
+            copy("copied by the app")   // the app answers at once; the first observed change is this one
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.008) { copy("Junior's newer copy") }
+            return await TextCapture.readCopy(gate: gate, before: before)
+        }
+        let keptAfterSettle = pb.string(forType: .string) == "Junior's newer copy" && pb.pasteboardItems?.count == 1
+        _ = fill()
+        let beforeRead = await gate.transaction { () -> String? in
+            let before = pb.changeCount
+            copy("copied by the app")
+            guard await gate.waitForChange(from: before, timeout: 0.3) else { return "not verified" }
+            copy("Junior's newer copy")   // lands between the verified wait and the read
+            return gate.ownString()
+        }
+        let keptAfterRead = pb.string(forType: .string) == "Junior's newer copy" && pb.pasteboardItems?.count == 1
+        record("Pasteboard newer copy kept (Sol #3)", duringSettle == .clipboardChanged && keptAfterSettle && beforeRead == nil && keptAfterRead,
+               "copy during the settle: \(duringSettle), kept: \(keptAfterSettle); copy before the read: \(beforeRead ?? "nil read"), kept: \(keptAfterRead)")
+
+        // Sol #4: the restore runs when the body throws, when its task is cancelled mid-body and when it is cancelled
+        // while queued; waitUntilIdle returns at once when idle and otherwise only after every queued transaction restored.
+        struct Thrown: Error {}
+        original = fill()
+        _ = try? await gate.transaction { () throws -> Void in
+            gate.write("temporary text")
+            throw Thrown()
+        }
+        let afterThrow = contents() == original
+        let cancelStart = Date()
+        let running = Task { @MainActor in
+            try await gate.transaction {
+                gate.write("dictated text")
+                try await Task.sleep(for: .seconds(5))
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+        running.cancel()
+        _ = await running.result
+        let afterCancel = contents() == original && Date().timeIntervalSince(cancelStart) < 1
+        let holder = Task { @MainActor in
+            await gate.transaction {
+                gate.write("first")
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        let queued = Task { @MainActor in
+            await gate.transaction { () -> Bool in
+                if !Task.isCancelled { gate.write("second") }   // what a caller does with a cancelled turn
+                return Task.isCancelled
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        queued.cancel()
+        let queuedSawCancel = await queued.value
+        await holder.value
+        let afterQueuedCancel = contents() == original && queuedSawCancel
+        let idleStart = Date()
+        await gate.waitUntilIdle()
+        let idleAtOnce = Date().timeIntervalSince(idleStart) < 0.05
+        _ = Task { @MainActor in
+            await gate.transaction {
+                gate.write("a")
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        _ = Task { @MainActor in
+            await gate.transaction {
+                gate.write("b")
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        let drainStart = Date()
+        await gate.waitUntilIdle()
+        let drained = Date().timeIntervalSince(drainStart)
+        let restoredAtIdle = contents() == original
+        record("Pasteboard throw/cancel/idle (Sol #4)",
+               afterThrow && afterCancel && afterQueuedCancel && idleAtOnce && restoredAtIdle && drained >= 0.2,
+               "restored after throw: \(afterThrow), after cancel mid-body: \(afterCancel), after cancel while queued: \(afterQueuedCancel); idle wait \(idleAtOnce ? "immediate" : "slow") when idle, \(Int(drained * 1000)) ms with two queued, original back at idle: \(restoredAtIdle)")
     }
 
     // MARK: Screenshot OCR (R12) and the OCR selection-colour anchor (R6, R7d), headless
@@ -309,7 +397,7 @@ enum SelfTestWindow {
         // PDF pane: two pages, the phrase on both.
         let pdfURL = directory.appendingPathComponent("selftest.pdf")
         Self.writePDF(to: pdfURL)
-        let pdfView = PDFView(frame: NSRect(x: 20, y: 300, width: 1060, height: 260))
+        let pdfView = PDFView(frame: NSRect(x: 20, y: 130, width: 1060, height: 430))
         pdfView.displayMode = .singlePageContinuous
         pdfView.autoScales = false
         pdfView.scaleFactor = 1
@@ -414,6 +502,21 @@ enum SelfTestWindow {
             }
         }
 
+        // Sol #13: page 3 carries /Rotate 90; PDFLocator's boxes must land on PDFKit's own (rotated) glyph rects.
+        await clearSelections()
+        if let page3 = document.page(at: 2), let string3 = page3.string as NSString? {
+            let turned = string3.range(of: SelfTestWindow.turned), turnedTokens = TextKit.tokenize(SelfTestWindow.turned)
+            pdfView.go(to: page3)
+            pdfView.setCurrentSelection(page3.selection(for: turned), animate: false)
+            let turnedTruth = turnedTokens.map { pdfRect(page3, SelfTestWindow.ns($0.range, plus: turned.location)) }
+            if let out = await pane("PDFView rotated page", "pdf", expected: SelfTestWindow.turned, truth: turnedTruth, first: []) {
+                let rects = Self.rects(out["pdfAnchored"])
+                let ok = Self.score(rects, truth: turnedTruth, first: []).ok
+                record("PDFLocator rotated page (Sol #13)", page3.rotation == 90 && ok * 100 >= 95 * turnedTokens.count,
+                       "page rotation \(page3.rotation): \(ok)/\(turnedTokens.count) boxes inside PDFKit's glyph rects (anchor \(out["pdfAnchor"] as? String ?? "none"))")
+            }
+        }
+
         // OCR pane (R6): rendered text, located by Vision on a ScreenCaptureKit image of this window.
         await clearSelections()
         window.makeFirstResponder(nil)
@@ -423,10 +526,14 @@ enum SelfTestWindow {
             let r = rendered.rect(range)
             return toScreen(imageView, CGRect(x: r.minX, y: imageView.bounds.height - r.maxY, width: r.width, height: r.height))
         }
-        await pane("Rendered text (OCR)", "ocr", expected: SelfTestWindow.ocrSentence,
-                   truth: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrSecond.location)) },
-                   first: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrFirst.location)) },
-                   tolerance: 4, needed: 0.9)
+        let ocrOut = await pane("Rendered text (OCR)", "ocr", expected: SelfTestWindow.ocrSentence,
+                                truth: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrSecond.location)) },
+                                first: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrFirst.location)) },
+                                tolerance: 4, needed: 0.9)
+        if let stale = ocrOut?["ocrStale"] as? String {   // the pane above then proves the fresh recognition boxes the words
+            record("OCR stale result discarded (Sol #11)", stale == "discarded 0 shown",
+                   "a scroll during the first recognition: its result \(stale); \(ocrOut?["ocr"] as? String ?? "")")
+        }
 
         // R7b, the no-selection order. The test window is never key, so nothing in it has focus: the copy step finds
         // nothing (Copy answers with no selection), the caret step has no focused element, and the clipboard is read.
@@ -529,9 +636,31 @@ enum SelfTestWindow {
             ("Page \(n). \(SelfTestWindow.phrase)" as NSString).draw(at: CGPoint(x: 24, y: 40), withAttributes: [.font: NSFont.systemFont(ofSize: 16)])
             context.endPDFPage()
         }
+        var turnedBox = CGRect(x: 0, y: 0, width: 300, height: 60)   // a short page, shown 60 wide and 300 tall
+        context.beginPDFPage([kCGPDFContextMediaBox: Data(bytes: &turnedBox, count: MemoryLayout<CGRect>.size)] as CFDictionary)
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        (SelfTestWindow.turned as NSString).draw(at: CGPoint(x: 16, y: 20), withAttributes: [.font: NSFont.systemFont(ofSize: 16)])
+        context.endPDFPage()
         NSGraphicsContext.restoreGraphicsState()
         context.closePDF()
-        data.write(to: url, atomically: true)
+        guard let document = PDFDocument(data: data as Data) else { return }
+        document.page(at: 2)?.rotation = 90   // stored as /Rotate, which PDFLocator reads back from the file
+        document.write(to: url)
+    }
+
+    // MARK: PDF page numbering (Sol #12), headless
+
+    /// AXPageIndex base from viewer metadata: Sol's case (a zero-based viewer exposing only its second page) must give 0,
+    /// the old guess gave 1; no metadata and a partial page set hides.
+    private func pageBaseCheck() {
+        let cases: [(descriptions: [Int: String?], count: Int, expected: Int?)] = [
+            ([1: "Page 2"], 5, 0), ([2: "Page 2"], 5, 1), ([1: "Seite 2 "], 5, 0), ([1: nil], 5, nil),
+            ([0: nil, 1: nil, 2: nil], 3, 0), ([1: nil, 2: nil, 3: nil], 3, 1), ([1: "Page 2", 3: "Page 3"], 5, nil),
+            ([4: "Page iv"], 9, nil), ([0: "Page 1", 1: "Page 2", 2: "Page 3"], 3, 0),
+        ]
+        let wrong = cases.filter { PDFLocator.base(descriptions: $0.descriptions, pageCount: $0.count) != $0.expected }
+        record("PDF page base from metadata (Sol #12)", wrong.isEmpty,
+               "\(cases.count - wrong.count)/\(cases.count) cases; only-page-2 exposed reads as zero-based, no metadata on a partial set hides\(wrong.isEmpty ? "" : "; wrong: \(wrong.map { "\($0.descriptions)" })")")
     }
 
     // MARK: Overlay (R4: never takes clicks, never key; no panel while idle)
@@ -635,7 +764,17 @@ enum SelfTestClient {
         if pane == "capture" { return 0 }
         let tokens = TextKit.tokenize(capture.text)
         let locator = Locator(capture: capture, useOCR: pane == "ocr")
-        if pane == "ocr", let first = tokens.first {   // OCR answers asynchronously: wait for the first recognition
+        if pane == "ocr", let first = tokens.first {
+            // Sol #11: a scroll lands while the first recognition runs. Its result must be discarded, never shown.
+            _ = locator.rect(forWord: first.range)   // starts the first capture
+            locator.invalidate()
+            var staleShown = 0
+            for _ in 0..<100 where !locator.ocrSummary.contains("discarded") {
+                if locator.rect(forWord: first.range) != nil { staleShown += 1 }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            out["ocrStale"] = "\(locator.ocrSummary.contains("discarded") ? "discarded" : "kept") \(staleShown) shown"
+            // OCR answers asynchronously: wait for the fresh recognition.
             for _ in 0..<40 where locator.rect(forWord: first.range) == nil { try? await Task.sleep(for: .milliseconds(150)) }
         }
         func encode(_ r: CGRect?) -> Any { r.map { [$0.minX, $0.minY, $0.width, $0.height] } ?? NSNull() }

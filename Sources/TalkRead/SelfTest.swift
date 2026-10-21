@@ -1,9 +1,9 @@
 // Headless self-tests (no windows, no live audio except the volume-0 R10 run).
 // `--selftest-tts <file> [--voice id] [--rate x]`: synthesises every chunk with the neural engine, builds timings as
 // ReadSession does, transcribes the audio with Parakeet and reports word-start error against the recogniser (R2); with
-// `--rate`, renders through the production Player graph offline and checks WER and the media clock (R3).
-// `--selftest-tts [<file>] --long`: 100k characters through a real ReadSession at volume 0 for 20 s (R10).
-// `--selftest-asr <dir>`: WP5's dictation fixtures.
+// `--rate`, renders through the production Player graph offline and checks WER and the media clock (revised R3).
+// `--selftest-tts [<file>] --long`: 100k characters through a real ReadSession at volume 0 for 20 s (R10), plus the
+// session's failure paths (device change while paused, output that will not start, out-of-range skips).
 import AVFoundation
 import FluidAudio
 import Foundation
@@ -34,13 +34,6 @@ enum SelfTest {
             print("selftest-tts: error \(error)")
             return 1
         }
-    }
-
-    /// Transcribes every audio file in the directory and reports WER. Returns the process exit code.
-    /// Becomes `await DictationSelfTest.run(dir: directory)` (WP5's entry point) when WP5 merges; kept compiling until then.
-    static func asr(directory: String) async -> Int32 {
-        FileHandle.standardError.write(Data("--selftest-asr \(directory): waiting for WP5's DictationSelfTest\n".utf8))
-        return 2
     }
 
     // MARK: - R2 / R3
@@ -126,8 +119,14 @@ enum SelfTest {
         print("R2: \(pass ? "PASS" : "FAIL") (median <= 60 ms, p90 <= 150 ms, >= 200 matched words, invariants)")
 
         if let rate {
-            let clock1 = try clockError(rate: 1), clockR = try clockError(rate: rate)
-            print("clock vs rendered clicks: 1x mean \(Int((clock1.mean * 1000).rounded())) ms, max |err| \(Int((clock1.maxAbs * 1000).rounded())) ms; \(rate)x mean \(Int((clockR.mean * 1000).rounded())) ms, max |err| \(Int((clockR.maxAbs * 1000).rounded())) ms (\(clockR.count) clicks)")
+            // Revised R3 (PLAN.md): clock within 20 ms at every rate; WER <= 8 % up to 2x; above 2x, lower than Kokoro
+            // speaking natively at that rate (the recogniser's own floor on fast speech).
+            var clockOK = true
+            for r in Set<Float>([0.5, 1, 1.5, 2, 2.5, 3, rate]).sorted() {   // offline click trains: cheap, so every rate
+                let c = try clockError(rate: r)
+                clockOK = clockOK && c.maxAbs <= 0.020 && c.count >= 10
+                print("clock vs rendered clicks at \(r)x: mean \(Int((c.mean * 1000).rounded())) ms, max |err| \(Int((c.maxAbs * 1000).rounded())) ms (\(c.count) clicks)")
+            }
             // The production graph, all chunks queued back to back. The output is cut where the clock reaches each
             // chunk's media start (inside the pause between sentences) and each piece is transcribed on its own, so the
             // recogniser's 15 s window seams cannot drop words from 2.5x speech.
@@ -143,10 +142,10 @@ enum SelfTest {
                 hypothesis.append((try? await asr.transcribe(Array(rendered[cuts[k] ..< cuts[k + 1]])).text) ?? "")
             }
             let werR = wer(reference: reference, hypothesis: hypothesis.joined(separator: " "))
-            let ok = werR <= 0.08 && clockR.maxAbs <= 0.020 && clockR.count >= 10
             print("WER at \(rate)x through the Player graph: \(pct(werR)) (\(fmt(Double(rendered.count) / Player.sampleRate)) s rendered)")
-            if engine.kind == .neural {
-                // The recogniser's own floor on fast speech: Kokoro speaking natively at this rate, no time-pitch.
+            var werOK = werR <= 0.08, rule = "WER <= 8 %"
+            if rate > 2, engine.kind == .neural {
+                // Kokoro speaking natively at this rate, no time-pitch, same recogniser.
                 let native = KokoroAneManager(variant: .english, defaultVoice: voice, version: .legacy)
                 try await native.initialize()
                 var heardNative: [String] = []
@@ -154,9 +153,13 @@ enum SelfTest {
                     let r = try await native.synthesizeDetailed(text: text, voice: voice, speed: rate)
                     heardNative.append((try? await asr.transcribe(r.samples).text) ?? "")
                 }
-                print("reference: Kokoro speaking natively at \(rate)x, same recogniser: WER \(pct(wer(reference: reference, hypothesis: heardNative.joined(separator: " "))))")
-            }
-            print("R3: \(ok ? "PASS" : "FAIL") (WER <= 8 %, clock within 20 ms)")
+                let werNative = wer(reference: reference, hypothesis: heardNative.joined(separator: " "))
+                print("reference: Kokoro speaking natively at \(rate)x, same recogniser: WER \(pct(werNative))")
+                werOK = werR < werNative
+                rule = "WER \(pct(werR)) < native \(pct(werNative))"
+            }   // ponytail: a system voice above 2x has no native reference, so it keeps the 8 % bar
+            let ok = clockOK && werOK
+            print("R3: \(ok ? "PASS" : "FAIL") (clock within 20 ms at 0.5-3x; \(rule))")
             pass = pass && ok
         }
         print("wrote \(outDir.path)/tts.wav, tts-words.tsv")
@@ -226,11 +229,17 @@ enum SelfTest {
             case 8: session.setRate(2)
             case 12: session.seek(token: 1000)
             case 14: checks["seek lands on token 1000"] = (1000 ..< 1100).contains(session.currentToken ?? -1)
-            case 15: session.pause(); held = session.currentToken ?? -1
+            case 15:
+                session.pause(); held = session.currentToken ?? -1
+                // Sol #8: the output device changes while paused (the engine's own notification; the player drops its queue).
+                NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: session.player.engine)
             case 16:
                 checks["pause holds the word"] = session.state == .paused && session.currentToken == held
                 session.resume()
-            case 17: sentence = session.currentSentence ?? -1; session.skip(sentences: 1)
+            case 17:
+                checks["device change while paused: resume restarts at the held word"] = session.state == .playing
+                    && (held ..< held + 60).contains(session.currentToken ?? -1) && session.player.queuedUntil > session.player.currentTime
+                sentence = session.currentSentence ?? -1; session.skip(sentences: 1)
             case 18:
                 checks["skip moves to the next sentence"] = session.currentSentence == sentence + 1
                 if let system = await engines.system.voices().first { session.setVoice(system) }
@@ -239,11 +248,28 @@ enum SelfTest {
             }
             log.append("\(second)s:\(session.currentToken.map(String.init) ?? "-")")
         }
+        // Sol #5: any Int is a valid skip (the CLI and socket pass it through); clamped, never overflowing. The session is
+        // past sentence 0 here, so Int.max would have trapped.
+        session.skip(sentences: .max)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        checks["skip(Int.max) goes to the last sentence"] = session.currentSentence == session.tokens.last?.sentence || session.state == .finished
+        session.skip(sentences: .min)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        checks["skip(Int.min) goes to the first sentence"] = session.state == .playing && session.currentSentence == 0
         session.stop()
+        // Sol #7: an output that will not start fails the read (AppModel releases ownership) instead of leaving it
+        // "playing" with a frozen clock; no first-audio time is reported.
+        let broken = ReadSession(text: fixture, capture: nil, voice: v, rate: 1, startToken: 0, engines: engines, lexicon: [:])
+        broken.player.volume = 0
+        broken.player.failNextStart = true
+        broken.start()
+        for _ in 0 ..< 50 where broken.state == .preparing { try await Task.sleep(nanoseconds: 100_000_000) }
+        checks["output that will not start fails the read"] = { if case .failed = broken.state { return broken.firstAudioMs == nil } else { return false } }()
+        broken.stop()
         let first = session.firstAudioMs ?? .max
         let pass = session.player.starvations == 0 && first < 1000 && checks.values.allSatisfy { $0 }
         print("long text: \(text.utf16.count) characters, \(session.tokens.count) tokens")
-        print("token each second (2x from 8 s, seek to 1000 at 12 s, pause 15-16 s, skip at 17 s, system voice from 18 s): \(log.joined(separator: " "))")
+        print("token each second (2x from 8 s, seek to 1000 at 12 s, pause 15-16 s with a device change, skip at 17 s, system voice from 18 s): \(log.joined(separator: " "))")
         print("session checks: \(checks.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value ? "ok" : "FAILED")" }.joined(separator: "; "))")
         print("first audio \(first) ms; starvations \(session.player.starvations)")
         print("R10: \(pass ? "PASS" : "FAIL") (first audio < 1000 ms, starvations 0, session checks)")
@@ -263,7 +289,16 @@ enum SelfTest {
         check(NeuralEngine.words(in: "It’s a.m., forty-two—“quoted” dogs' - ok") == ["It's", "a", "m", "forty-two", "quoted", "dogs", "ok"],
               "words \(NeuralEngine.words(in: "It’s a.m., forty-two—“quoted” dogs' - ok"))")
         let p = NeuralEngine.pair(["one", "forty-two", "x", "two"], [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)], counts: [1, 2, 0, 2], offset: 0, duration: 5)
-        check(p.map(\.text) == ["one", "forty-two", "two"] && p[1].start == 1 && p[1].end == 3 && p[2].start == 3 && p[2].end == 5, "pair by counts \(p)")
+        check(p.map(\.text) == ["one", "forty", "two", "two"] && p[1].start == 1 && p[1].end == 2 && p[2].start == 2 && p[2].end == 3
+              && p[3].start == 3 && p[3].end == 5, "pair by counts \(p)")
+        // Sol #9: a compound spoken as one group is split by length, so every source token of it gets its own time.
+        let c = NeuralEngine.pair(["A", "well-known", "state-of-the-art", "fact"], [(0, 0.2), (0.3, 1.2), (1.3, 2.6), (2.7, 3)], counts: nil, offset: 0, duration: 3)
+        check(c.map(\.text) == ["A", "well", "known", "state", "of", "the", "art", "fact"] && abs(c[1].end - 0.7) < 1e-9 && c[2].start == c[1].end
+              && c[2].end == 1.2 && abs(c[3].end - 1.8) < 1e-9 && c[6].end == 2.6, "compound split \(c)")
+        let s = "A well-known, state-of-the-art fact."
+        let timed = Timeline.timings(chunkTokens: TextKit.tokenize(s), chunkTokenOffset: 0, speakable: Speakable.make(s, range: 0 ..< s.utf16.count, lexicon: [:]),
+                                     spoken: c, offset: 0, chunkDuration: 3)
+        check(timed.count == 8 && zip(timed, c).allSatisfy { abs($0.start - $1.start) < 1e-9 && abs($0.end - $1.end) < 1e-9 }, "compound timings \(timed)")
         let q = NeuralEngine.pair(["a", "b"], [(0, 1), (1, 2), (2, 3), (3, 4)], counts: nil, offset: -0.5, duration: 4)
         check(q.map(\.text) == ["a", "b"] && q[0].start == 0 && q[1].end == 3.5, "pair proportional \(q)")
         return ok

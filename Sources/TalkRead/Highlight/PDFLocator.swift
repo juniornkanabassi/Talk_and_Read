@@ -10,9 +10,10 @@ final class PDFLocator {
     typealias Anchor = (page: Int, offset: Int?)
     private let window: AXUIElement
     private var tokenBounds: [Int: (page: Int, bounds: CGRect)] = [:]
-    private var pageBoxes: [Int: CGRect] = [:]
+    /// Per PDF page: page space -> the page as displayed (crop box and /Rotate applied, y up), and that displayed size.
+    private var pageBoxes: [Int: (transform: CGAffineTransform, size: CGSize)] = [:]
     private var pageElements: [Int: AXUIElement] = [:]
-    private var base = 0
+    private let base: Int
 
     /// nil when the window's AXDocument is not a file PDFKit can open. The extension is not checked: exported PDFs can be
     /// named "Contract.docx - 24_09_2026, 12_08" (Junior's contract, 24 September).
@@ -22,9 +23,31 @@ final class PDFLocator {
               url.pathExtension.lowercased() == "pdf" || Self.hasPDFHeader(url),
               let document = PDFDocument(url: url) else { return nil }
         self.window = window
-        pageElements = buildPageElements()
-        base = pageElements.keys.min() == 1 ? 1 : 0
+        let elements = Self.pageElements(in: window)
+        guard let base = Self.base(descriptions: elements.mapValues(Self.pageDescription), pageCount: document.pageCount)
+        else { return nil }   // which PDF page an AXPage is cannot be told: hide (Sol #12)
+        self.base = base
+        pageElements = elements
         buildTokenBounds(tokens: tokens, document: document, anchor: anchor)
+    }
+
+    /// AXPageIndex's base (pdf index = AXPageIndex - base), from the viewer's own metadata, never guessed (Sol #12):
+    /// PDFKit's AXPageIndexDescription ("Page 2", the ordinal whatever the page labels) on any exposed page; else a
+    /// viewer exposing every page shows its numbering by the index set (0..<n or 1...n). nil when neither tells.
+    static func base(descriptions: [Int: String?], pageCount: Int) -> Int? {
+        let bases = Set(descriptions.compactMap { index, text -> Int? in
+            let numbers = (text ?? "").split { !$0.isNumber }.compactMap { Int($0) }
+            return numbers.count == 1 ? index + 1 - numbers[0] : nil
+        })
+        if !bases.isEmpty { return bases.count == 1 && [0, 1].contains(bases.first!) ? bases.first : nil }
+        guard pageCount > 0 else { return nil }
+        let keys = Set(descriptions.keys)
+        return keys == Set(0..<pageCount) ? 0 : keys == Set(1...pageCount) ? 1 : nil
+    }
+
+    private static func pageDescription(_ element: AXUIElement) -> String? {
+        let value = axAttribute(element, "AXPageIndexDescription")
+        return (value as? NSAttributedString)?.string ?? value as? String
     }
 
     /// The selection's page (`AXPageIndex` of the AXPage holding the element) and its offset in that page's text when the
@@ -48,14 +71,15 @@ final class PDFLocator {
     /// Cocoa screen rect for token `index`, or nil. Re-reads the AXPage frame on every call (scroll and zoom change it);
     /// the PDFKit word bounds were cached at init.
     func rect(forTokenIndex index: Int) -> CGRect? {
-        guard let entry = tokenBounds[index], let cropBox = pageBoxes[entry.page], cropBox.width > 0,
-              let pageAX = pageElement(forPDFIndex: entry.page), let frame = axFrame(pageAX) else { return nil }
-        let scale = frame.width / cropBox.width
-        let b = entry.bounds
-        let cocoaRect = Locator.convert(topLeftScreenRect: CGRect(x: frame.minX + (b.minX - cropBox.minX) * scale,
-                                                                  y: frame.minY + (cropBox.maxY - b.maxY) * scale,
+        guard let entry = tokenBounds[index], let box = pageBoxes[entry.page], box.size.width > 0, box.size.height > 0,
+              let pageAX = pageElement(forPDFIndex: entry.page), let frame = axFrame(pageAX), frame.width > 0,
+              // The AXPage frame is the page as displayed; a viewer that drew it otherwise (aspect off) would be guessed.
+              abs(frame.height / frame.width - box.size.height / box.size.width) < 0.02 else { return nil }
+        let scale = frame.width / box.size.width
+        let b = entry.bounds.applying(box.transform)   // rotated pages too (Sol #13)
+        let cocoaRect = Locator.convert(topLeftScreenRect: CGRect(x: frame.minX + b.minX * scale,
+                                                                  y: frame.minY + (box.size.height - b.maxY) * scale,
                                                                   width: b.width * scale, height: b.height * scale))
-        // ponytail: page rotation not handled (no rotated PDF seen yet); read the page's rotation if one shows up.
         let center = CGPoint(x: cocoaRect.midX, y: cocoaRect.midY)
         guard NSScreen.screens.contains(where: { $0.frame.contains(center) }) else { return nil }
         if let clip = scrollAreaClip(from: pageAX), !clip.contains(center) { return nil }
@@ -98,7 +122,7 @@ final class PDFLocator {
         let maps = candidates.map { NodeAlignment.alignStream(streamWords, selectionWords, startingAt: $0) }
         var chosen: Int?
         if let anchor {
-            // AXPageIndex counts from 0 in PDFKit's own view; a viewer counting from 1 shows no page 0.
+            // The anchor is an AXPageIndex too; `base` (from the viewer's metadata) turns it into the PDF page.
             let page = anchor.page - base
             let onPage = candidates.indices.filter { streamPages[candidates[$0]] == page }
             if let offset = anchor.offset {
@@ -114,7 +138,10 @@ final class PDFLocator {
         for (i, q) in maps[chosen] {
             let pageIndex = streamPages[q]
             guard let page = document.page(at: pageIndex) else { continue }
-            if pageBoxes[pageIndex] == nil { pageBoxes[pageIndex] = page.bounds(for: .cropBox) }
+            if pageBoxes[pageIndex] == nil {
+                let transform = page.transform(for: .cropBox)
+                pageBoxes[pageIndex] = (transform, page.bounds(for: .cropBox).applying(transform).size)
+            }
             guard let bounds = page.selection(for: streamRanges[q])?.bounds(for: page) else { continue }
             tokenBounds[i] = (page: pageIndex, bounds: bounds)
         }
@@ -124,12 +151,12 @@ final class PDFLocator {
 
     private func pageElement(forPDFIndex index: Int) -> AXUIElement? {
         if let e = pageElements[index + base] { return e }
-        pageElements = buildPageElements()   // the viewer replaced or added page elements (scroll, zoom)
+        pageElements = Self.pageElements(in: window)   // the viewer replaced or added page elements (scroll, zoom)
         return pageElements[index + base]
     }
 
     /// Depth-first walk of the window (document order) collecting AXPage elements by AXPageIndex.
-    private func buildPageElements() -> [Int: AXUIElement] {
+    private static func pageElements(in window: AXUIElement) -> [Int: AXUIElement] {
         var map: [Int: AXUIElement] = [:]
         var stack: [AXUIElement] = [window]
         var visited = 0

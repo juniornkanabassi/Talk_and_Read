@@ -36,7 +36,10 @@ enum ScreenshotCapture {
     /// Text in reading order: lines top to bottom, left to right within a line, joined with spaces; a gap taller than a
     /// line starts a new paragraph.
     static func recognize(_ image: CGImage) async -> String? {
-        guard let observations = try? await OCRLocator.textRequest().perform(on: image) else { return nil }
+        var observations = (try? await OCRLocator.textRequest().perform(on: image)) ?? []
+        // ponytail: one retry: a process's first Vision request read nothing once in six self-test runs (21 Oct; not
+        // reproduced in 18 cold starts). Costs a second pass only when a region has no text.
+        if observations.isEmpty { observations = (try? await OCRLocator.textRequest().perform(on: image)) ?? [] }
         let pieces = observations.compactMap { o in o.topCandidates(1).first.map { (text: $0.string, box: o.boundingBox.cgRect) } }
             .sorted { $0.box.maxY > $1.box.maxY }
         var lines: [[(text: String, box: CGRect)]] = []
