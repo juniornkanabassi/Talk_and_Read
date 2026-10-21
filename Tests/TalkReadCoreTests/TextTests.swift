@@ -29,6 +29,22 @@ final class TextTests: XCTestCase {
         XCTAssertEqual(sentences("It cost 3. Then 4"), [0, 0, 0, 1, 1])
     }
 
+    func testNumbersAbbreviationsAndInitialsDoNotEndSentences() {
+        func sentences(_ s: String) -> [Int] { TextKit.tokenize(s).map(\.sentence) }
+        XCTAssertEqual(sentences("It cost £3.5 million. Then"), [0, 0, 0, 0, 0, 1])   // "3" and "5" share sentence 0
+        XCTAssertEqual(sentences("We met at 9 a.m. on Monday."), [0, 0, 0, 0, 0, 0, 0, 0])
+        XCTAssertEqual(sentences("Mr. Patel replied. Good."), [0, 0, 0, 1])
+        XCTAssertEqual(sentences("Use e.g. this one."), [0, 0, 0, 0, 0])
+        XCTAssertEqual(sentences("It ended 2.1. Next"), [0, 0, 0, 0, 1])
+        XCTAssertEqual(sentences("Version 1,000 people"), [0, 0, 0, 0])
+        XCTAssertEqual(sentences("6:45 train"), [0, 0, 0])
+        XCTAssertEqual(sentences("On 21.10.2026 it rained."), [0, 0, 0, 0, 0, 0])
+        XCTAssertEqual(sentences("the U.S.A is big"), [0, 0, 0, 0, 0, 0])   // dotted initials never break
+        XCTAssertEqual(sentences("See No. 5, i.e. this. Then"), [0, 0, 0, 0, 0, 0, 1])
+        XCTAssertEqual(sentences("It ended. 5 won"), [0, 0, 1, 1])   // a plain full stop still ends the sentence
+        XCTAssertEqual(sentences("I said no.\nThen"), [0, 0, 0, 1])
+    }
+
     // MARK: chunks
 
     private func text(of chunk: Chunk, in s: String) -> String { (s as NSString).substring(with: NSRange(location: chunk.range.lowerBound, length: chunk.range.count)) }

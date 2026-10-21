@@ -22,6 +22,10 @@ public enum TextKit {
     // A gap holding one of these starts a new sentence. A line starting "- ", "* " or "12." is always preceded by a
     // newline (or the text start), so the newline already covers list items; "•" is the one marker that can sit mid-line.
     private static let sentenceEnders: Set<Character> = [".", "!", "?", "\n", "•"]
+    // ponytail: small fixed English list; a title never ends a sentence, the others only before a lowercase word or digit.
+    private static let titles: Set<String> = ["mr", "mrs", "ms", "dr", "prof", "st"]
+    private static let abbreviations: Set<String> = ["vs", "etc", "no", "approx", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec"]
+    private static let dottedAbbreviations: Set<String> = ["eg", "ie", "am", "pm"]   // e.g. i.e. a.m. p.m., as their two letter tokens
     private static let clauseMarks: Set<Character> = [",", ";", ":", "—", "–"]
 
     /// Words with sentence numbers. Whitespace and lone punctuation are not tokens.
@@ -33,6 +37,7 @@ public enum TextKit {
         var sentence = 0
         var prevEnd: Int?
         var prevStartsLine = false
+        var initials = ""   // the previous two tokens when they are dotted single letters ("e.g.", "a.m."), else ""
         for match in matches {
             let location = match.range.location
             if let prevEnd, location > prevEnd {
@@ -41,14 +46,29 @@ public enum TextKit {
                 if prevStartsLine, gap.hasPrefix("."), let last = tokens.last, last.text.allSatisfy({ $0.isASCII && $0.isNumber }) {
                     gap.removeFirst()
                 }
-                if gap.contains(where: sentenceEnders.contains) { sentence += 1 }
+                if gap.contains(where: sentenceEnders.contains), !(tokens.last.map { joins(gap, $0.text, initials, ns.substring(with: match.range)) } ?? false) { sentence += 1 }
             }
             let range = location ..< (location + match.range.length)
-            tokens.append(Token(text: ns.substring(with: match.range), range: range, sentence: sentence))
+            let word = ns.substring(with: match.range)
+            initials = prevEnd == location - 1 && ns.character(at: location - 1) == 0x2E && tokens.last?.text.count == 1 && word.count == 1
+                ? (tokens.last!.text + word).lowercased() : ""
+            tokens.append(Token(text: word, range: range, sentence: sentence))
             prevEnd = range.upperBound
             prevStartsLine = startsLine(ns, at: location)
         }
         return tokens
+    }
+
+    /// True when a gap that contains a sentence mark is not a sentence end: "3.5", "U.S.", "Mr. Patel", "9 a.m. on".
+    private static func joins(_ gap: String, _ prev: String, _ initials: String, _ next: String) -> Bool {
+        guard gap.first == "." else { return false }
+        if gap.count == 1 {   // no space: decimals, dates and dotted initials
+            return prev.allSatisfy(\.isNumber) && next.allSatisfy(\.isNumber) || prev.count == 1 && prev.first!.isLetter && next.first!.isLetter
+        }
+        guard gap.dropFirst().allSatisfy({ $0 == " " || $0 == "\t" }) else { return false }
+        let word = prev.lowercased()
+        if titles.contains(word) { return true }
+        return (next.first!.isLowercase || next.first!.isNumber) && (abbreviations.contains(word) || dottedAbbreviations.contains(initials))
     }
 
     private static func startsLine(_ ns: NSString, at location: Int) -> Bool {
