@@ -24,7 +24,8 @@ enum Inserter {
             if field.secure { return .refusedSecure }
             let typed = needsLeadingSpace(after: field.previous, text: text) ? " " + text : text
             guard !Task.isCancelled, isCurrent() else { return .failed("Cancelled") }
-            gate.write(typed)
+            // Refused while quitting: the pasteboard still holds the user's own clipboard, so no ⌘V may go out.
+            guard gate.write(typed) != nil else { return .failed("Talk and Read is quitting") }
             guard postPaste(to: targetPID) else { return .failed("Could not send the paste keystroke") }
             // Let the app read the pasteboard before it is restored. Not `Task.sleep`: cancellation would end it at once.
             await withCheckedContinuation { done in DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { done.resume() } }

@@ -111,7 +111,7 @@ final class Hotkeys {
 
     fileprivate func received(_ type: CGEventType, _ event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { checkHealth(); return }
-        guard event.getIntegerValueField(.eventSourceUserData) != PasteboardGate.eventTag,   // our own ⌘V / ⌘C
+        guard event.getIntegerValueField(.eventSourceUserData) != PasteboardGate.eventTag,   // our own ⌘V (the only key event we post)
               event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return }
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags.rawValue

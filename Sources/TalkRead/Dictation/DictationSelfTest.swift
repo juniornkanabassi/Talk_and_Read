@@ -343,6 +343,18 @@ import WebKit
             let pasted = await real.result()
             expect("#2 cancelled while waiting for the pasteboard: not pasted",
                    pasted == nil && results.count == 1 && results.first != .inserted && pb.changeCount == before)
+
+            // Quitting (FIX2-B #20): the closed gate refuses the write, so the insert fails at once and the pasteboard
+            // keeps its sentinel (a ⌘V here would paste the user's own clipboard; the --insert panel checks none lands).
+            let closed = PasteboardGate(pasteboard: pb)
+            await closed.shutdown(grace: 0)
+            Inserter.gate = closed
+            pb.clearContents()
+            pb.setString("talkread-quit-sentinel", forType: .string)
+            let kept = pb.changeCount
+            let quitting = await Inserter.insert("said while quitting", targetPID: getpid())
+            expect("quit: insert refused, pasteboard untouched",
+                   quitting == .failed("Talk and Read is quitting") && pb.changeCount == kept && pb.string(forType: .string) == "talkread-quit-sentinel")
             Inserter.gate = saved
             pb.releaseGlobally()
         } else {
@@ -396,12 +408,12 @@ import WebKit
         // #23: the human takes over a file while it is still decoding: the microphone waits for the decode, and the
         // decoded file never enters the recogniser.
         let entered = asr.entered
-        let b = Task { try await c.transcribe(file: file, caller: "B") }
+        _ = Task { try await c.transcribe(file: file, caller: "B") }
         await settle(100)                                           // B is decoding
         c.handle(.startRecording)
         await settle(50)
         expect("#23 mic waits for the cancelled decode", c.owner == user && c.isBusy && !audio.running)
-        _ = await b.result
+        // Not `await b.result`: a cancelled file that queued behind the human's run would deadlock with the drain.
         await waitUntil { audio.running }
         await settle(50)
         expect("#23 the cancelled file never entered the recogniser", asr.entered == entered + 1 && audio.running)   // + the human's
@@ -675,6 +687,21 @@ import WebKit
             let (r3, restored3) = await attempt("my secret words")
             print("insert: NSSecureTextField \(r3) -> \(secure.stringValue.isEmpty ? "empty" : "NOT EMPTY"), pasteboard restored \(restored3)")
             if r3 != .refusedSecure || !secure.stringValue.isEmpty || !restored3 { failures.append("secure field") }
+
+            // Quitting (FIX2-B #20): with the gate closed the write is refused and no ⌘V goes out, so the panel's
+            // Paste never runs (it would have pasted the sentinel, i.e. the user's own clipboard).
+            panel.makeFirstResponder(field)
+            forwarder.target = panel.firstResponder
+            let closed = PasteboardGate(pasteboard: pasteboard)
+            await closed.shutdown(grace: 0)
+            Inserter.gate = closed
+            let pastes = forwarder.pastes, before4 = field.stringValue
+            let (r4, restored4) = await attempt("said while quitting")
+            try? await Task.sleep(for: .milliseconds(500))           // time for a stray ⌘V to arrive
+            print("insert: gate closed for quit \(r4) -> pastes \(forwarder.pastes - pastes), field unchanged \(field.stringValue == before4), pasteboard kept \(restored4)")
+            if r4 != .failed("Talk and Read is quitting") || forwarder.pastes != pastes || field.stringValue != before4 || !restored4 {
+                failures.append("closed gate")
+            }
         }
         panel.close()
         pump.cancel()
@@ -693,9 +720,11 @@ import WebKit
     @MainActor private final class PasteForwarder: NSObject {
         let pasteboard: NSPasteboard
         weak var target: NSResponder?
+        private(set) var pastes = 0
         init(pasteboard: NSPasteboard) { self.pasteboard = pasteboard }
 
         @objc func paste(_ sender: Any?) {
+            pastes += 1
             if let editor = target as? NSTextView {
                 _ = editor.readSelection(from: pasteboard)
             } else if let web = target as? WKWebView, let text = pasteboard.string(forType: .string) {
