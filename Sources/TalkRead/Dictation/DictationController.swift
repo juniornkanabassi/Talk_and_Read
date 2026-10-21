@@ -207,9 +207,19 @@ enum DictationError: LocalizedError, Equatable {
         state = .recording(level: level ?? l, partial: partial ?? p)
     }
 
+    /// Removes one history entry and rewrites the history file.
+    func delete(_ id: UUID) {
+        history.removeAll { $0.id == id }
+        saveHistory()
+    }
+
     private func remember(_ text: String, app: String?) {
         history.insert(DictationEntry(id: UUID(), date: Date(), text: text, app: app), at: 0)
         history = Array(history.prefix(Settings.load().historyLimit))
+        saveHistory()
+    }
+
+    private func saveHistory() {
         try? FileManager.default.createDirectory(at: Paths.history.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? JSONEncoder().encode(history).write(to: Paths.history, options: .atomic)
     }

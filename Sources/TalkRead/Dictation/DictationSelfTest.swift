@@ -138,6 +138,11 @@ import WebKit
             expect("first file completes", (try? await a.value) != nil)
         }
         expect("history newest first", c.history.first?.text == human)
+        if let id = c.history.first?.id {
+            c.delete(id)
+            let onDisk = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
+            expect("delete", !c.history.contains { $0.id == id } && onDisk.map(\.id) == c.history.map(\.id))
+        }
         print("ownership: \(failures.isEmpty ? "ok" : "FAIL \(failures)") (typed \(typed))")
         return failures.isEmpty
     }
@@ -279,7 +284,13 @@ import WebKit
         let size = NSSize(width: 420, height: 230)
         let panel = NSPanel(contentRect: NSRect(origin: NSPoint(x: (screen.frame.width - size.width) / 2, y: (screen.frame.height - size.height) / 2), size: size),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false, screen: screen)
-        guard panel.screen == screen else { print("insert: NOT RUN (panel would not be on the Prompter XL)"); return true }
+        // AppKit may move a new window to the main screen at init: place it explicitly, check, and only then show it.
+        panel.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.midY - size.height / 2,
+                              width: size.width, height: size.height), display: false)
+        guard panel.screen?.localizedName.contains("Prompter") == true else {
+            print("insert: NOT RUN (panel would land on \(panel.screen?.localizedName ?? "no screen"), not the Prompter XL)")
+            return true
+        }
         panel.backgroundColor = .windowBackgroundColor
         panel.isReleasedWhenClosed = false
         let field = NSTextField(frame: NSRect(x: 20, y: 186, width: 380, height: 24))
