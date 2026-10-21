@@ -20,7 +20,10 @@ import Vision
     private var lastCapture: TimeInterval = 0
     private var inFlight = false
     private var stale = true
-    private var scrollGeneration = 0
+    /// Bumped whenever the boxes stop matching the window (scroll, resize): a recognition started under an older
+    /// generation, for another window or at another size is discarded when it finishes (Sol #11).
+    private var generation = 0
+    private var discarded = 0
     private var missingSince: TimeInterval?
     private var lastAsked = 0
     /// What the last recognition found, for logs and the self-test.
@@ -53,7 +56,7 @@ import Vision
             isPending = false   // no window to capture: nothing to wait for, so the AX paths keep their retries
             return nil
         }
-        if let size = windowSize, size != frame.size { (map, windowSize, stale) = ([:], nil, true) }   // re-laid out
+        if let size = windowSize, size != frame.size { (generation, map, windowSize, stale) = (generation + 1, [:], nil, true) }   // re-laid out
         refreshIfNeeded()
         guard let w = map[index] else {
             let now = Date().timeIntervalSince1970
@@ -72,11 +75,11 @@ import Vision
 
     /// A scroll moved the text: hide now, capture again once scrolling has paused for 150 ms.
     func invalidate() {
-        scrollGeneration += 1
-        let generation = scrollGeneration
+        generation += 1
+        let current = generation
         map = [:]
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self, self.scrollGeneration == generation else { return }
+            guard let self, self.generation == current else { return }
             self.stale = true
             self.refreshIfNeeded()
         }
@@ -85,31 +88,40 @@ import Vision
     /// At most two captures a second, one at a time.
     private func refreshIfNeeded() {
         let now = Date().timeIntervalSince1970
-        guard stale, !inFlight, now - lastCapture >= 0.5, let id = windowID ?? findWindowID() else { return }
-        windowID = id
+        guard stale, !inFlight, now - lastCapture >= 0.5, let size = currentWindowFrame()?.size, let id = windowID else { return }
         inFlight = true
         lastCapture = now
         stale = false
         let from = isPending ? 0 : lastAsked
+        let requested = generation
         Task { @MainActor in
-            defer { inFlight = false; isPending = false }
+            defer { inFlight = false }
             let image: CGImage, found: [Word]
             do {
                 image = try await Self.captureWindow(id)
                 found = try await Self.recognizeWords(image)
             } catch {
                 summary = "capture or recognition failed: \(error.localizedDescription)"
+                isPending = false
                 return
             }
+            // A scroll, resize or another window while this ran: its boxes describe a layout no longer on screen.
+            guard generation == requested, currentWindowFrame()?.size == size, windowID == id else {
+                discarded += 1
+                if generation == requested { stale = true }   // after a scroll, its own 150 ms debounce asks again
+                summary = "discarded \(discarded) stale recognition(s), recapturing"
+                return
+            }
+            isPending = false
             words = found
-            windowSize = currentWindowFrame()?.size
+            windowSize = size
             let highlighted = Set(found.indices.filter { found[$0].highlighted })
             // From the selection's start, anchored on the highlight; mid-read (after a scroll took the opening words away)
             // from the word being asked for, which hides rather than picks between equal copies.
             let stream = found.map { $0.text.lowercased() }
             map = NodeAlignment.best(stream, selectionWords, from: 0, prefer: highlighted.isEmpty ? nil : highlighted)
             if from > 0, map[from] == nil { map = NodeAlignment.best(stream, selectionWords, from: from) }
-            summary = "\(image.width)x\(image.height) px, \(found.count) words, \(highlighted.count) in the selection colour, placed \(map.count)"
+            summary = "\(image.width)x\(image.height) px, \(found.count) words, \(highlighted.count) in the selection colour, placed \(map.count); discarded \(discarded) stale"
         }
     }
 

@@ -3,6 +3,7 @@
 import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
+import TalkReadCore
 
 struct Capture {
     enum Source { case accessibility, copied, cursor, clipboard, ocr, provided }
@@ -46,8 +47,15 @@ enum TextCapture {
             ?? (axAttribute(appElement, kAXWindowsAttribute) as? [AXUIElement])?.first
         if let c = selection(appElement: appElement, pid: pid, focused: focused, focusedWindow: focusedWindow, window: window) { return c }
         let secure = focused.map(isSecure) ?? false   // never copy from, or read the value of, a password field
-        if !secure, let text = await copySelection(appElement: appElement, pid: pid) {
-            return Capture(text: text, pid: pid, element: focused, window: window, selectionStart: nil, source: .copied)
+        if !secure {
+            switch await copySelection(appElement: appElement, pid: pid) {
+            case .text(let text):
+                return Capture(text: text, pid: pid, element: focused, window: window, selectionStart: nil, source: .copied)
+            case .clipboardChanged:
+                Log.write("capture aborted: the clipboard changed while copying the selection")
+                return nil   // someone else copied meanwhile: neither their text nor ours is safe to read
+            case .nothing: break
+            }
         }
         if !secure, let focused, let c = caretToEnd(focused, pid: pid, window: window) { return c }
         if let text = await gate.transaction({ clipboardText() }) {
@@ -98,22 +106,32 @@ enum TextCapture {
 
     // MARK: - 2. Copy
 
+    enum Copied: Equatable { case text(String), nothing, clipboardChanged }
+
     /// Inside the gate: press the app's ⌘C menu item through AX (no menu item → post ⌘C to the app), wait ≤ 300 ms for
-    /// the pasteboard to change, read the string; the gate then restores the user's clipboard.
-    @MainActor private static func copySelection(appElement: AXUIElement, pid: pid_t) async -> String? {
+    /// the pasteboard to change, read the string; the gate then restores the user's clipboard. A second change after
+    /// the app's (Junior copying meanwhile) is `.clipboardChanged`: nothing is read and that newer copy is kept.
+    @MainActor private static func copySelection(appElement: AXUIElement, pid: pid_t) async -> Copied {
         let gate = gate
         return await gate.transaction {
             let before = gate.pasteboard.changeCount
             switch copyMenuItem(appElement) {
             case .some(let item?): AXUIElementPerformAction(item, kAXPressAction as CFString)
-            case .some(nil): return nil   // the app has Copy but disables it: nothing is selected
+            case .some(nil): return .nothing   // the app has Copy but disables it: nothing is selected
             case nil: postCommandC(to: pid)
             }
-            guard await gate.waitForChange(from: before, timeout: 0.3),
-                  let text = gate.pasteboard.string(forType: .string),
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return text
+            return await readCopy(gate: gate, before: before)
         }
+    }
+
+    /// After the copy was requested: the app's text, nothing (no change in 300 ms, or an empty copy) or a clipboard
+    /// that changed again after the app's change.
+    @MainActor static func readCopy(gate: PasteboardGate, before: Int) async -> Copied {
+        guard await gate.waitForChange(from: before, timeout: 0.3) else {
+            return gate.pasteboard.changeCount == before ? .nothing : .clipboardChanged
+        }
+        guard let text = gate.ownString() else { return .clipboardChanged }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .nothing : .text(text)
     }
 
     /// nil: the menu bar has no ⌘C item. .some(nil): it has one but it is disabled. Two levels only: bar item → menu → item.
