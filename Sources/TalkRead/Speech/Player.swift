@@ -27,14 +27,18 @@ import TalkReadCore
     /// Set by the reader while chunks are still being synthesised, so a dry node counts as a starvation, not idle.
     var moreComing = false
     var onIdle: (() -> Void)?
-    /// Output device changed (headphones unplugged, sample rate change): playback was reset; restart from the clock.
+    /// Output device changed (headphones unplugged, sample rate change), playing or paused: everything queued was
+    /// dropped; restart from the clock.
     var onInterrupted: (() -> Void)?
+    /// Self-test only: the next `play()` fails as an output device that will not start does.
+    var failNextStart = false
     var volume: Float {
         get { engine.mainMixerNode.outputVolume }
         set { engine.mainMixerNode.outputVolume = newValue }
     }
 
-    private let engine = AVAudioEngine()
+    /// Internal so the self-test can post its configuration-change notification.
+    let engine = AVAudioEngine()
     private let node = AVAudioPlayerNode()
     private let timePitch = AVAudioUnitTimePitch()
     private let format = AVAudioFormat(standardFormatWithSampleRate: Player.sampleRate, channels: 1)!
@@ -137,13 +141,16 @@ import TalkReadCore
         }
     }
 
+    /// Starts (or resumes) output; `isPlaying` stays false when the engine will not start, which the reader treats as
+    /// a failed read.
     func play() {
         engineStop?.cancel()
-        if !engine.isRunning {
-            do { try engine.start() } catch {
-                Log.write("player: audio engine did not start: \(error.localizedDescription)")
-                return
-            }
+        do {
+            if failNextStart { failNextStart = false; throw SpeechError.render("simulated output failure") }
+            if !engine.isRunning { try engine.start() }
+        } catch {
+            Log.write("player: audio engine did not start: \(error.localizedDescription)")
+            return
         }
         node.play()
         isPlaying = true
@@ -163,11 +170,12 @@ import TalkReadCore
         DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: stop)
     }
 
+    /// The engine stopped itself and dropped the graph's state. Always reported, because a paused or starved reader
+    /// still holds a stale queue and timeline; the reader decides by its own state.
     private func configurationChanged() {
-        let wasActive = isPlaying || pending > 0
         reset()
         connect()
-        if wasActive { onInterrupted?() }
+        onInterrupted?()
     }
 
     /// Manual-rendering mode only: pulls `seconds` of output (at the output's rate) through the real graph.
