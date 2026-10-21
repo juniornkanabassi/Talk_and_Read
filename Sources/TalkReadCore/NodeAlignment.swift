@@ -29,7 +29,8 @@ public enum NodeAlignment {
     /// at `start`, not the selection's first three: on a long read Chromium and CodeMirror expose only the text near
     /// the viewport, so by the time later words have nodes the opening words may have none.
     /// Every anchor position is a candidate (an inbox preview row can open with the same words as the message body);
-    /// from the selection's start the one covering the most words wins.
+    /// from the selection's start the one covering the most words wins; equally good complete matches are settled by
+    /// `prefer` (stream indices inside the capture element's subtree) or, failing that, hidden (returns [:]).
     public static func best(_ streamWords: [String], _ selectionWords: [String], from start: Int = 0, prefer: Set<Int>? = nil) -> [Int: Int] {
         guard start >= 0, start < selectionWords.count else { return [:] }
         let words = Array(selectionWords[start...])
@@ -37,14 +38,12 @@ public enum NodeAlignment {
         guard streamWords.count >= w else { return [:] }
         var best: [Int: Int] = [:]
         var candidates: [(map: [Int: Int], back: Int, run: Int)] = []
+        var complete: [[Int: Int]] = []   // from start 0: every candidate that places all the words
         for p in 0...(streamWords.count - w) where (0..<w).allSatisfy({ streamWords[p + $0] == words[$0] }) {
             let candidate = alignStream(streamWords, words, startingAt: p)
             if start == 0 {
                 if better(candidate, than: best) { best = candidate }
-                // Stop early only once best is both full and perfectly contiguous: a note's tab title repeats its
-                // opening words and can also reach a full count, but with a wide gap once it resyncs into the body,
-                // so a later, tighter alignment must still be allowed to replace it.
-                if best.count == words.count, span(best) == best.count - 1 { break }
+                if candidate.count == words.count { complete.append(candidate) }
                 continue
             }
             var back = 0 // selection words just spoken that also sit just before this anchor in the stream
@@ -53,6 +52,21 @@ public enum NodeAlignment {
             var run = 0 // unbroken matches from the anchor: a resync can jump into another copy and borrow its words
             while candidate[run] == p + run { run += 1 }
             candidates.append((candidate, back, run))
+        }
+        if start == 0 {
+            // The phrase can be on screen twice (a preview and the message, a quote). Several different complete matches
+            // that are equally good (same span) are ambiguous: use the single one inside `prefer` (the capture element's
+            // subtree, or the OCR words around the selection), otherwise hide rather than box the wrong copy. A tab title
+            // that resyncs across a wide gap is not as good (wider span), so it is not a tie.
+            if best.count == words.count {
+                var ties: [[Int: Int]] = []
+                for c in complete where !better(c, than: best) && !better(best, than: c) && !ties.contains(c) { ties.append(c) }
+                if ties.count > 1 {
+                    let inside = ties.filter { t in prefer.map { Set(t.values).isSubset(of: $0) } ?? false }
+                    guard inside.count == 1 else { return [:] }
+                    best = inside[0]
+                }
+            }
         }
         if start > 0 {
             // Mid-text a phrase can repeat (toolbar text, a heading, a preview, repeated instructions). An alignment is
