@@ -248,7 +248,8 @@ import WebKit
             return true
         }
         // Prohibited: the process can never be activated, so Junior's app keeps focus. The panel is never key.
-        guard NSApp.setActivationPolicy(.prohibited) || NSApp.activationPolicy() == .prohibited else {
+        let app = NSApplication.shared
+        guard app.setActivationPolicy(.prohibited) || app.activationPolicy() == .prohibited else {
             print("insert: NOT RUN (could not make the process non-activating)")
             return false
         }

@@ -7,9 +7,6 @@ import Carbon
 enum InsertResult: Equatable { case inserted, refusedSecure, failed(String) }
 
 enum Inserter {
-    /// `eventSourceUserData` on every event we post, so our own tap (and WP4's capture) can ignore them.
-    static let eventTag: Int64 = 0x5452_4452
-
     /// With `targetPID`, the paste chord goes to that process only (never the HID stream), so a test can never type
     /// into another app.
     @MainActor static func insert(_ text: String, targetPID: pid_t? = nil) async -> InsertResult {
@@ -20,7 +17,7 @@ enum Inserter {
             let field = focusedField(pid: targetPID)
             if field.secure { return .refusedSecure }
             let typed = needsLeadingSpace(after: field.previous, text: text) ? " " + text : text
-            _ = await PasteboardGate.shared.write(typed)
+            PasteboardGate.shared.write(typed)
             guard postPaste(to: targetPID) else { return .failed("Could not send the paste keystroke") }
             try? await Task.sleep(for: .milliseconds(500))   // let the app read the pasteboard before it is restored
             return .inserted
@@ -71,7 +68,7 @@ enum Inserter {
         for (key, down, flags) in steps {
             guard let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down) else { return false }
             event.flags = flags
-            event.setIntegerValueField(.eventSourceUserData, value: eventTag)
+            event.setIntegerValueField(.eventSourceUserData, value: PasteboardGate.eventTag)
             if let pid { event.postToPid(pid) } else { event.post(tap: .cghidEventTap) }
         }
         return true
