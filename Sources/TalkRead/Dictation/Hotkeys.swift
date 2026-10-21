@@ -10,6 +10,8 @@ final class Hotkeys {
     var onAction: ((HotkeyAction) -> Void)?
     /// The tap exists and is enabled (for the permissions UI). Main thread.
     private(set) var isRunning = false
+    /// No actions fire while true (the settings shortcut recorder is listening). Main thread.
+    var paused = false { didSet { state = HotkeyState() } }
 
     // Main thread only.
     private var settings: Settings
@@ -115,7 +117,7 @@ final class Hotkeys {
     // MARK: Main thread
 
     private func process(_ type: CGEventType, keyCode: UInt16, flags: UInt64, at time: Double) {
-        guard let event = Self.keyEvent(type, keyCode: keyCode, flags: flags, settings: settings) else { return }
+        guard !paused, let event = Self.keyEvent(type, keyCode: keyCode, flags: flags, settings: settings) else { return }
         emit(state.handle(event, at: time))
         if event == .holdKeyDown {
             DispatchQueue.main.asyncAfter(deadline: .now() + HotkeyState.holdDelay) { [weak self] in
@@ -126,6 +128,7 @@ final class Hotkeys {
     }
 
     private func emit(_ actions: [HotkeyAction]) {
+        guard !paused else { return }
         for action in actions { onAction?(action) }
     }
 
@@ -158,7 +161,9 @@ final class Hotkeys {
                 (settings.readShortcut, .read), (settings.pauseShortcut, .pause), (settings.screenshotShortcut, .screenshot),
                 (settings.dictationToggleShortcut, .toggleRecording), (settings.pasteLastShortcut, .pasteLast)]
             let mods = flags & (command | option | control | shift)
-            if let match = chords.first(where: { $0.0.keyCode == keyCode && $0.0.modifiers == mods }) { return .chord(match.1) }
+            // A shortcut turned off is stored as keyCode 0, modifiers 0, empty display: never match it (it would be "a").
+            if let match = chords.first(where: { !$0.0.display.isEmpty && $0.0.modifiers != 0
+                && $0.0.keyCode == keyCode && $0.0.modifiers == mods }) { return .chord(match.1) }
             return .otherKeyDown(keyCode: keyCode, modifiers: flags)
         default:
             return nil

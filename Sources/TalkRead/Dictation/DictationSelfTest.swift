@@ -31,6 +31,8 @@ import WebKit
         let s = Settings()
         var fn = Settings()
         fn.dictationHoldKey = .fn
+        var off = Settings()
+        off.readShortcut = Settings.Shortcut(keyCode: 0, modifiers: 0, display: "")   // turned off in Settings
         let ropt: UInt64 = Hotkeys.option | Hotkeys.rightOptionDeviceBit
         let cases: [(String, KeyEvent?, KeyEvent?)] = [
             ("right option down", Hotkeys.keyEvent(.flagsChanged, keyCode: 61, flags: ropt, settings: s), .holdKeyDown),
@@ -49,6 +51,8 @@ import WebKit
             ("fn down (fn setting)", Hotkeys.keyEvent(.flagsChanged, keyCode: 63, flags: Hotkeys.secondaryFn, settings: fn), .holdKeyDown),
             ("right option ignored (fn setting)", Hotkeys.keyEvent(.flagsChanged, keyCode: 61, flags: ropt, settings: fn),
              .otherKeyDown(keyCode: 61, modifiers: ropt)),
+            ("a turned-off shortcut never matches plain A", Hotkeys.keyEvent(.keyDown, keyCode: 0, flags: 0, settings: off),
+             .otherKeyDown(keyCode: 0, modifiers: 0)),
         ]
         var ok = true
         for (name, got, want) in cases where got != want {
