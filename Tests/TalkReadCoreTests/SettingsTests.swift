@@ -1,0 +1,146 @@
+import XCTest
+@testable import TalkReadCore
+
+final class SettingsTests: XCTestCase {
+    private var dir: URL!
+    private var file: URL { dir.appendingPathComponent("settings.json") }
+
+    override func setUpWithError() throws { dir = try makeTestDir("set") }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: dir) }
+
+    func testDefaults() {
+        let s = Settings()
+        XCTAssertEqual(s.readShortcut, Settings.Shortcut(keyCode: 15, modifiers: (1 << 18) | (1 << 19), display: "⌃⌥R"))
+        XCTAssertEqual([s.pauseShortcut.keyCode, s.screenshotShortcut.keyCode, s.dictationToggleShortcut.keyCode, s.pasteLastShortcut.keyCode], [35, 1, 2, 9])
+        XCTAssertEqual(s.dictationHoldKey, .rightOption)
+        XCTAssertEqual(s.voiceID, "af_heart")
+        XCTAssertEqual(s.speed, 1.0)
+        XCTAssertEqual(s.highlightHex, "#FFD21F")
+        XCTAssertEqual(s.opacity, 0.85)
+        XCTAssertEqual(s.miniPlayerAutoHideSeconds, 3)
+        XCTAssertNil(s.miniPlayerOrigin)
+        XCTAssertEqual(s.unloadAfterMinutes, 10)
+        XCTAssertEqual(s.historyLimit, 200)
+        XCTAssertTrue(s.tintEnabled && s.showMiniPlayer && s.useOCRFallback && s.removeFillers && s.launchAtLogin)
+        XCTAssertFalse(s.subtitlesExpanded || s.polishWithAppleIntelligence || s.onboardingDone)
+        XCTAssertEqual(s, s.validated(), "defaults are already valid")
+    }
+
+    func testSaveAndLoadRoundTrip() throws {
+        var s = Settings()
+        s.voiceID = "bf_emma"; s.speed = 1.75; s.dictationHoldKey = .fn; s.miniPlayerOrigin = CGPoint(x: 120, y: 340)
+        s.readShortcut = .init(keyCode: 3, modifiers: 1 << 20, display: "⌘F")
+        try s.save(to: file)
+        XCTAssertEqual(Settings.load(from: file), s)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), ["settings.json"], "atomic write leaves no temp file")
+    }
+
+    func testMissingFileGivesDefaults() {
+        XCTAssertEqual(Settings.load(from: file), Settings())
+    }
+
+    func testOlderFileKeepsWorkingWhenFieldsAreAdded() throws {
+        // Only two keys, one wrongly typed: the rest fall back to their defaults.
+        try Data(#"{"voiceID":"bf_emma","speed":"fast","historyLimit":50,"someFutureKey":1}"#.utf8).write(to: file)
+        let s = Settings.load(from: file)
+        XCTAssertEqual(s.voiceID, "bf_emma")
+        XCTAssertEqual(s.historyLimit, 50)
+        XCTAssertEqual(s.speed, 1.0)
+        var expected = Settings(); expected.voiceID = "bf_emma"; expected.historyLimit = 50
+        XCTAssertEqual(s, expected)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "a readable file is not renamed")
+    }
+
+    func testCorruptFileIsRenamedAndDefaultsReturned() throws {
+        try Data("{not json".utf8).write(to: file)
+        XCTAssertEqual(Settings.load(from: file), Settings())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertEqual(try String(contentsOf: file.appendingPathExtension("bad"), encoding: .utf8), "{not json")
+        // A second corrupt file replaces the older .bad.
+        try Data("[]".utf8).write(to: file)
+        _ = Settings.load(from: file)
+        XCTAssertEqual(try String(contentsOf: file.appendingPathExtension("bad"), encoding: .utf8), "[]")
+    }
+
+    func testValidatedClamps() {
+        var s = Settings()
+        s.speed = 9; XCTAssertEqual(s.validated().speed, 3.0)
+        s.speed = 0.1; XCTAssertEqual(s.validated().speed, 0.5)
+        s.speed = 1.234; XCTAssertEqual(s.validated().speed, 1.25)
+        s.speed = .nan; XCTAssertEqual(s.validated().speed, 1.0)
+        s = Settings(); s.opacity = 5; XCTAssertEqual(s.validated().opacity, 1.0)
+        s.opacity = -1; XCTAssertEqual(s.validated().opacity, 0.1)
+        s = Settings(); s.miniPlayerAutoHideSeconds = -4; XCTAssertEqual(s.validated().miniPlayerAutoHideSeconds, 0)
+        s = Settings(); s.unloadAfterMinutes = 0; XCTAssertEqual(s.validated().unloadAfterMinutes, 1)
+        s = Settings(); s.historyLimit = 1_000_000; XCTAssertEqual(s.validated().historyLimit, 5000)
+        s = Settings(); s.highlightHex = "yellow"; s.voiceID = "  "
+        XCTAssertEqual(s.validated().highlightHex, "#FFD21F")
+        XCTAssertEqual(s.validated().voiceID, "af_heart")
+    }
+
+    func testSavedFileIsAlwaysValid() throws {
+        var s = Settings(); s.speed = 50
+        try s.save(to: file)
+        XCTAssertEqual(Settings.load(from: file).speed, 3.0)
+    }
+
+    func testSetByKey() throws {
+        var s = Settings()
+        try s.set("speed", to: "1.5"); XCTAssertEqual(s.speed, 1.5)
+        try s.set("speed", to: "99"); XCTAssertEqual(s.speed, 3.0)
+        try s.set("voiceID", to: "bf_emma"); XCTAssertEqual(s.voiceID, "bf_emma")
+        try s.set("showMiniPlayer", to: "off"); XCTAssertFalse(s.showMiniPlayer)
+        try s.set("removeFillers", to: "TRUE"); XCTAssertTrue(s.removeFillers)
+        try s.set("dictationHoldKey", to: "off"); XCTAssertEqual(s.dictationHoldKey, .off)
+        try s.set("highlightHex", to: "#abcdef"); XCTAssertEqual(s.highlightHex, "#ABCDEF")
+        try s.set("historyLimit", to: "1e30"); XCTAssertEqual(s.historyLimit, 5000)
+        func code(_ key: String, _ value: String) -> String? {
+            var copy = Settings()
+            do { try copy.set(key, to: value); return nil } catch { return (error as? ControlError)?.code }
+        }
+        XCTAssertEqual(code("nope", "1"), "unknown_setting")
+        XCTAssertEqual(code("speed", "fast"), "invalid_value")
+        XCTAssertEqual(code("speed", "nan"), "invalid_value")
+        XCTAssertEqual(code("tintEnabled", "maybe"), "invalid_value")
+        XCTAssertEqual(code("dictationHoldKey", "left"), "invalid_value")
+        XCTAssertEqual(code("highlightHex", "red"), "invalid_value")
+        XCTAssertEqual(code("readShortcut", "x"), "read_only_setting")
+        var untouched = Settings()
+        _ = try? untouched.set("speed", to: "fast")
+        XCTAssertEqual(untouched, Settings(), "a rejected value changes nothing")
+    }
+
+    func testJSONAndKeys() {
+        let json = Settings().json()
+        XCTAssertEqual(json["voiceID"], .string("af_heart"))
+        XCTAssertEqual(json["speed"], .number(1))
+        XCTAssertEqual(json["dictationHoldKey"], .string("rightOption"))
+        XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃⌥R"))
+        XCTAssertNil(json["miniPlayerOrigin"])
+        XCTAssertEqual(Settings.keys.count, 22)
+        XCTAssertTrue(Settings.keys.contains("miniPlayerOrigin"))
+        var s = Settings(); s.speed = 1.15
+        XCTAssertEqual(s.json()["speed"], .number(1.15))
+    }
+
+    func testPathsAndLog() throws {
+        XCTAssertEqual(Paths.library.lastPathComponent, "library.json")
+        XCTAssertEqual(Paths.documents.lastPathComponent, "Documents")
+        XCTAssertEqual([Paths.history, Paths.reads, Paths.pronunciations, Paths.vocabulary, Paths.log].map(\.lastPathComponent),
+                       ["dictation-history.json", "reads.json", "pronunciations.json", "vocabulary.json", "talkread.log"])
+        XCTAssertEqual(Paths.controlSocket.deletingLastPathComponent().path, Paths.dataRoot.path)
+
+        let log = dir.appendingPathComponent("talkread.log")
+        Log.write("first", to: log)
+        Log.write("second", to: log)
+        let lines = try String(contentsOf: log, encoding: .utf8).split(separator: "\n")
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertTrue(lines[0].hasSuffix(" first") && lines[0].contains("T"), String(lines[0]))
+        // At 5 MB the file rotates to talkread.1.log.
+        try Data(repeating: 120, count: Log.maxBytes).write(to: log)
+        Log.write("after rotation", to: log)
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("talkread.1.log")).count, Log.maxBytes)
+        XCTAssertTrue(try String(contentsOf: log, encoding: .utf8).hasSuffix(" after rotation\n"))
+        XCTAssertLessThan(try Data(contentsOf: log).count, 200)
+    }
+}
