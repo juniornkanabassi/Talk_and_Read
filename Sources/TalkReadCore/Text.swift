@@ -60,7 +60,7 @@ public enum TextKit {
     /// Whole sentences per chunk; first chunk short; never splits a token.
     ///
     /// Chunk ranges are contiguous: each runs from its first token's start to the next chunk's first token's start (so the
-    /// whitespace between chunks belongs to the earlier chunk); the last ends at the last token's end. The first chunk is
+    /// whitespace between chunks belongs to the earlier chunk); the last ends at the text's end minus trailing whitespace. The first chunk is
     /// only the first sentence (fast first audio), cut to `firstMax` if longer; after that a chunk holds whole sentences
     /// while its range fits `max`. A sentence that does not fit is cut at the last clause boundary (`, ; : — –` then a
     /// space) that fits, else at the last whitespace, else at any token boundary; the rest of it starts the next chunk.
@@ -105,9 +105,13 @@ public enum TextKit {
             while length(cs, b) > limit, let i = cut(cs, b, limit) { starts.append(i); cs = i; limit = max }
             a = b
         }
+        // The last chunk keeps the text's closing punctuation (a final "?" changes the voice's intonation), not trailing whitespace.
+        var textEnd = ns.length
+        while textEnd > tokens[count - 1].range.upperBound,
+              let scalar = Unicode.Scalar(ns.character(at: textEnd - 1)), CharacterSet.whitespacesAndNewlines.contains(scalar) { textEnd -= 1 }
         return starts.indices.map { k in
             let s = starts[k], e = k + 1 < starts.count ? starts[k + 1] : count
-            let hi = k + 1 < starts.count ? tokens[e].range.lowerBound : tokens[e - 1].range.upperBound
+            let hi = k + 1 < starts.count ? tokens[e].range.lowerBound : textEnd
             return Chunk(range: tokens[s].range.lowerBound ..< hi, tokens: s ..< e)
         }
     }
