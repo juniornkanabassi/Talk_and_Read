@@ -7,17 +7,23 @@ import Carbon
 enum InsertResult: Equatable { case inserted, refusedSecure, failed(String) }
 
 enum Inserter {
+    /// The gate every paste goes through; the self-test swaps in a private pasteboard.
+    @MainActor static var gate = PasteboardGate.shared
+
     /// With `targetPID`, the paste chord goes to that process only (never the HID stream), so a test can never type
-    /// into another app.
-    @MainActor static func insert(_ text: String, targetPID: pid_t? = nil) async -> InsertResult {
+    /// into another app. `isCurrent` is checked inside the pasteboard transaction with nothing awaited between it and
+    /// the paste, so text whose utterance was cancelled meanwhile is never typed.
+    @MainActor static func insert(_ text: String, targetPID: pid_t? = nil, isCurrent: @MainActor () -> Bool = { true }) async -> InsertResult {
         guard !text.isEmpty else { return .failed("Nothing to type") }
         guard CGPreflightPostEventAccess() else { return .failed("Talk and Read needs Accessibility to type") }
-        return await PasteboardGate.shared.transaction {
+        let gate = gate
+        return await gate.transaction {
             if IsSecureEventInputEnabled() { return .refusedSecure }
             let field = focusedField(pid: targetPID)
             if field.secure { return .refusedSecure }
             let typed = needsLeadingSpace(after: field.previous, text: text) ? " " + text : text
-            PasteboardGate.shared.write(typed)
+            guard isCurrent() else { return .failed("Cancelled") }
+            gate.write(typed)
             guard postPaste(to: targetPID) else { return .failed("Could not send the paste keystroke") }
             try? await Task.sleep(for: .milliseconds(500))   // let the app read the pasteboard before it is restored
             return .inserted

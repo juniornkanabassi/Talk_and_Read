@@ -69,11 +69,44 @@ import WebKit
 
     // MARK: Ownership (PLAN decision 19) with a fake recorder and recogniser
 
+    /// One fake input device, like the Recorder: a new start stops the old one, `stop()` during a start makes it throw
+    /// `.stopped`, and `delay` is the time until the first buffer.
     private final class FakeAudio: DictationAudio {
         var onBuffer: ((AVAudioPCMBuffer) -> Void)?
         var onLevel: ((Float) -> Void)?
-        func start() async throws { onBuffer?(Transcriber.buffer(ArraySlice(repeating: 0, count: 1600))) }
-        func stop() -> [Float] { [] }
+        var delay = Duration.zero
+        private(set) var starts = 0
+        private(set) var running = false
+        private var session = 0
+        private var waiting: CheckedContinuation<Void, Error>?
+
+        func start() async throws {
+            _ = stop()
+            starts += 1
+            session += 1
+            running = true
+            if delay > .zero {
+                let id = session, delay = delay
+                try await withCheckedThrowingContinuation { c in
+                    waiting = c
+                    Task { try? await Task.sleep(for: delay); if self.session == id { self.finishWait(.success(())) } }
+                }
+            }
+            onBuffer?(Transcriber.buffer(ArraySlice(repeating: 0, count: 1600)))
+        }
+
+        func stop() -> [Float] {
+            running = false
+            session += 1
+            finishWait(.failure(RecorderError.stopped))
+            return []
+        }
+
+        private func finishWait(_ result: Result<Void, Error>) {
+            let w = waiting
+            waiting = nil
+            w?.resume(with: result)
+        }
     }
 
     private final class FakeASR: DictationASR {
@@ -91,19 +124,35 @@ import WebKit
     }
 
     private static func checkOwnership(fixture dir: URL) async -> Bool {
-        var typed: [String] = []
-        let c = DictationController(audio: FakeAudio(), asr: FakeASR()) { typed.append($0); return .inserted }
+        var typed: [String] = [], targets: [pid_t?] = []
+        let audio = FakeAudio()
+        let c = DictationController(audio: audio, asr: FakeASR()) { text, pid, isCurrent in
+            guard isCurrent() else { return .failed("Cancelled") }
+            typed.append(text)
+            targets.append(pid)
+            return .inserted
+        }
         c.quiet = true
+        let user = DictationController.user
         var failures: [String] = []
         func expect(_ name: String, _ condition: Bool) { if !condition { failures.append(name) } }
-        func busy(_ name: String, _ body: () throws -> Void) {
-            do { try body(); failures.append("\(name): no busy") } catch { expect(name, error as? DictationError == .busy(owner: "A")) }
+        func busy(_ name: String, _ owner: String = "A", _ body: () throws -> Void) {
+            do { try body(); failures.append("\(name): no busy") } catch { expect(name, error as? DictationError == .busy(owner: owner)) }
+        }
+        func settle(_ ms: Int = 100) async { try? await Task.sleep(for: .milliseconds(ms)) }
+        func recording() -> Bool { if case .recording = c.state { true } else { false } }
+        /// Stops the human's utterance and returns its typed text; nil at once when the human does not hold a recording
+        /// (a lost slot leaves a recording nobody can stop: the check must fail, not hang).
+        func stopHuman() async -> String? {
+            guard c.owner == user, recording() else { return nil }
+            c.handle(.stopAndInsert)
+            return await c.result()
         }
         let file = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?
             .first { $0.pathExtension == "wav" }
 
         try? c.start(caller: "A")
-        expect("A owns", c.owner == "A")
+        expect("A owns", c.owner == "A" && c.isBusy)
         busy("B start") { try c.start(caller: "B") }
         busy("B stop") { try c.stop(insert: true, caller: "B") }
         busy("B cancel") { try c.cancel(caller: "B") }
@@ -112,9 +161,10 @@ import WebKit
                 expect("B file busy", error as? DictationError == .busy(owner: "A"))
             }
         }
+        await settle()                                              // A's microphone is on
         try? c.stop(insert: true, caller: "A")
         let first = await c.result()
-        expect("A's stop inserts", first == "Utterance 1" && typed == ["Utterance 1"] && c.owner == nil)   // after Cleanup
+        expect("A's stop inserts", first == "Utterance 1" && typed == ["Utterance 1"] && c.owner == nil && !c.isBusy)   // after Cleanup
 
         try? c.start(caller: "A")
         try? c.start(caller: "B", force: true)
@@ -124,9 +174,9 @@ import WebKit
 
         try? c.start(caller: "A")
         c.handle(.startRecording)                                   // the human's hold key during A's dictation
-        expect("user wins", c.owner == DictationController.user)
-        c.handle(.stopAndInsert)
-        let human = await c.result()
+        expect("user wins", c.owner == user)
+        await settle()
+        let human = await stopHuman()
         expect("only the human's text is typed", human != nil && typed.count == 2 && typed.last == human)
 
         if let file {
@@ -135,13 +185,110 @@ import WebKit
             do { _ = try await c.transcribe(file: file, caller: "B"); failures.append("second file: no busy") } catch {
                 expect("second file busy", error as? DictationError == .busy(owner: "A"))
             }
-            expect("first file completes", (try? await a.value) != nil)
+            expect("first file completes", (try? await a.value) != nil && c.owner == nil)
         }
         expect("history newest first", c.history.first?.text == human)
         if let id = c.history.first?.id {
             c.delete(id)
             let onDisk = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
             expect("delete", !c.history.contains { $0.id == id } && onDisk.map(\.id) == c.history.map(\.id))
+        }
+
+        // #17: a history entry typed again through the guarded insert path, to the given process only.
+        if let entry = c.history.first {
+            let again = await c.reinsert(entry.id, targetPID: 4242)
+            expect("reinsert", again == .inserted && typed.last == entry.text && targets.last == 4242 && !c.isBusy)
+            expect("reinsert of a deleted entry fails", await c.reinsert(UUID(), targetPID: nil) != .inserted)
+        }
+
+        // #1: the microphone is never started, or left running, for a cancelled or stopped utterance, and a stale
+        // startup never touches the newer utterance's input.
+        var starts = audio.starts
+        try? c.start(caller: "A")
+        try? c.cancel(caller: "A")                                  // before its startup task ran
+        await settle()
+        expect("#1 cancel before startup: mic never started", audio.starts == starts && !audio.running && c.owner == nil)
+
+        try? c.start(caller: "A")
+        try? c.stop(insert: true, caller: "A")                      // before its startup task ran
+        let early = await c.result()
+        await settle()
+        expect("#1 stop before startup: mic never started, nothing typed",
+               audio.starts == starts && !audio.running && early == nil && c.owner == nil && c.state == .idle && typed.count == 3)
+
+        try? c.start(caller: "A")
+        c.handle(.startRecording)                                   // the human takes over before A's startup ran
+        await settle()
+        expect("#1 stale startup never asks for the mic", audio.starts == starts + 1 && audio.running && c.owner == user && recording())
+        c.handle(.cancelRecording)
+        expect("#1 cancel stops the mic", !audio.running && c.owner == nil)
+
+        audio.delay = .milliseconds(150)
+        starts = audio.starts
+        try? c.start(caller: "A")
+        await settle(40)                                            // A's microphone is starting
+        try? c.cancel(caller: "A")
+        await settle(250)
+        expect("#1 cancel during startup: mic off", audio.starts == starts + 1 && !audio.running && c.owner == nil)
+
+        try? c.start(caller: "A")
+        await settle(40)                                            // A's microphone is starting ...
+        c.handle(.startRecording)                                   // ... when the human takes over
+        await settle(300)
+        expect("#1 A's failed startup leaves the human's mic running", audio.running && c.owner == user && recording())
+        let human2 = await stopHuman()
+        expect("#1 the human's text is typed", human2 != nil && typed.last == human2 && !audio.running)
+        audio.delay = .zero
+
+        // #6: live dictation and file transcription share one slot; the human's start cancels the file job, and the
+        // cancelled job never releases the human's slot.
+        if let file {
+            let a = Task { try await c.transcribe(file: file, caller: "A") }
+            await Task.yield()
+            expect("#6 the file job owns the slot", c.owner == "A" && c.isBusy)
+            busy("#6 live start during a file") { try c.start(caller: "B") }
+            busy("#6 own live start during its file") { try c.start(caller: "A") }
+            c.handle(.startRecording)
+            expect("#6 the human takes over the file", c.owner == user && recording())
+            let taken = await a.result
+            expect("#6 the taken-over file reports busy", { if case .failure(let e) = taken { e as? DictationError == .busy(owner: user) } else { false } }())
+            expect("#6 the old file job leaves the human's slot alone", c.owner == user && recording())
+            await settle()
+            let human3 = await stopHuman()
+            expect("#6 the human's text is typed", human3 != nil && typed.last == human3 && c.owner == nil && !c.isBusy)
+        }
+
+        // #2: an utterance cancelled while its text waits for the pasteboard is never pasted (the real Inserter on a
+        // private pasteboard; another transaction holds the gate meanwhile; nothing is posted).
+        if CGPreflightPostEventAccess() {
+            let pb = NSPasteboard(name: NSPasteboard.Name("com.juniornkanabassi.talkread.selftest.dictation.\(getpid())"))
+            let saved = Inserter.gate
+            Inserter.gate = PasteboardGate(pasteboard: pb)
+            var results: [InsertResult] = []
+            let real = DictationController(audio: FakeAudio(), asr: FakeASR()) { text, _, isCurrent in
+                let r = await Inserter.insert(text, targetPID: getpid(), isCurrent: isCurrent)
+                results.append(r)
+                return r
+            }
+            real.quiet = true
+            let (release, releaseFeed) = AsyncStream.makeStream(of: Void.self)
+            let holder = Task { await Inserter.gate.transaction { for await _ in release {} } }
+            await settle(40)
+            let before = pb.changeCount
+            try? real.start(caller: "A")
+            await settle()
+            try? real.stop(insert: true, caller: "A")
+            await settle(250)                                       // transcribed; the paste is waiting for the gate
+            try? real.cancel(caller: "A")
+            releaseFeed.finish()
+            await holder.value
+            let pasted = await real.result()
+            expect("#2 cancelled while waiting for the pasteboard: not pasted",
+                   pasted == nil && results.count == 1 && results.first != .inserted && pb.changeCount == before)
+            Inserter.gate = saved
+            pb.releaseGlobally()
+        } else {
+            print("ownership: #2 paste-after-cancel check NOT RUN (no Accessibility)")
         }
         print("ownership: \(failures.isEmpty ? "ok" : "FAIL \(failures)") (typed \(typed))")
         return failures.isEmpty
@@ -158,7 +305,7 @@ import WebKit
         let started = Date()
         do { try await transcriber.load(progress: nil) } catch { print("asr: model failed to load: \(error)"); return false }
         print(String(format: "asr: model ready in %.1f s (%@)", Date().timeIntervalSince(started), Transcriber.variant.rawValue))
-        let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _ in .inserted })
+        let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _, _, _ in .inserted })
         controller.quiet = true
         var fileErrors = 0, liveErrors = 0, words = 0
         var latencies: [Double] = []
@@ -263,20 +410,21 @@ import WebKit
             return false
         }
         let focusBefore = focusedAppPID()
-        let pasteboard = NSPasteboard.general
-        let saved = (pasteboard.pasteboardItems ?? []).map { item in item.types.compactMap { t in item.data(forType: t).map { (t, $0) } } }
+        // A private pasteboard: Junior's clipboard is never read or written.
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("com.juniornkanabassi.talkread.selftest.insert.\(getpid())"))
+        let savedGate = Inserter.gate
+        Inserter.gate = PasteboardGate(pasteboard: pasteboard)
         defer {
-            pasteboard.clearContents()
-            pasteboard.writeObjects(saved.map { types in
-                let item = NSPasteboardItem()
-                for (type, data) in types { item.setData(data, forType: type) }
-                return item
-            })
+            Inserter.gate = savedGate
+            pasteboard.releaseGlobally()
         }
 
-        // Key equivalents reach the Edit menu even though no window is key; the item's target is the field under test.
+        // Key equivalents reach the Edit menu even though no window is key; Paste puts the private pasteboard's text
+        // into the field under test (a text view reads it as its own paste does).
+        let forwarder = PasteForwarder(pasteboard: pasteboard)
         let menu = NSMenu(), editItem = NSMenuItem(), edit = NSMenu(title: "Edit")
-        let paste = edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        let paste = edit.addItem(withTitle: "Paste", action: #selector(PasteForwarder.paste(_:)), keyEquivalent: "v")
+        paste.target = forwarder
         editItem.submenu = edit
         menu.addItem(editItem)
         NSApp.mainMenu = menu
@@ -319,7 +467,6 @@ import WebKit
             let sentinel = "talkread-sentinel-\(UUID().uuidString)"
             let item = NSPasteboardItem()
             item.setString(sentinel, forType: .string)
-            item.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
             pasteboard.clearContents()
             pasteboard.writeObjects([item])
             let result = await Inserter.insert(text, targetPID: getpid())
@@ -331,14 +478,14 @@ import WebKit
             panel.makeFirstResponder(field)
             let editor = panel.firstResponder as? NSTextView
             editor?.setSelectedRange(NSRange(location: (field.stringValue as NSString).length, length: 0))
-            paste.target = editor
+            forwarder.target = editor
             let (r1, restored1) = await attempt("thanks for the update.")
             let got1 = field.stringValue
             print("insert: NSTextField \(r1) -> \"\(got1)\", pasteboard restored \(restored1)")
             if r1 != .inserted || got1 != "Dear Sarah, thanks for the update." || !restored1 { failures.append("NSTextField") }
 
             panel.makeFirstResponder(web)
-            paste.target = web
+            forwarder.target = web
             _ = try? await web.evaluateJavaScript("document.getElementById('t').focus()")
             let (r2, restored2) = await attempt("Meeting moved to Thursday at 3 pm.")
             let got2 = (try? await web.evaluateJavaScript("document.getElementById('t').value")) as? String ?? "?"
@@ -346,7 +493,7 @@ import WebKit
             if r2 != .inserted || got2 != "Meeting moved to Thursday at 3 pm." || !restored2 { failures.append("textarea") }
 
             panel.makeFirstResponder(secure)
-            paste.target = panel.firstResponder
+            forwarder.target = panel.firstResponder
             let (r3, restored3) = await attempt("my secret words")
             print("insert: NSSecureTextField \(r3) -> \(secure.stringValue.isEmpty ? "empty" : "NOT EMPTY"), pasteboard restored \(restored3)")
             if r3 != .refusedSecure || !secure.stringValue.isEmpty || !restored3 { failures.append("secure field") }
@@ -361,6 +508,23 @@ import WebKit
         print("insert: frontmost app focus via AX (read only): secure \(front.secure), caret context \(front.previous != nil ? "found" : "none")")
         print("insert: \(failures.isEmpty ? "ok" : "FAIL \(failures)"); focus stayed with pid \(focusAfter)")
         return failures.isEmpty
+    }
+
+    /// The test panel's Edit ▸ Paste, reading the private pasteboard: a text view (or field editor) reads it as its
+    /// own paste does; the web view's focused element gets the text inserted at its selection.
+    @MainActor private final class PasteForwarder: NSObject {
+        let pasteboard: NSPasteboard
+        weak var target: NSResponder?
+        init(pasteboard: NSPasteboard) { self.pasteboard = pasteboard }
+
+        @objc func paste(_ sender: Any?) {
+            if let editor = target as? NSTextView {
+                _ = editor.readSelection(from: pasteboard)
+            } else if let web = target as? WKWebView, let text = pasteboard.string(forType: .string) {
+                web.callAsyncJavaScript("const t = document.activeElement; t.setRangeText(text, t.selectionStart, t.selectionEnd, 'end')",
+                                        arguments: ["text": text], in: nil, in: .page, completionHandler: nil)
+            }
+        }
     }
 
     private static func focusedAppPID() -> pid_t {
