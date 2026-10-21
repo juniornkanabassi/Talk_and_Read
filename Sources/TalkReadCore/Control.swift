@@ -191,7 +191,8 @@ actor ReplayCache {
         entries[key] = Entry(fingerprint: fingerprint, task: task, finished: nil)
         order.append(key)
         let response = await task.value
-        entries[key]?.finished = Date()
+        // A refusal because another caller owns the session is not an effect: let the same id retry later.
+        if response.code == "busy" { entries[key] = nil; order.removeAll { $0 == key } } else { entries[key]?.finished = Date() }
         return response
     }
 
