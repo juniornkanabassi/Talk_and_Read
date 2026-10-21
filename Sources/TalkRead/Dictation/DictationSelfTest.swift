@@ -1,0 +1,357 @@
+// `TalkRead --selftest-asr <dir> [--insert]`: hotkey mapping, the ownership rules (fake recorder and recogniser),
+// WER and latency of the real Transcriber over the fixtures (file path and live streaming path), and, with --insert,
+// pasting into a test panel on the Prompter XL. Never uses the microphone; events go only to our own pid.
+import AppKit
+import AVFoundation
+import TalkReadCore
+import WebKit
+
+@MainActor enum DictationSelfTest {
+    static func run(dir: String) async -> Int32 {
+        // History and settings go to a scratch home unless the caller chose one (never the real data root).
+        if ProcessInfo.processInfo.environment["TALKREAD_HOME"] == nil {
+            setenv("TALKREAD_HOME", "/private/tmp/talkread-selftest-home", 1)
+        }
+        var ok = checkHotkeys()
+        if Paths.dataRoot.path.hasPrefix("/private/tmp") {
+            ok = await checkOwnership(fixture: URL(fileURLWithPath: dir)) && ok
+        } else {
+            print("ownership: NOT RUN (data root \(Paths.dataRoot.path) is not a scratch folder)")
+            ok = false
+        }
+        ok = await checkASR(dir: URL(fileURLWithPath: dir)) && ok
+        if CommandLine.arguments.contains("--insert") { ok = await checkInsertion() && ok }
+        print(ok ? "selftest-asr: PASS" : "selftest-asr: FAIL")
+        return ok ? 0 : 1
+    }
+
+    // MARK: Hotkeys
+
+    private static func checkHotkeys() -> Bool {
+        let s = Settings()
+        var fn = Settings()
+        fn.dictationHoldKey = .fn
+        let ropt: UInt64 = Hotkeys.option | Hotkeys.rightOptionDeviceBit
+        let cases: [(String, KeyEvent?, KeyEvent?)] = [
+            ("right option down", Hotkeys.keyEvent(.flagsChanged, keyCode: 61, flags: ropt, settings: s), .holdKeyDown),
+            ("right option up", Hotkeys.keyEvent(.flagsChanged, keyCode: 61, flags: 0, settings: s), .holdKeyUp),
+            ("right option with cmd held", Hotkeys.keyEvent(.flagsChanged, keyCode: 61, flags: ropt | Hotkeys.command, settings: s),
+             .otherKeyDown(keyCode: 61, modifiers: ropt | Hotkeys.command)),
+            ("left option is not the hold key", Hotkeys.keyEvent(.flagsChanged, keyCode: 58, flags: Hotkeys.option | 0x20, settings: s),
+             .otherKeyDown(keyCode: 58, modifiers: Hotkeys.option | 0x20)),
+            ("shift released", Hotkeys.keyEvent(.flagsChanged, keyCode: 56, flags: 0, settings: s), nil),
+            ("ctrl+opt+R", Hotkeys.keyEvent(.keyDown, keyCode: 15, flags: Hotkeys.control | Hotkeys.option, settings: s), .chord(.read)),
+            ("ctrl+opt+D", Hotkeys.keyEvent(.keyDown, keyCode: 2, flags: Hotkeys.control | Hotkeys.option | 0x100, settings: s),
+             .chord(.toggleRecording)),
+            ("ctrl+opt+V", Hotkeys.keyEvent(.keyDown, keyCode: 9, flags: Hotkeys.control | Hotkeys.option, settings: s), .chord(.pasteLast)),
+            ("opt+V is just a key", Hotkeys.keyEvent(.keyDown, keyCode: 9, flags: Hotkeys.option, settings: s),
+             .otherKeyDown(keyCode: 9, modifiers: Hotkeys.option)),
+            ("fn down (fn setting)", Hotkeys.keyEvent(.flagsChanged, keyCode: 63, flags: Hotkeys.secondaryFn, settings: fn), .holdKeyDown),
+            ("right option ignored (fn setting)", Hotkeys.keyEvent(.flagsChanged, keyCode: 61, flags: ropt, settings: fn),
+             .otherKeyDown(keyCode: 61, modifiers: ropt)),
+        ]
+        var ok = true
+        for (name, got, want) in cases where got != want {
+            print("hotkeys: FAIL \(name): got \(String(describing: got)), want \(String(describing: want))")
+            ok = false
+        }
+        // The tap itself: listen-only, nothing is injected; it is only created and removed.
+        let hotkeys = Hotkeys(settings: s)
+        let running = hotkeys.start()
+        hotkeys.stop()
+        print("hotkeys: \(cases.count) mappings \(ok ? "ok" : "FAILED"); event tap \(running ? "created" : "NOT created (Accessibility?)")")
+        return ok && running
+    }
+
+    // MARK: Ownership (PLAN decision 19) with a fake recorder and recogniser
+
+    private final class FakeAudio: DictationAudio {
+        var onBuffer: ((AVAudioPCMBuffer) -> Void)?
+        var onLevel: ((Float) -> Void)?
+        func start() async throws { onBuffer?(Transcriber.buffer(ArraySlice(repeating: 0, count: 1600))) }
+        func stop() -> [Float] { [] }
+    }
+
+    private final class FakeASR: DictationASR {
+        var isLoaded: Bool { true }
+        private var count = 0
+        func load(progress: ((Double) -> Void)?) async throws {}
+        func unload() {}
+        func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> String {
+            for await _ in audio {}
+            try await Task.sleep(for: .milliseconds(50))
+            try Task.checkCancellation()
+            count += 1
+            return "utterance \(count)"
+        }
+    }
+
+    private static func checkOwnership(fixture dir: URL) async -> Bool {
+        var typed: [String] = []
+        let c = DictationController(audio: FakeAudio(), asr: FakeASR()) { typed.append($0); return .inserted }
+        c.quiet = true
+        var failures: [String] = []
+        func expect(_ name: String, _ condition: Bool) { if !condition { failures.append(name) } }
+        func busy(_ name: String, _ body: () throws -> Void) {
+            do { try body(); failures.append("\(name): no busy") } catch { expect(name, error as? DictationError == .busy(owner: "A")) }
+        }
+        let file = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?
+            .first { $0.pathExtension == "wav" }
+
+        try? c.start(caller: "A")
+        expect("A owns", c.owner == "A")
+        busy("B start") { try c.start(caller: "B") }
+        busy("B stop") { try c.stop(insert: true, caller: "B") }
+        busy("B cancel") { try c.cancel(caller: "B") }
+        if let file {
+            do { _ = try await c.transcribe(file: file, caller: "B"); failures.append("B file: no busy") } catch {
+                expect("B file busy", error as? DictationError == .busy(owner: "A"))
+            }
+        }
+        try? c.stop(insert: true, caller: "A")
+        let first = await c.result()
+        expect("A's stop inserts", first == "Utterance 1" && typed == ["Utterance 1"] && c.owner == nil)   // after Cleanup
+
+        try? c.start(caller: "A")
+        try? c.start(caller: "B", force: true)
+        expect("forced takeover", c.owner == "B")
+        try? c.cancel(caller: "B")
+        expect("cancel releases", c.owner == nil && c.state == .idle)
+
+        try? c.start(caller: "A")
+        c.handle(.startRecording)                                   // the human's hold key during A's dictation
+        expect("user wins", c.owner == DictationController.user)
+        c.handle(.stopAndInsert)
+        let human = await c.result()
+        expect("only the human's text is typed", human != nil && typed.count == 2 && typed.last == human)
+
+        if let file {
+            let a = Task { try await c.transcribe(file: file, caller: "A") }
+            await Task.yield()                                      // A has reserved the slot before its first await
+            do { _ = try await c.transcribe(file: file, caller: "B"); failures.append("second file: no busy") } catch {
+                expect("second file busy", error as? DictationError == .busy(owner: "A"))
+            }
+            expect("first file completes", (try? await a.value) != nil)
+        }
+        expect("history newest first", c.history.first?.text == human)
+        print("ownership: \(failures.isEmpty ? "ok" : "FAIL \(failures)") (typed \(typed))")
+        return failures.isEmpty
+    }
+
+    // MARK: ASR fixtures
+
+    private static func checkASR(dir: URL) async -> Bool {
+        let clips = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+            .filter { ["wav", "m4a"].contains($0.pathExtension) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard !clips.isEmpty else { print("asr: no clips in \(dir.path)"); return false }
+        let transcriber = Transcriber()
+        let started = Date()
+        do { try await transcriber.load(progress: nil) } catch { print("asr: model failed to load: \(error)"); return false }
+        print(String(format: "asr: model ready in %.1f s (%@)", Date().timeIntervalSince(started), Transcriber.variant.rawValue))
+        let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _ in .inserted })
+        controller.quiet = true
+        var fileErrors = 0, liveErrors = 0, words = 0
+        var latencies: [Double] = []
+        print("clip\tsec\tWER file\tWER live\tlatency ms\ttext (file)")
+        for clip in clips {
+            guard let reference = try? String(contentsOf: clip.deletingPathExtension().appendingPathExtension("txt"), encoding: .utf8),
+                  let samples = try? Transcriber.samples(of: clip) else { print("\(clip.lastPathComponent)\tunreadable"); return false }
+            let ref = normalised(reference)
+            do {
+                let fileText = try await controller.transcribe(file: clip, caller: "selftest")
+                let (liveRaw, ms) = try await live(samples, transcriber)
+                let liveText = Cleanup.apply(liveRaw, vocabulary: [:], removeFillers: true)
+                let fe = editDistance(ref, normalised(fileText)), le = editDistance(ref, normalised(liveText))
+                fileErrors += fe; liveErrors += le; words += ref.count
+                latencies.append(ms)
+                print(String(format: "%@\t%.1f\t%.1f%%\t%.1f%%\t%.0f\t%@", clip.deletingPathExtension().lastPathComponent,
+                             Double(samples.count) / 16_000, 100 * Double(fe) / Double(ref.count),
+                             100 * Double(le) / Double(ref.count), ms, fileText))
+                if le > 0, liveText != fileText { print("\t\t\t\t\tlive: \(liveText)") }
+            } catch {
+                print("\(clip.lastPathComponent)\tfailed: \(error)")
+                return false
+            }
+        }
+        let fileWER = Double(fileErrors) / Double(words), liveWER = Double(liveErrors) / Double(words)
+        let sorted = latencies.sorted()
+        print(String(format: "asr: %d clips, %d words; total WER file %.2f%%, live %.2f%% (limit 6%%); latency after last sample median %.0f ms, max %.0f ms",
+                     clips.count, words, 100 * fileWER, 100 * liveWER, sorted[sorted.count / 2], sorted.last!))
+        return fileWER <= 0.06 && liveWER <= 0.06
+    }
+
+    /// The live path: the clip re-sampled to a typical 48 kHz stereo input format, through the Recorder's converter in
+    /// 100 ms buffers at real-time pace into a streaming run. Returns the text and ms from the last sample to the result.
+    private static func live(_ samples: [Float], _ transcriber: Transcriber) async throws -> (String, Double) {
+        let hardware = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 2, interleaved: false)!
+        let source = Transcriber.buffer(samples[...])
+        guard let up = AVAudioConverter(from: StreamConverter.format, to: hardware),
+              let input = AVAudioPCMBuffer(pcmFormat: hardware, frameCapacity: AVAudioFrameCount(samples.count * 3 + 4800)),
+              let recorder = StreamConverter(from: hardware) else { throw RecorderError.noDevice }
+        var fed = false
+        _ = up.convert(to: input, error: nil) { _, status in
+            if fed { status.pointee = .endOfStream; return nil }
+            fed = true; status.pointee = .haveData; return source
+        }
+        let (stream, feed) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
+        let result = Task { try await transcriber.run(stream, partial: { _ in }) }
+        let total = Int(input.frameLength)
+        for start in stride(from: 0, to: total, by: 4800) {
+            if start > 0 { try await Task.sleep(for: .milliseconds(100)) }   // the next 100 ms being "spoken"
+            let count = min(4800, total - start)
+            let slice = AVAudioPCMBuffer(pcmFormat: hardware, frameCapacity: AVAudioFrameCount(count))!
+            slice.frameLength = AVAudioFrameCount(count)
+            for ch in 0..<2 { slice.floatChannelData![ch].update(from: input.floatChannelData![ch] + start, count: count) }
+            if let converted = recorder.convert(slice) { feed.yield(converted) }
+        }
+        let lastSample = Date()                                          // key released right after the last buffer
+        feed.finish()
+        let text = try await result.value
+        return (text, Date().timeIntervalSince(lastSample) * 1000)
+    }
+
+    /// Case and punctuation removed: dots and apostrophes join ("p.m." = "pm", "I'll" = "ill"), other punctuation
+    /// separates; "%" is "percent". Nothing else (no number or spelling normalisation).
+    static func normalised(_ text: String) -> [String] {
+        text.lowercased()
+            .replacingOccurrences(of: "%", with: " percent")
+            .replacingOccurrences(of: "[.'’]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[^a-z0-9]+", with: " ", options: .regularExpression)
+            .split(separator: " ").map(String.init)
+    }
+
+    /// Word-level Levenshtein distance (substitutions + insertions + deletions).
+    static func editDistance(_ a: [String], _ b: [String]) -> Int {
+        var row = Array(0...b.count)
+        for i in a.indices {
+            var diagonal = row[0]
+            row[0] = i + 1
+            for j in b.indices {
+                let above = row[j + 1]
+                row[j + 1] = a[i] == b[j] ? diagonal : 1 + min(diagonal, above, row[j])
+                diagonal = above
+            }
+        }
+        return row[b.count]
+    }
+
+    // MARK: Insertion (--insert)
+
+    private static func checkInsertion() async -> Bool {
+        guard pthread_main_np() != 0 else {
+            print("insert: NOT RUN (the main actor is not on the main thread: the --selftest dispatch must run the main run loop, not dispatchMain)")
+            return false
+        }
+        guard let screen = NSScreen.screens.first(where: { $0.localizedName.contains("Prompter") }) else {
+            print("insert: NOT RUN (no Prompter XL screen)")
+            return true
+        }
+        // Prohibited: the process can never be activated, so Junior's app keeps focus. The panel is never key.
+        guard NSApp.setActivationPolicy(.prohibited) || NSApp.activationPolicy() == .prohibited else {
+            print("insert: NOT RUN (could not make the process non-activating)")
+            return false
+        }
+        let focusBefore = focusedAppPID()
+        let pasteboard = NSPasteboard.general
+        let saved = (pasteboard.pasteboardItems ?? []).map { item in item.types.compactMap { t in item.data(forType: t).map { (t, $0) } } }
+        defer {
+            pasteboard.clearContents()
+            pasteboard.writeObjects(saved.map { types in
+                let item = NSPasteboardItem()
+                for (type, data) in types { item.setData(data, forType: type) }
+                return item
+            })
+        }
+
+        // Key equivalents reach the Edit menu even though no window is key; the item's target is the field under test.
+        let menu = NSMenu(), editItem = NSMenuItem(), edit = NSMenu(title: "Edit")
+        let paste = edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editItem.submenu = edit
+        menu.addItem(editItem)
+        NSApp.mainMenu = menu
+
+        let size = NSSize(width: 420, height: 230)
+        let panel = NSPanel(contentRect: NSRect(origin: NSPoint(x: (screen.frame.width - size.width) / 2, y: (screen.frame.height - size.height) / 2), size: size),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false, screen: screen)
+        guard panel.screen == screen else { print("insert: NOT RUN (panel would not be on the Prompter XL)"); return true }
+        panel.backgroundColor = .windowBackgroundColor
+        panel.isReleasedWhenClosed = false
+        let field = NSTextField(frame: NSRect(x: 20, y: 186, width: 380, height: 24))
+        let secure = NSSecureTextField(frame: NSRect(x: 20, y: 152, width: 380, height: 24))
+        let web = WKWebView(frame: NSRect(x: 20, y: 20, width: 380, height: 120))
+        for view in [field, secure, web] as [NSView] { panel.contentView?.addSubview(view) }
+        field.stringValue = "Dear Sarah,"
+        web.loadHTMLString("<textarea id='t' style='width:95%;height:90px'></textarea>", baseURL: nil)
+
+        let pump = Task { @MainActor in                              // this run loop is not NSApp.run: deliver events here
+            while !Task.isCancelled {
+                if let e = NSApp.nextEvent(matching: .any, until: Date(timeIntervalSinceNow: 0.005), inMode: .default, dequeue: true) {
+                    NSApp.sendEvent(e)
+                }
+                await Task.yield()
+            }
+        }
+        panel.orderFrontRegardless()
+        try? await Task.sleep(for: .milliseconds(400))
+        var failures: [String] = []
+        if NSRunningApplication.current.isActive || panel.isKeyWindow || panel.screen != screen {
+            failures.append("panel activated, became key or left the Prompter XL")
+        }
+
+        func attempt(_ text: String) async -> (InsertResult, Bool) {
+            let sentinel = "talkread-sentinel-\(UUID().uuidString)"
+            let item = NSPasteboardItem()
+            item.setString(sentinel, forType: .string)
+            item.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+            pasteboard.clearContents()
+            pasteboard.writeObjects([item])
+            let result = await Inserter.insert(text, targetPID: getpid())
+            try? await Task.sleep(for: .milliseconds(150))
+            return (result, pasteboard.string(forType: .string) == sentinel)
+        }
+
+        if failures.isEmpty {
+            panel.makeFirstResponder(field)
+            let editor = panel.firstResponder as? NSTextView
+            editor?.setSelectedRange(NSRange(location: (field.stringValue as NSString).length, length: 0))
+            paste.target = editor
+            let (r1, restored1) = await attempt("thanks for the update.")
+            let got1 = field.stringValue
+            print("insert: NSTextField \(r1) -> \"\(got1)\", pasteboard restored \(restored1)")
+            if r1 != .inserted || got1 != "Dear Sarah, thanks for the update." || !restored1 { failures.append("NSTextField") }
+
+            panel.makeFirstResponder(web)
+            paste.target = web
+            _ = try? await web.evaluateJavaScript("document.getElementById('t').focus()")
+            let (r2, restored2) = await attempt("Meeting moved to Thursday at 3 pm.")
+            let got2 = (try? await web.evaluateJavaScript("document.getElementById('t').value")) as? String ?? "?"
+            print("insert: WKWebView textarea \(r2) -> \"\(got2)\", pasteboard restored \(restored2)")
+            if r2 != .inserted || got2 != "Meeting moved to Thursday at 3 pm." || !restored2 { failures.append("textarea") }
+
+            panel.makeFirstResponder(secure)
+            paste.target = panel.firstResponder
+            let (r3, restored3) = await attempt("my secret words")
+            print("insert: NSSecureTextField \(r3) -> \(secure.stringValue.isEmpty ? "empty" : "NOT EMPTY"), pasteboard restored \(restored3)")
+            if r3 != .refusedSecure || !secure.stringValue.isEmpty || !restored3 { failures.append("secure field") }
+        }
+        panel.close()
+        pump.cancel()
+        await pump.value
+        let focusAfter = focusedAppPID()
+        if NSRunningApplication.current.isActive || focusAfter != focusBefore { failures.append("focus moved (\(focusBefore) -> \(focusAfter))") }
+        // Read-only: what the AX path sees in Junior's frontmost app (nothing is typed there).
+        let front = Inserter.focusedField(pid: nil)
+        print("insert: frontmost app focus via AX (read only): secure \(front.secure), caret context \(front.previous != nil ? "found" : "none")")
+        print("insert: \(failures.isEmpty ? "ok" : "FAIL \(failures)"); focus stayed with pid \(focusAfter)")
+        return failures.isEmpty
+    }
+
+    private static func focusedAppPID() -> pid_t {
+        var value: CFTypeRef?
+        var pid: pid_t = 0
+        if AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value) == .success,
+           let value { AXUIElementGetPid(value as! AXUIElement, &pid) }
+        return pid
+    }
+}
