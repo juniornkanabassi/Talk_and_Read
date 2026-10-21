@@ -463,13 +463,20 @@ import WebKit
             failures.append("panel activated, became key or left the Prompter XL")
         }
 
-        func attempt(_ text: String) async -> (InsertResult, Bool) {
+        /// `cancelAtPaste`: the inserting task is cancelled the moment its last check passes, just before ⌘V goes out;
+        /// the paste must still get its full wait (else the restored sentinel would be pasted instead).
+        func attempt(_ text: String, cancelAtPaste: Bool = false) async -> (InsertResult, Bool) {
             let sentinel = "talkread-sentinel-\(UUID().uuidString)"
             let item = NSPasteboardItem()
             item.setString(sentinel, forType: .string)
             pasteboard.clearContents()
             pasteboard.writeObjects([item])
-            let result = await Inserter.insert(text, targetPID: getpid())
+            let result = await Task {
+                await Inserter.insert(text, targetPID: getpid(), isCurrent: {
+                    if cancelAtPaste { withUnsafeCurrentTask { $0?.cancel() } }
+                    return true
+                })
+            }.value
             try? await Task.sleep(for: .milliseconds(150))
             return (result, pasteboard.string(forType: .string) == sentinel)
         }
@@ -483,6 +490,13 @@ import WebKit
             let got1 = field.stringValue
             print("insert: NSTextField \(r1) -> \"\(got1)\", pasteboard restored \(restored1)")
             if r1 != .inserted || got1 != "Dear Sarah, thanks for the update." || !restored1 { failures.append("NSTextField") }
+            let started = Date()
+            let (r1b, restored1b) = await attempt("See you soon.", cancelAtPaste: true)
+            let waited = Date().timeIntervalSince(started), got1b = field.stringValue
+            print(String(format: "insert: cancelled at ⌘V %@ -> \"%@\", waited %.0f ms, pasteboard restored %@", "\(r1b)", got1b, waited * 1000, "\(restored1b)"))
+            if r1b != .inserted || got1b != "Dear Sarah, thanks for the update. See you soon." || waited < 0.5 || !restored1b {
+                failures.append("cancelled at paste")
+            }
 
             panel.makeFirstResponder(web)
             forwarder.target = web

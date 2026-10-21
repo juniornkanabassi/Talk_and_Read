@@ -11,8 +11,9 @@ enum Inserter {
     @MainActor static var gate = PasteboardGate.shared
 
     /// With `targetPID`, the paste chord goes to that process only (never the HID stream), so a test can never type
-    /// into another app. `isCurrent` is checked inside the pasteboard transaction with nothing awaited between it and
-    /// the paste, so text whose utterance was cancelled meanwhile is never typed.
+    /// into another app. Task cancellation and `isCurrent` are checked inside the pasteboard transaction with nothing
+    /// awaited between them and the paste, so text whose utterance was cancelled meanwhile is never typed; once ⌘V is
+    /// out, the 500 ms wait before the restore runs in full even if the task is cancelled.
     @MainActor static func insert(_ text: String, targetPID: pid_t? = nil, isCurrent: @MainActor () -> Bool = { true }) async -> InsertResult {
         guard !text.isEmpty else { return .failed("Nothing to type") }
         guard CGPreflightPostEventAccess() else { return .failed("Talk and Read needs Accessibility to type") }
@@ -22,10 +23,11 @@ enum Inserter {
             let field = focusedField(pid: targetPID)
             if field.secure { return .refusedSecure }
             let typed = needsLeadingSpace(after: field.previous, text: text) ? " " + text : text
-            guard isCurrent() else { return .failed("Cancelled") }
+            guard !Task.isCancelled, isCurrent() else { return .failed("Cancelled") }
             gate.write(typed)
             guard postPaste(to: targetPID) else { return .failed("Could not send the paste keystroke") }
-            try? await Task.sleep(for: .milliseconds(500))   // let the app read the pasteboard before it is restored
+            // Let the app read the pasteboard before it is restored. Not `Task.sleep`: cancellation would end it at once.
+            await withCheckedContinuation { done in DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { done.resume() } }
             return .inserted
         }
     }
