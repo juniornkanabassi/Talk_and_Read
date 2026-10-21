@@ -279,6 +279,101 @@ enum SelfTestWindow {
         record("Pasteboard throw/cancel/idle (Sol #4)",
                afterThrow && afterCancel && afterQueuedCancel && idleAtOnce && restoredAtIdle && drained >= 0.2,
                "restored after throw: \(afterThrow), after cancel mid-body: \(afterCancel), after cancel while queued: \(afterQueuedCancel); idle wait \(idleAtOnce ? "immediate" : "slow") when idle, \(Int(drained * 1000)) ms with two queued, original back at idle: \(restoredAtIdle)")
+
+        // Sol #21: Junior copies after the snapshot, before the body's first change (injected at the body's start, which
+        // is all the gate can see of it). The restore must bring back his copy, for a write and for a Copy press alike.
+        _ = fill()
+        await gate.transaction {
+            copy("Junior's copy before the write")
+            gate.write("dictated text")
+        }
+        let keptBeforeWrite = pb.string(forType: .string) == "Junior's copy before the write" && pb.pasteboardItems?.count == 1
+        _ = fill()
+        let copiedAfter = await gate.transaction { () -> TextCapture.Copied in
+            copy("Junior's copy before the Copy press")
+            guard let before = gate.prepareToChange() else { return .nothing }   // what copySelection does before the press
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { copy("copied by the app") }
+            return await TextCapture.readCopy(gate: gate, before: before)
+        }
+        let keptBeforeCopy = pb.string(forType: .string) == "Junior's copy before the Copy press" && pb.pasteboardItems?.count == 1
+        record("Pasteboard early copy kept (Sol #21)",keptBeforeWrite && copiedAfter == .text("copied by the app") && keptBeforeCopy,
+               "his copy is back after the write: \(keptBeforeWrite); after the Copy press: \(keptBeforeCopy) (read \(copiedAfter))")
+
+        // Sol #22: a busy app answers Copy late. At 700 ms it is still read; inside the 1 s grace after that it is not
+        // read but restored over; with no answer the transaction ends after 2 s. The original is back each time, also
+        // after waiting past the moment the late copy lands.
+        original = fill()
+        func lateCopy(after delay: Double?) async -> (TextCapture.Copied, Int, Bool) {
+            let start = Date()
+            let result = await gate.transaction { () -> TextCapture.Copied in
+                guard let before = gate.prepareToChange() else { return .nothing }
+                if let delay { DispatchQueue.main.asyncAfter(deadline: .now() + delay) { copy("copied late by the app") } }
+                return await TextCapture.readCopy(gate: gate, before: before)
+            }
+            let took = Int(Date().timeIntervalSince(start) * 1000)
+            try? await Task.sleep(for: .milliseconds(700))   // past the late copy, had the transaction already ended
+            return (result, took, contents() == original)
+        }
+        let at700 = await lateCopy(after: 0.7), at1500 = await lateCopy(after: 1.5), never = await lateCopy(after: nil)
+        record("Pasteboard late Copy (Sol #22)",
+               at700.0 == .text("copied late by the app") && at700.2 && at1500.0 == .nothing && at1500.1 >= 1500 && at1500.2
+                   && never.0 == .nothing && (1950...2500).contains(never.1) && never.2,
+               "copy at 700 ms: \(at700.0) in \(at700.1) ms, original back: \(at700.2); at 1.5 s: \(at1500.0) in \(at1500.1) ms, original back: \(at1500.2); none: \(never.0) in \(never.1) ms, original back: \(never.2)")
+
+        // Sol #20: quitting. Shutdown refuses every later write (an Inserter body then reports a failed insert, never
+        // pastes), waits for the running paste to restore, and returns with the original clipboard; the queue then
+        // drains without touching it. A body that never ends is restored for after the grace.
+        original = fill()
+        let quitting = PasteboardGate(pasteboard: pb)
+        let active = Task { @MainActor in
+            await quitting.transaction { () -> Bool in
+                guard quitting.write("active paste") != nil else { return false }
+                try? await Task.sleep(for: .milliseconds(300))   // its restore wait
+                return true
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        let queuedPastes = (0..<8).map { n in
+            Task { @MainActor in
+                await quitting.transaction { () -> Bool in
+                    guard quitting.write("queued paste \(n)") != nil else { return false }   // "Talk and Read is quitting"
+                    try? await Task.sleep(for: .milliseconds(500))
+                    return true
+                }
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        let quitStart = Date()
+        await quitting.shutdown(grace: 3)
+        let quitTook = Int(Date().timeIntervalSince(quitStart) * 1000)
+        let atReturn = contents() == original
+        var queuedPasted = 0
+        for task in queuedPastes { if await task.value { queuedPasted += 1 } }
+        let activePasted = await active.value
+        let lateWrite = await quitting.transaction { quitting.write("after shutdown") }
+        let afterDrain = contents() == original
+        record("Pasteboard quit, queued (Sol #20)",
+               activePasted && atReturn && afterDrain && queuedPasted == 0 && lateWrite == nil && (200..<1000).contains(quitTook),
+               "returned after \(quitTook) ms (the running paste restored), original at return: \(atReturn), after the queue drained: \(afterDrain); running paste done: \(activePasted), \(queuedPasted)/\(queuedPastes.count) queued pastes written, write after shutdown refused: \(lateWrite == nil)")
+
+        original = fill()
+        let hungGate = PasteboardGate(pasteboard: pb)
+        let hung = Task { @MainActor in
+            await hungGate.transaction {
+                hungGate.write("hung paste")
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(30))
+        let hungStart = Date()
+        await hungGate.shutdown(grace: 0.5)
+        let hungTook = Int(Date().timeIntervalSince(hungStart) * 1000)
+        let forced = contents() == original
+        hung.cancel()
+        await hung.value
+        let afterHungEnds = contents() == original
+        record("Pasteboard quit, hung body (Sol #20)",forced && afterHungEnds && (450...1000).contains(hungTook),
+               "returned after \(hungTook) ms (grace 500) with the original restored: \(forced); still original once the body ended: \(afterHungEnds)")
     }
 
     // MARK: Screenshot OCR (R12) and the OCR selection-colour anchor (R6, R7d), headless
