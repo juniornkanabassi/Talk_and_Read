@@ -124,6 +124,7 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     /// Loads the neural voice in the background when it is installed, so the first read starts quickly (a cold load
     /// takes 8–14 s); the idle timer unloads it again.
     func warmUp() {
+        Player.warmOutput()
         let v = voice(for: settings.voiceID)
         guard v.engine == .neural else { return }
         modelsWarm = true

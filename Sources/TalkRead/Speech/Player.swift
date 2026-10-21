@@ -143,6 +143,24 @@ import TalkReadCore
 
     /// Starts (or resumes) output; `isPlaying` stays false when the engine will not start, which the reader treats as
     /// a failed read.
+    /// The first audio engine start in a process costs ~250 ms (cold audio I/O), later ones 30–60 ms. Starting and
+    /// stopping a silent engine once at launch, off the main thread, takes that cost before the first read.
+    nonisolated static func warmOutput() {
+        DispatchQueue.global(qos: .utility).async {
+            let engine = AVAudioEngine()
+            engine.mainMixerNode.outputVolume = 0
+            engine.prepare()
+            if (try? engine.start()) != nil { engine.stop() }
+        }
+    }
+
+    /// Starts the output hardware while the first chunk is still being synthesised, so its ~300 ms start-up overlaps
+    /// synthesis instead of following it. Silent until `play()`; a failure here is retried (and reported) by `play()`.
+    func warmUp() {
+        guard !manual, !engine.isRunning, !failNextStart else { return }
+        try? engine.start()
+    }
+
     func play() {
         engineStop?.cancel()
         do {

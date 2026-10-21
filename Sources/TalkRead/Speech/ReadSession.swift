@@ -54,6 +54,7 @@ import TalkReadCore
     func start() {
         startedAt = Date()
         restart(from: startToken)
+        player.warmUp()   // after the producer is off synthesising, so the engine's start-up overlaps it
     }
 
     func pause() {
