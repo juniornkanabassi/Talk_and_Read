@@ -16,7 +16,7 @@ enum TalkReadMain {
         }
         // Headless switches run, report and exit; they never show a status item, start hotkeys or register a login item.
         if let file = value(after: "--selftest-tts") { exitAfter { await SelfTest.tts(file: file) } }
-        if let dir = value(after: "--selftest-asr") { exitAfter { await SelfTest.asr(directory: dir) } }
+        if let dir = value(after: "--selftest-asr") { exitAfter { await DictationSelfTest.run(dir: dir) } }
         if args.contains("--selftest-window") { exit(SelfTestWindow.run()) }
         if let dir = value(after: "--selftest-import") { exitAfter { await Importer.selfTest(directory: dir) } }
         if args.contains("--selftest-ui-snapshots") { exit(MainActor.assumeIsolated { UISnapshots.run() }) }
@@ -29,10 +29,11 @@ enum TalkReadMain {
         app.run()
     }
 
-    /// Runs `work` and exits with its code. A main run loop, not dispatchMain: dispatchMain retires the main thread, so
-    /// main-actor AppKit work would land on a worker thread (WP5's finding). The port keeps CFRunLoopRun from
-    /// returning, and the loop from spinning, while nothing else is scheduled.
+    /// Runs `work` headless and exits with its code. A main run loop, not dispatchMain: dispatchMain retires the main
+    /// thread, so main-actor AppKit work would land on a worker thread (WP5's finding). The port keeps CFRunLoopRun
+    /// from returning, and the loop from spinning, while nothing else is scheduled.
     private static func exitAfter(_ work: @escaping () async -> Int32) -> Never {
+        NSApplication.shared.setActivationPolicy(.prohibited)   // no Dock icon, no activation (a test may still relax it)
         Task { exit(await work()) }
         RunLoop.main.add(Port(), forMode: .default)
         while true { CFRunLoopRun() }

@@ -1,8 +1,6 @@
 // @MainActor observable app state; the UI binds only to these members, the control handler routes through them. Owned by WP7.
 import AppKit
-import AVFoundation
 import Combine
-import FluidAudio
 import Foundation
 import TalkReadCore
 
@@ -75,7 +73,6 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     /// FluidAudio's macOS TTS cache (`TtsCacheDirectory`); watched only for download progress.
     nonisolated private static let voiceModelDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".cache/fluidaudio/Models/kokoro-82m-coreml", isDirectory: true)
-    nonisolated private static let dictationModelDir = MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetUnified)
 
     private init() {
         settings = Settings.load()
@@ -145,7 +142,7 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     func refreshModelStates() {
         guard downloadTask == nil else { return }
         voiceModel = NeuralEngine.modelInstalled() ? .ready : .missing(megabytes: Self.voiceMegabytes)
-        dictationModel = Self.hasModel(Self.dictationModelDir) ? .ready : .missing(megabytes: Self.dictationMegabytes)
+        dictationModel = Transcriber.isDownloaded ? .ready : .missing(megabytes: Self.dictationMegabytes)
     }
 
     func downloadModels() {
@@ -154,16 +151,10 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
             guard let self else { return }
             if voiceModel != .ready {
                 let id = voices.first { $0.id == self.settings.voiceID && $0.engine == .neural }?.id ?? "af_heart"
-                await download(\.voiceModel, dir: Self.voiceModelDir, megabytes: Self.voiceMegabytes) {
-                    try await self.engines.neural.prepare(voice: id)
-                }
+                await download(\.voiceModel, pollDir: Self.voiceModelDir) { _ in try await self.engines.neural.prepare(voice: id) }
             }
             if dictationModel != .ready, !Task.isCancelled {
-                // ponytail: the contract has no transcriber load call; transcribing one second of silence loads (and on
-                // first use downloads) the shared model. Swap for a DictationController load call if WP5 adds one.
-                await download(\.dictationModel, dir: Self.dictationModelDir, megabytes: Self.dictationMegabytes) {
-                    _ = try await self.dictation.transcribe(file: try Self.silentClip(), caller: "user")
-                }
+                await download(\.dictationModel, pollDir: nil) { report in try await self.dictation.asr.load(progress: report) }
             }
             guard !Task.isCancelled else { return }   // cancelModelDownload has already reset the states
             modelsWarm = true
@@ -179,19 +170,26 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         refreshModelStates()
     }
 
-    /// Progress is bytes on disk against the expected size: FluidAudio's loaders report none through our contracts.
-    private func download(_ state: ReferenceWritableKeyPath<AppModel, ModelState>, dir: URL, megabytes: Int,
-                          load: @escaping () async throws -> Void) async {
+    /// The transcriber reports its own progress; Kokoro's `prepare` reports none through the contract, so its progress
+    /// is the bytes on disk against the expected size.
+    private func download(_ state: ReferenceWritableKeyPath<AppModel, ModelState>, pollDir: URL?,
+                          load: @escaping (@escaping (Double) -> Void) async throws -> Void) async {
         self[keyPath: state] = .downloading(progress: 0)
-        let poll = Task { [weak self] in
+        let report: (Double) -> Void = { [weak self] p in
+            Task { @MainActor in
+                guard let self, case .downloading = self[keyPath: state] else { return }   // never undo .ready
+                self[keyPath: state] = .downloading(progress: min(0.99, max(0, p)))
+            }
+        }
+        let poll = Task {
+            guard let pollDir else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled, let self else { return }
-                self[keyPath: state] = .downloading(progress: min(0.99, Double(Self.bytes(in: dir)) / Double(megabytes << 20)))
+                if !Task.isCancelled { report(Double(Self.bytes(in: pollDir)) / Double(Self.voiceMegabytes << 20)) }
             }
         }
         do {
-            try await load()
+            try await load(report)
             poll.cancel()
             self[keyPath: state] = .ready
         } catch {
@@ -202,27 +200,9 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         }
     }
 
-    /// Any compiled CoreML model anywhere below `dir` (FluidAudio nests some per version).
-    nonisolated private static func hasModel(_ dir: URL) -> Bool {
-        let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
-        while let url = files?.nextObject() as? URL { if url.pathExtension == "mlmodelc" { return true } }
-        return false
-    }
-
     nonisolated private static func bytes(in dir: URL) -> Int {
         let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.fileSizeKey])?.allObjects as? [URL] ?? []
         return files.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
-    }
-
-    /// One second of 16 kHz silence in the temporary folder.
-    nonisolated private static func silentClip() throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("talkread-warmup.wav")
-        let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16_000)!
-        buffer.frameLength = 16_000
-        buffer.floatChannelData![0].update(repeating: 0, count: 16_000)
-        try AVAudioFile(forWriting: url, settings: format.settings).write(from: buffer)
-        return url
     }
 
     // MARK: Ownership (PLAN decisions 16 and 20)
@@ -410,7 +390,7 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
                 guard !Task.isCancelled, let self else { return }
                 engines.neural.unload()
                 engines.system.unload()
-                // ponytail: the transcriber has no unload in the contract; WP5's controller releases it (see WP7 report).
+                dictation.unloadModel()
                 modelsWarm = false
                 unloadTask = nil
                 Log.write("speech models unloaded after \(minutes) idle minutes")

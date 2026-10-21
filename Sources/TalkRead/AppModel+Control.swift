@@ -25,11 +25,11 @@ extension AppModel {
             return ControlResponse(ok: false, code: e.code, message: e.message, data: e.data)
         } catch let e as ControlError {
             return ControlResponse(ok: false, code: e.code, message: e.message)
+        } catch DictationError.busy(let owner) {
+            let e = AppError.busy(owner)
+            return ControlResponse(ok: false, code: e.code, message: e.message, data: e.data)
         } catch {
-            // DictationController's ownership refusals (WP5) surface here; anything that says busy is reported as busy.
-            let text = "\(error)"
-            return ControlResponse(ok: false, code: text.localizedCaseInsensitiveContains("busy") ? "busy" : "failed",
-                                   message: text, data: dictation.owner.map { ["owner": .string($0)] })
+            return ControlResponse(ok: false, code: "failed", message: error.localizedDescription)
         }
     }
 
@@ -105,13 +105,15 @@ extension AppModel {
             return ["voice": .string(id), "speaking": .string(voice(for: id).id)]
 
         case "dictate-start":
-            if r.force, let o = dictation.owner, o != r.caller { try? dictation.cancel(caller: o) }
-            try dictation.start(caller: r.caller)
+            try dictation.start(caller: r.caller, force: r.force)
             return ["state": .string(Self.name(dictation.state))]
 
         case "dictate-stop":
-            try dictation.stop(insert: a["insert"] != "0", caller: r.force ? dictation.owner ?? r.caller : r.caller)
-            return ["text": .string(try await dictationResult())]
+            try dictation.stop(insert: a["insert"] != "0", caller: r.caller, force: r.force)
+            guard let text = await dictation.result() else {
+                throw AppError(code: "failed", message: "The dictation was cancelled or could not be transcribed.")
+            }
+            return ["text": .string(text)]
 
         case "dictation-last":
             guard let e = dictation.history.first else { throw AppError(code: "empty", message: "Nothing has been dictated yet.") }
@@ -191,19 +193,6 @@ extension AppModel {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return ["firstAudioMs": .null, "state": .string(Self.name(s.state)), "voice": .string(sessionInfo.voice)]
-    }
-
-    /// Waits (≤ 60 s) for the dictation the caller just stopped to finish transcribing.
-    private func dictationResult() async throws -> String {
-        for _ in 0..<1200 {
-            switch dictation.state {
-            case .done(let text): return text
-            case .failed(let m): throw AppError(code: "failed", message: m)
-            case .idle: return dictation.history.first?.text ?? ""
-            default: try? await Task.sleep(for: .milliseconds(50))
-            }
-        }
-        throw AppError(code: "timeout", message: "Transcription took longer than 60 s.")
     }
 
     func status() -> [String: JSONValue] {

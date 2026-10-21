@@ -41,6 +41,7 @@ enum ControlSelfTest {
         }
         let model = AppModel.shared
         model.engines = Engines(neural: SilentEngine(kind: .neural), system: SilentEngine(kind: .system))
+        model.dictation.quiet = true   // no pill, no sounds
         await model.loadVoices()
         let server: ControlServer
         do { server = try ControlServer(path: Paths.controlSocket) { await AppModel.shared.handle($0) } } catch {
