@@ -71,7 +71,7 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     private var unloadTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
 
-    nonisolated static let voiceMegabytes = 390, dictationMegabytes = 570
+    nonisolated static let voiceMegabytes = 390, dictationMegabytes = 590
     /// FluidAudio keeps TTS models in its macOS TTS cache (`TtsCacheDirectory`), versioned below this folder (`ANE-v3/<rev>`).
     nonisolated private static let voiceModelDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".cache/fluidaudio/Models/kokoro-82m-coreml", isDirectory: true)
