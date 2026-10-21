@@ -25,6 +25,10 @@ enum DictationError: LocalizedError, Equatable {
     @Published private(set) var history: [DictationEntry] = []
     /// The model is loading for this dictation (the pill says "Preparing…").
     @Published private(set) var preparing = false
+    /// The last 11 input levels, newest last (the pill's meter).
+    @Published private(set) var levels = [Float](repeating: 0, count: 11)
+    /// The latest partial transcript, kept through `.transcribing`.
+    private(set) var lastPartial = ""
 
     static let user = "user"
     /// One dictation owner at a time; other control callers get `busy` unless forced; "user" (hotkeys, GUI) always wins.
@@ -62,6 +66,8 @@ enum DictationError: LocalizedError, Equatable {
         generation += 1
         let gen = generation
         insertOnStop = true
+        levels = levels.map { _ in 0 }
+        lastPartial = ""
         state = .recording(level: 0, partial: "")
         showPill()
         play("Tink")
@@ -196,6 +202,8 @@ enum DictationError: LocalizedError, Equatable {
 
     private func update(_ gen: Int, level: Float? = nil, partial: String? = nil) {
         guard gen == generation, case .recording(let l, let p) = state else { return }
+        if let level { levels = Array(levels.dropFirst()) + [level] }
+        if let partial { lastPartial = partial }
         state = .recording(level: level ?? l, partial: partial ?? p)
     }
 

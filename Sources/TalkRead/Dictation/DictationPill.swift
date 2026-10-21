@@ -40,24 +40,25 @@ import SwiftUI
 
 struct DictationPillView: View {
     @ObservedObject var dictation: DictationController
-    @State private var levels = [Float](repeating: 0, count: 11)
-    @State private var lastPartial = ""
 
     private static let accent = Color(red: 1, green: 0xD2 / 255, blue: 0x1F / 255)   // #FFD21F
 
     var body: some View {
         HStack(spacing: 10) {
-            HStack(spacing: 2) {
-                ForEach(levels.indices, id: \.self) { i in
-                    Capsule().fill(Self.accent).frame(width: 3, height: 4 + CGFloat(levels[i]) * 20)
+            if case .recording = dictation.state {
+                HStack(spacing: 2) {
+                    ForEach(dictation.levels.indices, id: \.self) { i in
+                        Capsule().fill(Self.accent).frame(width: 3, height: 4 + CGFloat(dictation.levels[i]) * 20)
+                    }
                 }
+                .frame(width: 54, height: 24)
+                .accessibilityHidden(true)
             }
-            .frame(width: 54, height: 24)
-            .accessibilityHidden(true)
             Text(message)
                 .font(.system(size: 13, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.head)
+                .minimumScaleFactor(0.85)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel("Dictation: \(message)")
             Button {
@@ -71,22 +72,13 @@ struct DictationPillView: View {
         .padding(.horizontal, 14)
         .frame(width: 240, height: 44)
         .background(.regularMaterial, in: Capsule())
-        .onChange(of: dictation.state) { _, state in
-            switch state {
-            case .recording(let level, let partial):
-                levels = Array(levels.dropFirst()) + [level]
-                lastPartial = partial
-            case .idle: levels = levels.map { _ in 0 }; lastPartial = ""
-            default: break
-            }
-        }
     }
 
     private var message: String {
         switch dictation.state {
         case .idle: ""
         case .recording(_, let partial): dictation.preparing && partial.isEmpty ? "Preparing…" : partial.isEmpty ? "Listening" : partial
-        case .transcribing: lastPartial.isEmpty ? "Transcribing…" : lastPartial
+        case .transcribing: dictation.lastPartial.isEmpty ? "Transcribing…" : dictation.lastPartial
         case .done(let text): text
         case .failed(let reason): reason
         }
