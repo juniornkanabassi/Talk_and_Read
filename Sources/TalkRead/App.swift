@@ -89,6 +89,21 @@ enum TalkReadMain {
         if !model.settings.onboardingDone { show("onboarding") }
     }
 
+    /// Sol #4: a quit during a copy or paste waits until the pasteboard gate has put the user's clipboard back.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Self.afterPasteboardIdle { NSApp.reply(toApplicationShouldTerminate: true) }
+        return .terminateLater
+    }
+
+    /// Runs `then` once `gate` has no transaction running or queued, or after `cap` at the latest.
+    /// ponytail: capped so a hung transaction can never block quitting; real ones end within about a second.
+    static func afterPasteboardIdle(_ gate: PasteboardGate = .shared, cap: Duration = .seconds(5), _ then: @escaping @MainActor () -> Void) {
+        var done = false
+        let once: @MainActor () -> Void = { if !done { done = true; then() } }
+        Task { await gate.waitUntilIdle(); once() }
+        Task { try? await Task.sleep(for: cap); once() }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         model.stopReading()
         model.saveSettings()

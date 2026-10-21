@@ -568,11 +568,17 @@ struct DictationPane: View {
                         Text(HomePane.caption(entry.app, entry.date)).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
+                    Button { model.insertAgain(entry.id) } label: { Image(systemName: "text.insert") }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                        .help("Insert again where the cursor was").accessibilityLabel("Insert again")
                     CopyButton(text: entry.text)
                 }
                 .padding(.vertical, 6)
                 .contextMenu {
+                    Button("Insert Again") { model.insertAgain(entry.id) }
                     Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(entry.text, forType: .string) }
+                    Divider()
+                    Button("Delete", role: .destructive) { model.deleteDictation(entry.id) }
                 }
             }
             .scrollContentBackground(.hidden)
