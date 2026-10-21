@@ -509,10 +509,14 @@ enum SelfTestWindow {
             let r = rendered.rect(range)
             return toScreen(imageView, CGRect(x: r.minX, y: imageView.bounds.height - r.maxY, width: r.width, height: r.height))
         }
-        await pane("Rendered text (OCR)", "ocr", expected: SelfTestWindow.ocrSentence,
-                   truth: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrSecond.location)) },
-                   first: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrFirst.location)) },
-                   tolerance: 4, needed: 0.9)
+        let ocrOut = await pane("Rendered text (OCR)", "ocr", expected: SelfTestWindow.ocrSentence,
+                                truth: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrSecond.location)) },
+                                first: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrFirst.location)) },
+                                tolerance: 4, needed: 0.9)
+        if let stale = ocrOut?["ocrStale"] as? String {   // the pane above then proves the fresh recognition boxes the words
+            record("OCR stale result discarded (Sol #11)", stale == "discarded 0 shown",
+                   "a scroll during the first recognition: its result \(stale); \(ocrOut?["ocr"] as? String ?? "")")
+        }
 
         // R7b, the no-selection order. The test window is never key, so nothing in it has focus: the copy step finds
         // nothing (Copy answers with no selection), the caret step has no focused element, and the clipboard is read.
@@ -721,7 +725,17 @@ enum SelfTestClient {
         if pane == "capture" { return 0 }
         let tokens = TextKit.tokenize(capture.text)
         let locator = Locator(capture: capture, useOCR: pane == "ocr")
-        if pane == "ocr", let first = tokens.first {   // OCR answers asynchronously: wait for the first recognition
+        if pane == "ocr", let first = tokens.first {
+            // Sol #11: a scroll lands while the first recognition runs. Its result must be discarded, never shown.
+            _ = locator.rect(forWord: first.range)   // starts the first capture
+            locator.invalidate()
+            var staleShown = 0
+            for _ in 0..<100 where !locator.ocrSummary.contains("discarded") {
+                if locator.rect(forWord: first.range) != nil { staleShown += 1 }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            out["ocrStale"] = "\(locator.ocrSummary.contains("discarded") ? "discarded" : "kept") \(staleShown) shown"
+            // OCR answers asynchronously: wait for the fresh recognition.
             for _ in 0..<40 where locator.rect(forWord: first.range) == nil { try? await Task.sleep(for: .milliseconds(150)) }
         }
         func encode(_ r: CGRect?) -> Any { r.map { [$0.minX, $0.minY, $0.width, $0.height] } ?? NSNull() }
