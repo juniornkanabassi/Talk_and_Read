@@ -1,19 +1,8 @@
-// TEMPORARY. Declarations WP4 and WP5 add, so WP7 builds against main before those merges. Delete each section as
-// soon as its package is merged: the real declarations replace these unchanged. (HotkeyAction would silently shadow
-// TalkReadCore's, so that one must go with the WP5 merge.)
+// TEMPORARY. Declarations WP5 adds, so WP7 builds against main before that merge. Delete this file when WP5 is merged
+// (HotkeyAction here would silently shadow TalkReadCore's), except `delete(_:)` if WP5 has not added it yet.
 import AppKit
 import Foundation
 import TalkReadCore
-
-// MARK: WP4: TextCapture.capture(app:), ScreenshotCapture
-
-extension TextCapture {
-    @MainActor static func capture(app: NSRunningApplication?) async -> Capture? { await captureSelection() }
-}
-
-enum ScreenshotCapture {
-    @MainActor static func capture() async -> String? { nil }
-}
 
 // MARK: WP5: HotkeyAction (TalkReadCore), Hotkeys API, DictationController.handle
 

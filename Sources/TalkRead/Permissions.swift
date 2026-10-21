@@ -34,7 +34,8 @@ extension Permissions {
             default: openPane("Privacy_Microphone")   // denied or restricted: only System Settings can change it
             }
         case .screenRecording:
-            if firstAsk { _ = CGRequestScreenCaptureAccess() } else { openPane("Privacy_ScreenCapture") }
+            // OCRLocator holds the once-per-launch request, shared with the first OCR need.
+            if firstAsk { _ = OCRLocator.hasAccess(requestOnce: true) } else { openPane("Privacy_ScreenCapture") }
         }
         refresh()
     }

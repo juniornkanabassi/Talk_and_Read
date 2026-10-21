@@ -267,7 +267,7 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
             guard owner?.sessionID == id else { return }
             guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 owner = nil
-                MiniPlayer.shared.flash("No text found in that area")
+                MiniPlayer.shared.flash(ScreenshotCapture.lastFailure ?? "No text found in that area.")
                 return
             }
             startSession(text, capture: nil, id: id, source: "screenshot")
@@ -304,9 +304,11 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         modelsWarm = true
         sessionWatch = s.$state.sink { [weak self] state in self?.sessionStateChanged(state, id: id) }
         s.start()
-        if let source = capture?.source, [.accessibility, .copied, .cursor, .ocr].contains(source) {
-            highlighter = Highlighter(session: s, style: Overlay.Style())
-            highlighter?.start()
+        if capture?.hasGeometry == true {   // clipboard and provided text have no place on screen
+            let h = Highlighter(session: s, style: Overlay.Style(settings))
+            h.useOCRFallback = settings.useOCRFallback
+            h.start()
+            highlighter = h
         }
         return s
     }
