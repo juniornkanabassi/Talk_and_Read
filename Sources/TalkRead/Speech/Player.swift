@@ -4,6 +4,7 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import TalkReadCore
 
 @MainActor final class Player {
     nonisolated static let sampleRate = 24_000.0
@@ -139,7 +140,10 @@ import Foundation
     func play() {
         engineStop?.cancel()
         if !engine.isRunning {
-            do { try engine.start() } catch { return }
+            do { try engine.start() } catch {
+                Log.write("player: audio engine did not start: \(error.localizedDescription)")
+                return
+            }
         }
         node.play()
         isPlaying = true

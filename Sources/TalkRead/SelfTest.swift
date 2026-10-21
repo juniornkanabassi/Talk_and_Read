@@ -37,8 +37,9 @@ enum SelfTest {
     }
 
     /// Transcribes every audio file in the directory and reports WER. Returns the process exit code.
+    /// Becomes `await DictationSelfTest.run(dir: directory)` (WP5's entry point) when WP5 merges; kept compiling until then.
     static func asr(directory: String) async -> Int32 {
-        FileHandle.standardError.write(Data("--selftest-asr \(directory): not implemented yet (WP3)\n".utf8))
+        FileHandle.standardError.write(Data("--selftest-asr \(directory): waiting for WP5's DictationSelfTest\n".utf8))
         return 2
     }
 
@@ -144,6 +145,17 @@ enum SelfTest {
             let werR = wer(reference: reference, hypothesis: hypothesis.joined(separator: " "))
             let ok = werR <= 0.08 && clockR.maxAbs <= 0.020 && clockR.count >= 10
             print("WER at \(rate)x through the Player graph: \(pct(werR)) (\(fmt(Double(rendered.count) / Player.sampleRate)) s rendered)")
+            if engine.kind == .neural {
+                // The recogniser's own floor on fast speech: Kokoro speaking natively at this rate, no time-pitch.
+                let native = KokoroAneManager(variant: .english, defaultVoice: voice, version: .legacy)
+                try await native.initialize()
+                var heardNative: [String] = []
+                for text in speakables {
+                    let r = try await native.synthesizeDetailed(text: text, voice: voice, speed: rate)
+                    heardNative.append((try? await asr.transcribe(r.samples).text) ?? "")
+                }
+                print("reference: Kokoro speaking natively at \(rate)x, same recogniser: WER \(pct(wer(reference: reference, hypothesis: heardNative.joined(separator: " "))))")
+            }
             print("R3: \(ok ? "PASS" : "FAIL") (WER <= 8 %, clock within 20 ms)")
             pass = pass && ok
         }
@@ -206,22 +218,35 @@ enum SelfTest {
         session.player.volume = 0
         session.start()
         var log: [String] = []
-        var seekLanded = false
+        var checks: [String: Bool] = [:]
+        var held = 0, sentence = 0
         for second in 1 ... 20 {
             try await Task.sleep(nanoseconds: 1_000_000_000)
-            if second == 8 { session.setRate(2) }
-            if second == 12 { session.seek(token: 1000) }
-            if second == 14 { seekLanded = (1000 ..< 1100).contains(session.currentToken ?? -1) }
+            switch second {
+            case 8: session.setRate(2)
+            case 12: session.seek(token: 1000)
+            case 14: checks["seek lands on token 1000"] = (1000 ..< 1100).contains(session.currentToken ?? -1)
+            case 15: session.pause(); held = session.currentToken ?? -1
+            case 16:
+                checks["pause holds the word"] = session.state == .paused && session.currentToken == held
+                session.resume()
+            case 17: sentence = session.currentSentence ?? -1; session.skip(sentences: 1)
+            case 18:
+                checks["skip moves to the next sentence"] = session.currentSentence == sentence + 1
+                if let system = await engines.system.voices().first { session.setVoice(system) }
+            case 20: checks["system voice keeps reading"] = session.state == .playing && (session.currentSentence ?? 0) >= sentence + 1
+            default: break
+            }
             log.append("\(second)s:\(session.currentToken.map(String.init) ?? "-")")
         }
-        let state = session.state
         session.stop()
         let first = session.firstAudioMs ?? .max
-        let pass = state == .playing && session.player.starvations == 0 && first < 1000 && seekLanded
+        let pass = session.player.starvations == 0 && first < 1000 && checks.values.allSatisfy { $0 }
         print("long text: \(text.utf16.count) characters, \(session.tokens.count) tokens")
-        print("token per second (2x from 8 s, seek to 1000 at 12 s): \(log.joined(separator: " "))")
-        print("first audio \(first) ms; starvations \(session.player.starvations); state after 20 s \(state); seek landed \(seekLanded)")
-        print("R10: \(pass ? "PASS" : "FAIL") (first audio < 1000 ms, starvations 0)")
+        print("token each second (2x from 8 s, seek to 1000 at 12 s, pause 15-16 s, skip at 17 s, system voice from 18 s): \(log.joined(separator: " "))")
+        print("session checks: \(checks.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value ? "ok" : "FAILED")" }.joined(separator: "; "))")
+        print("first audio \(first) ms; starvations \(session.player.starvations)")
+        print("R10: \(pass ? "PASS" : "FAIL") (first audio < 1000 ms, starvations 0, session checks)")
         return pass ? 0 : 1
     }
 
@@ -263,7 +288,7 @@ enum SelfTest {
     }
 
     private static func percentile(_ sorted: [Double], _ p: Double) -> Double {
-        sorted.isEmpty ? .nan : sorted[min(Int(Double(sorted.count - 1) * p + 0.5), sorted.count - 1)]
+        sorted.isEmpty ? 0 : sorted[min(Int(Double(sorted.count - 1) * p + 0.5), sorted.count - 1)]
     }
 
     /// Word error rate after the same NeMo normalisation on both sides (digits -> words), case and punctuation folded.
@@ -289,7 +314,7 @@ enum SelfTest {
 
     static func writeWAV(_ samples: [Float], to url: URL, rate: Double = Player.sampleRate) throws {
         let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1)!
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(max(samples.count, 1))) else { return }
+        guard !samples.isEmpty, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else { return }
         buffer.frameLength = AVAudioFrameCount(samples.count)
         samples.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
