@@ -31,26 +31,32 @@ enum DictationError: LocalizedError, Equatable {
     private(set) var lastPartial = ""
 
     static let user = "user"
-    /// One dictation owner at a time; other control callers get `busy` unless forced; "user" (hotkeys, GUI) always wins.
-    private(set) var owner: String?
+    /// The one admission slot for live dictation and file transcription: one owner at a time; other control callers
+    /// get `busy` unless forced; "user" (hotkeys, GUI) always wins.
+    private(set) var owner: String? { didSet { updateBusy() } }
+    /// Recording, transcribing (live or a file) or typing (activity tracking and idle unload).
+    @Published private(set) var isBusy = false
     /// No pill and no sounds (self-tests).
     var quiet = false
 
+    /// Types `text`; `isCurrent` is checked inside the pasteboard transaction just before the paste.
+    typealias Insert = @MainActor (_ text: String, _ targetPID: pid_t?, _ isCurrent: @MainActor () -> Bool) async -> InsertResult
     let audio: DictationAudio
     let asr: DictationASR
-    private let insert: (String) async -> InsertResult
-    private var fileCaller: String?                       // the file-transcription slot
+    private let insert: Insert
+    private var fileJob: Task<String, Error>?              // set while the owner's work is a file transcription
     private var feed: AsyncStream<AVAudioPCMBuffer>.Continuation?
     private var transcript: Task<String, Error>?
     private var work: Task<String?, Never>?
     private var generation = 0                            // bumped on every start/cancel; stale work changes nothing
     private var insertOnStop = true
+    private var inserting = 0 { didSet { updateBusy() } }  // paste-last and insert-again in flight
     private var pill: DictationPill?
 
-    init(audio: DictationAudio? = nil, asr: DictationASR? = nil, insert: ((String) async -> InsertResult)? = nil) {
+    init(audio: DictationAudio? = nil, asr: DictationASR? = nil, insert: Insert? = nil) {
         self.audio = audio ?? Recorder()
         self.asr = asr ?? Transcriber()
-        self.insert = insert ?? { await Inserter.insert($0) }
+        self.insert = insert ?? { await Inserter.insert($0, targetPID: $1, isCurrent: $2) }
         history = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
     }
 
@@ -58,7 +64,7 @@ enum DictationError: LocalizedError, Equatable {
 
     func start(caller: String, force: Bool = false) throws {
         if let current = owner {
-            if current == caller { return }                       // already theirs
+            if current == caller, fileJob == nil { return }       // already recording for them
             guard caller == Self.user || force else { throw DictationError.busy(owner: current) }
             discard()                                             // theirs is dropped: nothing of it is inserted
         }
@@ -106,22 +112,39 @@ enum DictationError: LocalizedError, Equatable {
         pill?.hide()
     }
 
-    /// Transcribes an audio file without the microphone and without typing (dictate-file). Busy while a live
-    /// dictation or another file transcription runs, whoever the caller.
+    /// Transcribes an audio file without the microphone and without typing (dictate-file). It takes the same slot as
+    /// live dictation: busy while either runs, whoever the caller; the human (or a forced caller) starting a dictation
+    /// cancels it, and it then throws `busy` with the new owner.
     func transcribe(file: URL, caller: String) async throws -> String {
-        if let busy = owner ?? fileCaller { throw DictationError.busy(owner: busy) }
-        fileCaller = caller                                       // reserved before the first await
-        defer { fileCaller = nil }
-        let samples = try await Task.detached { try Transcriber.samples(of: file) }.value
-        return await clean(try await asr.transcribe(samples: samples))
+        if let busy = owner { throw DictationError.busy(owner: busy) }
+        owner = caller                                            // admitted before the first await
+        let asr = asr
+        let job = Task {
+            let samples = try await Task.detached { try Transcriber.samples(of: file) }.value
+            return try await asr.transcribe(samples: samples)
+        }
+        fileJob = job
+        defer { if fileJob == job { fileJob = nil; owner = nil } }   // after a takeover the slot is no longer ours
+        let raw = await job.result
+        guard fileJob == job else { throw DictationError.busy(owner: owner ?? Self.user) }
+        return await clean(try raw.get())
     }
 
     func pasteLast() {
         guard let last = history.first else { return }
         Task {
-            let result = await insert(last.text)
+            let result = await reinsert(last.id, targetPID: nil)
             if state == .idle, result != .inserted { show(failure: result) }
         }
+    }
+
+    /// Types a history entry's text again through the guarded Inserter (paste last, "Insert again"). With
+    /// `targetPID`, the paste goes to that process only.
+    func reinsert(_ id: UUID, targetPID: pid_t?) async -> InsertResult {
+        guard let entry = history.first(where: { $0.id == id }) else { return .failed("That dictation is no longer in the history") }
+        inserting += 1
+        defer { inserting -= 1 }
+        return await insert(entry.text, targetPID, { true })
     }
 
     /// Final text of the current or last utterance once it is typed; nil if it was cancelled or failed.
@@ -146,19 +169,21 @@ enum DictationError: LocalizedError, Equatable {
     // MARK: Utterance
 
     private func finish(_ gen: Int, _ transcript: Task<String, Error>) async -> String? {
+        // The microphone is asked for only by the current utterance, and only while it is still recording: a stale
+        // task never starts audio (it would stop the newer utterance's input) and a stop that came first is honoured.
+        guard gen == generation else { return nil }
+        guard case .recording = state else { return released() }
         do {
             try await audio.start()
         } catch {
-            guard gen == generation else { return nil }
+            guard gen == generation else { return nil }           // stale: the input running now is not ours to stop
+            if case RecorderError.stopped = error { return released() }   // released before the microphone delivered audio
             discard()
-            if case RecorderError.stopped = error {               // released before the microphone delivered audio
-                state = .idle
-                pill?.hide()
-            } else {
-                show(failure: .failed(error.localizedDescription))
-            }
+            show(failure: .failed(error.localizedDescription))
             return nil
         }
+        guard gen == generation else { return nil }               // discard() has already stopped the input
+        if case .recording = state {} else { _ = audio.stop() }   // stopped while the microphone was starting
         let raw: String
         do { raw = try await transcript.value } catch {
             guard gen == generation else { return nil }
@@ -174,7 +199,8 @@ enum DictationError: LocalizedError, Equatable {
             return nil
         }
         let app = NSWorkspace.shared.frontmostApplication?.localizedName
-        let result = insertOnStop ? await insert(text) : .inserted
+        // Re-checked inside the pasteboard transaction right before the paste: a cancelled utterance is never typed.
+        let result = insertOnStop ? await insert(text, nil, { [weak self] in self?.generation == gen }) : .inserted
         guard gen == generation else { return nil }
         owner = nil
         if result != .refusedSecure { remember(text, app: app) }   // never keep what was said into a password field
@@ -189,15 +215,32 @@ enum DictationError: LocalizedError, Equatable {
         return settings.polishWithAppleIntelligence ? await Polish.polish(text) : text
     }
 
-    /// Drops the current utterance: stops the input, abandons its transcript, releases the owner.
+    /// Drops the current utterance or file transcription: stops the input, cancels its startup and transcript (or the
+    /// file job), releases the owner. Called only for the current owner, so the input it stops is the current one.
     private func discard() {
         generation += 1
+        work?.cancel()
         _ = audio.stop()
         feed?.finish()
         feed = nil
         transcript?.cancel()
         transcript = nil
+        fileJob?.cancel()
+        fileJob = nil
         owner = nil
+    }
+
+    /// The utterance ended before any audio: nothing to transcribe or type.
+    private func released() -> String? {
+        discard()
+        state = .idle
+        pill?.hide()
+        return nil
+    }
+
+    private func updateBusy() {
+        let busy = owner != nil || inserting > 0
+        if isBusy != busy { isBusy = busy }
     }
 
     private func update(_ gen: Int, level: Float? = nil, partial: String? = nil) {
