@@ -80,8 +80,10 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     private var unloadTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
 
-    nonisolated static let voiceMegabytes = 330, dictationMegabytes = 570
-    nonisolated private static let voiceModelDir = MLModelConfigurationUtils.defaultModelsDirectory(for: .kokoroAne)
+    nonisolated static let voiceMegabytes = 390, dictationMegabytes = 570
+    /// FluidAudio keeps TTS models in its macOS TTS cache (`TtsCacheDirectory`), versioned below this folder (`ANE-v3/<rev>`).
+    nonisolated private static let voiceModelDir = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".cache/fluidaudio/Models/kokoro-82m-coreml", isDirectory: true)
     nonisolated private static let dictationModelDir = MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetUnified)
 
     private init() {
@@ -188,8 +190,11 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         }
     }
 
+    /// Any compiled CoreML model anywhere below `dir` (FluidAudio nests some per version).
     nonisolated private static func hasModel(_ dir: URL) -> Bool {
-        ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).contains { $0.hasSuffix(".mlmodelc") }
+        let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
+        while let url = files?.nextObject() as? URL { if url.pathExtension == "mlmodelc" { return true } }
+        return false
     }
 
     nonisolated private static func bytes(in dir: URL) -> Int {
