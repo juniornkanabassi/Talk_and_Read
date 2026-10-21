@@ -15,9 +15,10 @@ final class NeuralEngine: SpeechEngine {
     static let punctuationIds: Set<Int32> = [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15]
     /// One acoustic frame of `predictedDurations` is 600 samples (25 ms at 24 kHz).
     static let samplesPerFrame = 600.0
-    // ponytail: constant shift calibrated against Parakeet word starts by `--selftest-tts` (hexgrad notes a lead of a
-    // few frames at the start); re-measure if the model or FluidAudio's chain changes.
-    static let startOffset = 0.0
+    // ponytail: constant shift, measured 21 Oct on the fixture with `--selftest-tts`: duration-derived starts sat a median
+    // 40 ms after the audio's energy onset and 70 ms after Parakeet v2's word starts (hexgrad notes a lead of a few
+    // frames); -50 ms (two frames) suits both. Re-measure if the model or FluidAudio's chain changes.
+    static let startOffset = -0.05
 
     func voices() async -> [Voice] {
         let installed = Self.modelInstalled()

@@ -24,7 +24,7 @@ enum SelfTest {
             print("selftest-tts: cannot read \(path)")
             return 2
         }
-        let voice = value("--voice") ?? Settings().voice
+        let voice = value("--voice") ?? Settings().voiceID
         do {
             try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
             guard helperChecks() else { return 1 }
@@ -111,6 +111,8 @@ enum SelfTest {
 
         print("words: \(tokens.count) tokens, \(spoken) timed, \(signed.count) matched to the recogniser (\(pct(Double(signed.count) / Double(max(spoken, 1)))))")
         print("start error |ours - ASR|: median \(Int(median.rounded())) ms, p90 \(Int(p90.rounded())) ms; signed median \(Int((percentile(signed.sorted(), 0.5) * 1000).rounded())) ms (ours minus ASR)")
+        let onset = onsetErrors(audio, starts: timings.filter { $0.end > $0.start }.map(\.start))
+        print("acoustic check (no recogniser): \(onset.count) words after silence, ours - energy onset median \(Int((percentile(onset.sorted(), 0.5) * 1000).rounded())) ms, p90 |.| \(Int((percentile(onset.map(abs).sorted(), 0.9) * 1000).rounded())) ms")
         print("WER (ASR vs spoken text, 1x): \(pct(wer1))")
         print("first-chunk synthesis: \(firstChunkMs) ms; RTF \(String(format: "%.3f", synthSeconds / audioSeconds)) (\(fmt(synthSeconds)) s for \(fmt(audioSeconds)) s of audio, \(chunks.count) chunks)")
         print("invariants: \(problems.isEmpty ? "ok" : problems.prefix(10).joined(separator: "; "))")
@@ -224,6 +226,24 @@ enum SelfTest {
         return ok
     }
 
+    /// Reference-free timing check: for words whose start is within 150 ms of an energy onset that follows at least
+    /// 40 ms of silence (5 ms RMS below -34 dB of peak), our start minus that onset.
+    static func onsetErrors(_ audio: [Float], starts: [Double]) -> [Double] {
+        let hop = 120   // 5 ms at 24 kHz
+        let env: [Float] = stride(from: 0, to: audio.count, by: hop).map { i in
+            let s = audio[i ..< min(i + hop, audio.count)]
+            return (s.reduce(0) { $0 + $1 * $1 } / Float(s.count)).squareRoot()
+        }
+        let threshold = (env.max() ?? 0) * powf(10, -34 / 20)
+        return starts.compactMap { start in
+            let i = Int(start * 200)
+            guard let j = (max(i - 30, 8) ..< min(i + 30, env.count)).first(where: { j in
+                env[j] >= threshold && (1 ... 8).allSatisfy { env[j - $0] < threshold }
+            }) else { return nil }
+            return start - Double(j) / 200
+        }
+    }
+
     private static func percentile(_ sorted: [Double], _ p: Double) -> Double {
         sorted.isEmpty ? .nan : sorted[min(Int(Double(sorted.count - 1) * p + 0.5), sorted.count - 1)]
     }
@@ -263,12 +283,12 @@ enum SelfTest {
     private static func pct(_ x: Double) -> String { String(format: "%.1f %%", x * 100) }
 }
 
-/// Parakeet batch recogniser for the round trip (already-downloaded "ultra" English model).
+/// Parakeet batch recogniser for the round trip (English v2: its word timestamps track Kokoro audio better than "ultra").
 private struct Recogniser {
     let manager: AsrManager
 
     static func load() async throws -> Recogniser {
-        let models = try await AsrModels.downloadAndLoad(version: .ultra)
+        let models = try await AsrModels.downloadAndLoad(version: .v2)
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
         return Recogniser(manager: manager)

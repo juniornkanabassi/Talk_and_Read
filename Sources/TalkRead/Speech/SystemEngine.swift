@@ -47,7 +47,12 @@ private final class Job: NSObject, AVSpeechSynthesizerDelegate, @unchecked Senda
     var samples: [Float] = []
     var rate = 22_050.0
     var bytesPerSample = 4.0
-    var marks: [(byte: Int, range: NSRange)] = []
+    /// Word marker start (samples) and UTF-16 range in `text`.
+    var marks: [(sample: Double, range: NSRange)] = []
+    /// macOS 27 restarts `byteSampleOffset` at 0 every ~12 s of audio (at a sentence); markers arrive just as their
+    /// audio does, so a restart is rebased on the samples received so far.
+    var segmentBase = 0.0
+    var lastOffset = 0.0
     var continuation: CheckedContinuation<SynthChunk, Error>?
 
     init(text: String) { self.text = text }
@@ -67,7 +72,13 @@ private final class Job: NSObject, AVSpeechSynthesizerDelegate, @unchecked Senda
                 self.samples += UnsafeBufferPointer(start: i[0], count: n).map { Float($0) / 32_768 }
             }
         }, toMarkerCallback: { [weak self] markers in
-            self?.marks += markers.filter { $0.mark == .word }.map { ($0.byteSampleOffset, $0.textRange) }
+            guard let self else { return }
+            for m in markers where m.mark == .word {
+                let offset = Double(m.byteSampleOffset) / self.bytesPerSample
+                if offset < self.lastOffset { self.segmentBase = Double(self.samples.count) - offset }
+                self.lastOffset = offset
+                self.marks.append((self.segmentBase + offset, m.textRange))
+            }
         })
     }
 
@@ -87,7 +98,7 @@ private final class Job: NSObject, AVSpeechSynthesizerDelegate, @unchecked Senda
                 t += d
             }
         } else {
-            let starts = marks.map { min(Double($0.byte) / bytesPerSample / rate, duration) }
+            let starts = marks.map { min($0.sample / rate, duration) }
             for (i, m) in marks.enumerated() {
                 let end = i + 1 < starts.count ? max(starts[i + 1], starts[i]) : duration
                 words.append(SpokenWord(text: ns.substring(with: m.range), start: starts[i], end: end,

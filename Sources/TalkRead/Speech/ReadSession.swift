@@ -2,7 +2,6 @@
 // A producer task synthesises up to three chunks ahead; a 30 Hz main-actor tick maps the player's media clock to the
 // current token. Seek, skip and voice change restart synthesis at a token (PLAN decision 15); rate is instant.
 import Foundation
-import os
 import TalkReadCore
 
 @MainActor final class ReadSession: ObservableObject {
@@ -30,7 +29,6 @@ import TalkReadCore
     private var needsRestart = false
     private var generation = 0
     private var startedAt: Date?
-    private static let log = Logger(subsystem: "com.juniornkanabassi.TalkAndRead", category: "speech")
 
     init(text: String, capture: Capture?, voice: Voice, rate: Float, startToken: Int, engines: Engines, lexicon: [String: String]) {
         self.text = text
@@ -146,7 +144,7 @@ import TalkReadCore
                 synth = try await synthesize(speakable.text)
             } catch {
                 guard gen == generation else { return }
-                Self.log.error("chunk \(k) failed: \(error.localizedDescription, privacy: .public)")
+                Log.write("read: chunk \(k) failed: \(error.localizedDescription)")
                 return fail(error.localizedDescription)
             }
             guard gen == generation, !Task.isCancelled else { return }
@@ -171,7 +169,7 @@ import TalkReadCore
         do {
             return try await engine.synthesize(speakable, voice: voice.id)
         } catch let error where engine.kind == .neural && !(error is CancellationError) {
-            Self.log.error("neural voice failed (\(error.localizedDescription, privacy: .public)); retrying with the system voice")
+            Log.write("read: neural voice failed (\(error.localizedDescription)); retrying the chunk with the system voice")
             return try await engines.system.synthesize(speakable, voice: "")
         }
     }
