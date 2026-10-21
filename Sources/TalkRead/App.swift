@@ -68,6 +68,7 @@ enum TalkReadMain {
         WindowRouter.shared.openOnboarding = { [weak self] in self?.show("onboarding") }
         Task {
             await model.loadVoices()
+            model.warmUp()
             do { controlServer = try ControlServer(path: Paths.controlSocket) { await AppModel.shared.handle($0) } } catch {
                 Log.write("control socket unavailable: \(error)")
             }

@@ -71,8 +71,8 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     private var unloadTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
 
-    nonisolated static let voiceMegabytes = 390, dictationMegabytes = 590
-    /// FluidAudio keeps TTS models in its macOS TTS cache (`TtsCacheDirectory`), versioned below this folder (`ANE-v3/<rev>`).
+    nonisolated static let voiceMegabytes = 90, dictationMegabytes = 590
+    /// FluidAudio's macOS TTS cache (`TtsCacheDirectory`); watched only for download progress.
     nonisolated private static let voiceModelDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".cache/fluidaudio/Models/kokoro-82m-coreml", isDirectory: true)
     nonisolated private static let dictationModelDir = MLModelConfigurationUtils.defaultModelsDirectory(for: .parakeetUnified)
@@ -123,6 +123,18 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         refreshModelStates()
     }
 
+    /// Loads the neural voice in the background when it is installed, so the first read starts quickly (a cold load
+    /// takes 8–14 s); the idle timer unloads it again.
+    func warmUp() {
+        let v = voice(for: settings.voiceID)
+        guard v.engine == .neural else { return }
+        modelsWarm = true
+        updateActivity()
+        Task {
+            do { try await engines.neural.prepare(voice: v.id) } catch { Log.write("voice warm-up failed: \(error)") }
+        }
+    }
+
     /// The requested voice when it can play now; otherwise the best system voice (no neural model yet).
     func voice(for id: String) -> Voice {
         if let v = voices.first(where: { $0.id == id }), v.engine == .system || voiceModel == .ready { return v }
@@ -132,7 +144,7 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
 
     func refreshModelStates() {
         guard downloadTask == nil else { return }
-        voiceModel = Self.hasModel(Self.voiceModelDir) ? .ready : .missing(megabytes: Self.voiceMegabytes)
+        voiceModel = NeuralEngine.modelInstalled() ? .ready : .missing(megabytes: Self.voiceMegabytes)
         dictationModel = Self.hasModel(Self.dictationModelDir) ? .ready : .missing(megabytes: Self.dictationMegabytes)
     }
 
