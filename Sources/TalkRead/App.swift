@@ -18,8 +18,9 @@ enum TalkReadMain {
         if let file = value(after: "--selftest-tts") { exitAfter { await SelfTest.tts(file: file) } }
         if let dir = value(after: "--selftest-asr") { exitAfter { await SelfTest.asr(directory: dir) } }
         if args.contains("--selftest-window") { exit(SelfTestWindow.run()) }
+        if let dir = value(after: "--selftest-import") { exitAfter { await Importer.selfTest(directory: dir) } }
+        if args.contains("--selftest-ui-snapshots") { exit(MainActor.assumeIsolated { UISnapshots.run() }) }
         if args.contains("--selftest-control") { exitAfter { await ControlSelfTest.run(clip: value(after: "--selftest-control")) } }
-        // --selftest-import and --selftest-ui-snapshots dispatch to WP6's static functions once WP6 is merged.
 
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -28,34 +29,43 @@ enum TalkReadMain {
         app.run()
     }
 
+    /// Runs `work` and exits with its code. A main run loop, not dispatchMain: dispatchMain retires the main thread, so
+    /// main-actor AppKit work would land on a worker thread (WP5's finding). The port keeps CFRunLoopRun from
+    /// returning, and the loop from spinning, while nothing else is scheduled.
     private static func exitAfter(_ work: @escaping () async -> Int32) -> Never {
         Task { exit(await work()) }
-        dispatchMain()
+        RunLoop.main.add(Port(), forMode: .default)
+        while true { CFRunLoopRun() }
     }
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let model = AppModel.shared
     private var statusItem: NSStatusItem?
+    private var statusMenu: MenuBarMenu?
     private var showsSetupDot: Bool?
     private var hotkeys: Hotkeys?
     private var controlServer: ControlServer?
     /// Main, settings and onboarding windows; the Dock icon shows only while one is open.
     private var windows: [String: NSWindow] = [:]
-    private var miniPlayer: NSPanel?
-    private var miniPlayerWatch: AnyCancellable?
     private var pollTimer: Timer?
     private var lastSettings: TalkReadCore.Settings?
     private var watchers: Set<AnyCancellable> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = Self.mainMenu()
+        let menu = MenuBarMenu(model: model, openMain: { [weak self] in self?.show("main") },
+                               openSettings: { [weak self] in self?.show("settings") },
+                               openOnboarding: { [weak self] in self?.show("onboarding") })
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.setAccessibilityLabel("Talk and Read")
-        item.menu = statusMenu()
+        item.menu = menu.menu
         statusItem = item
+        statusMenu = menu
         updateStatusIcon()
-        model.showMainWindow = { [weak self] in self?.show("main") }
+        MiniPlayer.shared.attach(model)
+        WindowRouter.shared.showMainWindow = { [weak self] in self?.show("main") }
+        WindowRouter.shared.openOnboarding = { [weak self] in self?.show("onboarding") }
         Task {
             await model.loadVoices()
             do { controlServer = try ControlServer(path: Paths.controlSocket) { await AppModel.shared.handle($0) } } catch {
@@ -65,7 +75,7 @@ enum TalkReadMain {
 
         model.$settings.sink { [weak self] in self?.settingsChanged($0) }.store(in: &watchers)
         model.objectWillChange.receive(on: RunLoop.main).sink { [weak self] in self?.updateStatusIcon() }.store(in: &watchers)
-        model.$session.compactMap { $0 }.sink { [weak self] in self?.showMiniPlayer($0) }.store(in: &watchers)
+        model.$hotkeysPaused.sink { [weak self] in self?.hotkeys?.paused = $0 }.store(in: &watchers)
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { AppModel.shared.pauseForSleep() }
         }
@@ -93,9 +103,9 @@ enum TalkReadMain {
     private func settingsChanged(_ s: TalkReadCore.Settings) {
         defer { lastSettings = s }
         guard let old = lastSettings else { return }
+        // Reloading recreates the event tap, so only shortcut changes do it (not every speed-slider step).
         if Self.keys(s) != Self.keys(old) || s.dictationHoldKey != old.dictationHoldKey { hotkeys?.reload(s) }
         if s.launchAtLogin != old.launchAtLogin { updateLoginItem(s.launchAtLogin) }
-        if s.onboardingDone, !old.onboardingDone { windows["onboarding"]?.close() }
     }
 
     private static func keys(_ s: TalkReadCore.Settings) -> [TalkReadCore.Settings.Shortcut] {
@@ -130,8 +140,9 @@ enum TalkReadMain {
     private func poll() {
         model.refreshPermissions()
         if hotkeys == nil, model.permissions.accessibility {
-            let keys = Hotkeys(onAction: { [weak self] in self?.perform($0) })
-            keys.start(settings: model.settings)
+            let keys = Hotkeys(settings: model.settings) { [weak self] in self?.perform($0) }
+            keys.paused = model.hotkeysPaused
+            keys.start()
             hotkeys = keys
         }
         if hotkeys != nil, windows.isEmpty {
@@ -141,17 +152,11 @@ enum TalkReadMain {
     }
 
     private func perform(_ action: HotkeyAction) {
-        let d = model.dictation
         switch action {
         case .read: model.readSelection()
         case .pause: model.togglePause()
         case .screenshot: model.readScreenshot()
-        case .startRecording: try? d.start(caller: "user")
-        case .stopAndInsert: try? d.stop(insert: true, caller: "user")
-        case .cancelRecording: try? d.cancel(caller: "user")
-        case .toggleRecording:
-            if case .recording = d.state { try? d.stop(insert: true, caller: "user") } else { try? d.start(caller: "user") }
-        case .pasteLast: d.pasteLast()
+        default: model.dictation.handle(action)   // caller "user": the human always wins
         }
     }
 
@@ -185,27 +190,9 @@ enum TalkReadMain {
         button.image = image
     }
 
-    /// ponytail: a minimal menu until WP6's MenuBarMenu is attached here at merge. Its rows can reuse the
-    /// openMainWindow:, openSettings: and openOnboarding: actions below with a nil target.
-    private func statusMenu() -> NSMenu {
-        let menu = NSMenu()
-        for (title, action) in [("Read Selection", #selector(readSelection)), ("Pause or Resume", #selector(togglePause)),
-                                ("Open Talk and Read…", #selector(openMainWindow(_:))), ("Settings…", #selector(openSettings(_:))),
-                                ("Finish Setup…", #selector(openOnboarding(_:)))] {
-            menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
-        }
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Talk and Read", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        return menu
-    }
-
-    @objc private func readSelection() { model.readSelection() }
-    @objc private func togglePause() { model.togglePause() }
-    @objc func openMainWindow(_ sender: Any?) { show("main") }
-    @objc func openSettings(_ sender: Any?) { show("settings") }
-    @objc func openOnboarding(_ sender: Any?) { show("onboarding") }
-
     // MARK: Windows
+
+    @objc func openSettings(_ sender: Any?) { show("settings") }
 
     /// Opening a window is always the user's own request, so the app comes forward with a Dock icon.
     private func show(_ kind: String) {
@@ -220,9 +207,13 @@ enum TalkReadMain {
     private func makeWindow(_ kind: String) -> NSWindow {
         let title: String, view: AnyView, size: NSSize
         switch kind {
-        case "onboarding": (title, view, size) = ("Welcome to Talk and Read", AnyView(OnboardingView(model: model)), NSSize(width: 640, height: 520))
-        case "settings": (title, view, size) = ("Settings", AnyView(SettingsView(model: model)), NSSize(width: 640, height: 520))
-        default: (title, view, size) = ("Talk and Read", AnyView(MainWindowView(model: model)), NSSize(width: 980, height: 680))
+        case "onboarding":
+            let done: () -> Void = { [weak self] in self?.windows["onboarding"]?.close() }
+            (title, view, size) = ("Welcome to Talk and Read", AnyView(OnboardingView(model: model, onFinish: done)), NSSize(width: 600, height: 540))
+        case "settings":
+            (title, view, size) = ("Settings", AnyView(SettingsView(model: model)), NSSize(width: 720, height: 520))
+        default:
+            (title, view, size) = ("Talk and Read", AnyView(MainWindowView(model: model)), NSSize(width: 980, height: 680))
         }
         let window = NSWindow(contentViewController: NSHostingController(rootView: view))
         window.title = title
@@ -241,40 +232,6 @@ enum TalkReadMain {
               let kind = windows.first(where: { $0.value === window })?.key else { return }
         windows[kind] = nil
         if windows.isEmpty { NSApp.setActivationPolicy(.accessory) }
-    }
-
-    /// ponytail: a plain floating panel around WP6's MiniPlayerView until WP6's own panel is wired here at merge.
-    private func showMiniPlayer(_ session: ReadSession) {
-        guard model.settings.showMiniPlayer else { return }
-        let panel = miniPlayer ?? {
-            let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 92), styleMask: [.nonactivatingPanel, .borderless],
-                            backing: .buffered, defer: true)
-            p.level = .floating
-            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            p.isMovableByWindowBackground = true
-            p.hidesOnDeactivate = false
-            p.isOpaque = false
-            p.backgroundColor = .clear
-            if let screen = NSScreen.main?.visibleFrame {
-                p.setFrameOrigin(model.settings.miniPlayerOrigin ?? NSPoint(x: screen.midX - 220, y: screen.minY + 80))
-            }
-            return p
-        }()
-        panel.contentView = NSHostingView(rootView: MiniPlayerView(session: session))
-        panel.orderFrontRegardless()
-        miniPlayer = panel
-        miniPlayerWatch = session.$state.sink { [weak self] state in
-            switch state {
-            case .finished, .failed: break
-            default: return
-            }
-            guard let self, model.settings.miniPlayerAutoHideSeconds > 0 else { return }
-            let delay = model.settings.miniPlayerAutoHideSeconds
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(delay))
-                if let self, model.session === session, model.liveSession == nil { miniPlayer?.orderOut(nil) }
-            }
-        }
     }
 
     // MARK: Main menu (shown while a window is open; gives text fields Cut, Copy, Paste and ⌘, for Settings)

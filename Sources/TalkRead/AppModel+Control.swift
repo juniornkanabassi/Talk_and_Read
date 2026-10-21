@@ -55,7 +55,7 @@ extension AppModel {
             try checkOwner(r.caller, force: r.force)
             let id = reserve(r.caller)
             guard let s = await captureAndRead(id: id, app: NSWorkspace.shared.frontmostApplication) else {
-                throw AppError(code: "no_selection", message: playerMessage ?? "Another read started first.")
+                throw AppError(code: "no_selection", message: "Select some text first (or another read started first).")
             }
             return try await firstAudio(s)
 
@@ -136,8 +136,8 @@ extension AppModel {
                 if let id, owner?.sessionID == id { owner = nil }
                 throw AppError(code: "failed", message: "Could not open \(url.lastPathComponent): \(error.localizedDescription)")
             }
-            readerItem = item
-            if a["show"] == "1" { showMainWindow?() }
+            WindowRouter.shared.open(item)                       // the reader shows it; no window comes forward
+            if a["show"] == "1" { WindowRouter.shared.showMainWindow() }
             var data: [String: JSONValue] = ["id": .string(item.id.uuidString), "title": .string(item.title), "kind": .string(item.kind)]
             if let id {
                 guard owner?.sessionID == id else { throw AppError(code: "superseded", message: "Another read started first.") }

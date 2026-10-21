@@ -15,12 +15,18 @@ enum ScreenshotCapture {
     @MainActor static func capture() async -> String? { nil }
 }
 
-// MARK: WP5: HotkeyAction (TalkReadCore), Hotkeys API
+// MARK: WP5: HotkeyAction (TalkReadCore), Hotkeys API, DictationController.handle
 
 enum HotkeyAction: Equatable { case startRecording, stopAndInsert, cancelRecording, toggleRecording, pasteLast, read, pause, screenshot }
 
 extension Hotkeys {
-    convenience init(onAction: @escaping (HotkeyAction) -> Void) { self.init() }
-    func start(settings: Settings) {}
+    convenience init(settings: Settings, onAction: ((HotkeyAction) -> Void)? = nil) { self.init() }
+    @discardableResult func start() -> Bool { false }
+    var paused: Bool { get { false } set {} }
     func reload(_ settings: Settings) {}
+}
+
+extension DictationController {
+    func handle(_ action: HotkeyAction) {}
+    func delete(_ id: UUID) {}   // asked of WP5 (21 Oct): drop the entry from `history` and rewrite Paths.history
 }

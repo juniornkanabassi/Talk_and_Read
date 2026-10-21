@@ -49,17 +49,8 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     @Published private(set) var voiceModel: ModelState = .missing(megabytes: AppModel.voiceMegabytes)
     @Published private(set) var dictationModel: ModelState = .missing(megabytes: AppModel.dictationMegabytes)
 
-    // Additive members (not in the ESSENTIALS contract; the UI may bind to them).
-    /// One line for the mini player when there is nothing to play: "Select some text first", "Reading clipboard".
-    @Published private(set) var playerMessage: String?
-    /// The library item the reader shows; set by the control `open` command.
-    @Published var readerItem: LibraryItem?
-    /// A permission or a model is missing: the menu bar dot and the "Finish setup" row.
-    var needsSetup: Bool {
-        !permissions.accessibility || !permissions.microphone || voiceModel != .ready || dictationModel != .ready
-    }
-    /// Set by AppDelegate: windows live there, not in the model.
-    var showMainWindow: (() -> Void)?
+    /// Additive (not in ESSENTIALS): true while the shortcut recorder is listening, so the global hotkeys stand down.
+    @Published var hotkeysPaused = false
 
     /// Replaceable so the control self-test can read with a silent engine.
     var engines = Engines()
@@ -155,17 +146,25 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
                     try await self.engines.neural.prepare(voice: id)
                 }
             }
-            if dictationModel != .ready {
+            if dictationModel != .ready, !Task.isCancelled {
                 // ponytail: the contract has no transcriber load call; transcribing one second of silence loads (and on
                 // first use downloads) the shared model. Swap for a DictationController load call if WP5 adds one.
                 await download(\.dictationModel, dir: Self.dictationModelDir, megabytes: Self.dictationMegabytes) {
                     _ = try await self.dictation.transcribe(file: try Self.silentClip(), caller: "user")
                 }
             }
+            guard !Task.isCancelled else { return }   // cancelModelDownload has already reset the states
             modelsWarm = true
             downloadTask = nil
             await loadVoices()
         }
+    }
+
+    /// Stops waiting for the download; whatever finished stays, the rest shows as missing again.
+    func cancelModelDownload() {
+        downloadTask?.cancel()
+        downloadTask = nil
+        refreshModelStates()
     }
 
     /// Progress is bytes on disk against the expected size: FluidAudio's loaders report none through our contracts.
@@ -185,6 +184,7 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
             self[keyPath: state] = .ready
         } catch {
             poll.cancel()
+            guard !Task.isCancelled else { return refreshModelStates() }
             self[keyPath: state] = .failed(error.localizedDescription)
             Log.write("model download failed: \(error)")
         }
@@ -252,11 +252,10 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         guard owner?.sessionID == id else { return nil }
         guard let capture, !capture.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             owner = nil
-            playerMessage = "Select some text first"
+            MiniPlayer.shared.flash("Select some text first")
             return nil
         }
-        let s = startSession(capture.text, capture: capture, id: id)
-        if capture.source == .clipboard { playerMessage = "Reading clipboard" }
+        let s = startSession(capture.text, capture: capture, id: id)   // the player says "Reading clipboard" itself
         appendRead(capture.text, app: app?.localizedName)
         return s
     }
@@ -268,7 +267,7 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
             guard owner?.sessionID == id else { return }
             guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 owner = nil
-                playerMessage = "No text found in that area"
+                MiniPlayer.shared.flash("No text found in that area")
                 return
             }
             startSession(text, capture: nil, id: id, source: "screenshot")
@@ -276,13 +275,14 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         }
     }
 
-    func speak(_ text: String, title: String?, caller: String) throws {
+    /// `voice` (additive) reads with that voice without changing the setting: the Voices pane's preview.
+    func speak(_ text: String, title: String?, caller: String, voice: String? = nil) throws {
         try checkOwner(caller, force: false)
-        startSession(text, capture: nil, id: reserve(caller))
+        startSession(text, capture: nil, id: reserve(caller), voice: voice.map { self.voice(for: $0) })
     }
 
     func read(_ item: LibraryItem, fromToken: Int?) {
-        guard let text = try? documentText(item) else { playerMessage = "Could not open “\(item.title)”"; return }
+        guard let text = try? documentText(item) else { MiniPlayer.shared.flash("Could not open “\(item.title)”"); return }
         startDocument(item, text: text, fromToken: fromToken, id: reserve("user"))
     }
 
@@ -299,7 +299,6 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         let r = rate ?? settings.speed
         let s = ReadSession(text: text, capture: capture, voice: v, rate: r, startToken: startToken, engines: engines,
                             lexicon: Self.loadJSON(Paths.pronunciations) ?? [:])
-        playerMessage = nil
         session = s
         sessionInfo = (v.id, source ?? capture.map { "\($0.source)" } ?? "provided", r, item)
         modelsWarm = true
@@ -366,6 +365,9 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         settings.voiceID = id
     }
 
+    /// Additive: the Dictation pane's delete. The history belongs to DictationController (WP5).
+    func deleteDictation(_ id: UUID) { dictation.delete(id) }
+
     func pauseForSleep() {
         if let s = liveSession, s.state != .paused { s.pause() }
     }
@@ -408,8 +410,8 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         let doc = try await Task.detached { try await Importer.load(url) }.value
         let ext = url.pathExtension.lowercased()
         let id = UUID()
-        let item = LibraryItem(id: id, title: url.deletingPathExtension().lastPathComponent, kind: Self.kind(ext),
-                               fileName: "\(id.uuidString).\(ext.isEmpty ? "txt" : ext)", added: Date(), position: 0)
+        let item = LibraryItem(id: id, title: doc.title, kind: doc.kind, fileName: "\(id.uuidString).\(ext.isEmpty ? "txt" : ext)",
+                               added: Date(), position: 0)
         try FileManager.default.createDirectory(at: Paths.documents, withIntermediateDirectories: true)
         try FileManager.default.copyItem(at: url, to: Paths.documents.appendingPathComponent(item.fileName))
         try store(doc.text, for: item)
@@ -419,8 +421,7 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     func importWebPage(_ url: URL) async throws -> LibraryItem {
         let doc = try await Task.detached { try await Importer.load(web: url) }.value
         let id = UUID()
-        let item = LibraryItem(id: id, title: url.host() ?? url.absoluteString, kind: "web", fileName: "\(id.uuidString).txt",
-                               added: Date(), position: 0)
+        let item = LibraryItem(id: id, title: doc.title, kind: "web", fileName: "\(id.uuidString).txt", added: Date(), position: 0)
         try store(doc.text, for: item)
         return add(item)
     }
@@ -475,15 +476,6 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
 
     nonisolated private static func textURL(_ item: LibraryItem) -> URL {
         Paths.documents.appendingPathComponent("\(item.id.uuidString).txt")
-    }
-
-    nonisolated private static func kind(_ ext: String) -> String {
-        switch ext {
-        case "pdf", "rtf", "docx", "epub": return ext
-        case "md", "markdown": return "markdown"
-        case "html", "htm": return "html"
-        default: return "text"
-        }
     }
 
     // MARK: Permissions

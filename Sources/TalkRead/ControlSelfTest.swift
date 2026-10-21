@@ -74,6 +74,19 @@ enum ControlSelfTest {
         await step("b speak, same request id", again, .replayed)
         await step("b stop", ["stop", "--caller", "b"], .ok)
 
+        // Documents: `open` imports into the library (copy + text beside it) without showing a window; `read-file` reads.
+        let docs = URL(fileURLWithPath: "Tests/Fixtures/documents")
+        await step("a open sample.pdf", ["open", docs.appendingPathComponent("sample.pdf").path, "--caller", "a"], .ok)
+        let item = model.library.first
+        let copied = item.map { FileManager.default.fileExists(atPath: Paths.documents.appendingPathComponent($0.fileName).path) } ?? false
+        let text = item.flatMap { try? model.documentText($0) } ?? ""
+        let stored = item?.kind == "pdf" && copied && text.contains("Marlowe Quay")
+        results.append(stored)
+        print("\(stored ? "PASS" : "FAIL")  library: PDF copied as \(item?.fileName ?? "-"), text \(text.utf16.count) UTF-16 units")
+        await step("a read-file sample.txt", ["read-file", docs.appendingPathComponent("sample.txt").path, "--caller", "a"], .audio)
+        await step("b skip while a reads", ["skip", "--caller", "b"], .busy)
+        await step("a stop", ["stop", "--caller", "a"], .ok)
+
         // Two callers transcribe at once: the shared transcriber admits one, the other is told busy.
         if let clip = clip ?? fixture() {
             async let first = call(cli, ["dictate-file", clip, "--caller", "a"])
