@@ -13,9 +13,12 @@ struct DictationEntry: Codable, Identifiable {
     @Published private(set) var state: State = .idle
     @Published private(set) var history: [DictationEntry] = []
 
-    func start() { fatalError("WP5") }
-    func stop(insert: Bool) { fatalError("WP5") }
-    func cancel() { fatalError("WP5") }
-    func transcribe(file: URL) async throws -> String { fatalError("WP5") }
+    /// One dictation owner at a time; other control callers get `busy` unless forced; "user" (hotkeys, GUI) always wins.
+    var owner: String? { nil }
+
+    func start(caller: String) throws { fatalError("WP5") }
+    func stop(insert: Bool, caller: String) throws { fatalError("WP5") }
+    func cancel(caller: String) throws { fatalError("WP5") }
+    func transcribe(file: URL, caller: String) async throws -> String { fatalError("WP5") }
     func pasteLast() { fatalError("WP5") }
 }
