@@ -28,6 +28,7 @@ enum ControlSelfTest {
     struct Outcome { let status: Int32; let response: ControlResponse?; let text: String }
 
     @MainActor static func run(clip: String?) async -> Int32 {
+        setvbuf(stdout, nil, _IOLBF, 0)   // one line at a time, also when piped
         guard let home = ProcessInfo.processInfo.environment["TALKREAD_HOME"], !home.isEmpty else {
             print("--selftest-control needs TALKREAD_HOME set to a disposable folder.")
             return 2
@@ -89,6 +90,14 @@ enum ControlSelfTest {
             results.append(false)
         }
         model.stopReading()
+
+        // E3: with nothing reading or dictating, the model, engines and control server must sit still.
+        let cpu0 = cpuSeconds(), t0 = Date()
+        try? await Task.sleep(for: .seconds(20))
+        let percent = (cpuSeconds() - cpu0) / Date().timeIntervalSince(t0) * 100
+        results.append(percent < 0.5)
+        print(String(format: "%@  idle CPU over 20 s: %.3f %% (limit 0.5 %%)", percent < 0.5 ? "PASS" : "FAIL", percent))
+
         let passed = results.filter { $0 }.count
         print("control self-test: \(passed)/\(results.count) passed")
         return passed == results.count ? 0 : 1
@@ -123,6 +132,12 @@ enum ControlSelfTest {
             return Outcome(status: p.terminationStatus, response: try? JSONDecoder().decode(ControlResponse.self, from: data),
                            text: String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
         }.value
+    }
+
+    private static func cpuSeconds() -> Double {
+        var u = rusage()
+        getrusage(RUSAGE_SELF, &u)
+        return Double(u.ru_utime.tv_sec + u.ru_stime.tv_sec) + Double(u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1e6
     }
 
     private static func fixture() -> String? {
