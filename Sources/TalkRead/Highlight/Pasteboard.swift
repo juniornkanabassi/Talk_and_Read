@@ -13,14 +13,18 @@ actor PasteboardGate {
     @MainActor private var ours: Int?
     private var busy = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(pasteboard: NSPasteboard = .general) {
         self.pasteboard = pasteboard
     }
 
+    /// A cancelled task still runs its body (the body checks `Task.isCancelled` before acting) and still gets the
+    /// clipboard back: the restore runs on every exit, return, throw or cancellation; only the process ending skips it,
+    /// which is why quitting waits for `waitUntilIdle()`.
     func transaction<T>(_ body: @MainActor () async throws -> T) async rethrows -> T {
         if busy { await withCheckedContinuation { waiters.append($0) } } else { busy = true }
-        defer { if waiters.isEmpty { busy = false } else { waiters.removeFirst().resume() } }  // FIFO hand-over
+        defer { handOver() }
         let snapshot = await takeSnapshot()
         do {
             let result = try await body()
@@ -30,6 +34,20 @@ actor PasteboardGate {
             await restore(snapshot)
             throw error
         }
+    }
+
+    /// Returns once no transaction is running or queued (immediately when idle).
+    func waitUntilIdle() async {
+        guard busy else { return }
+        await withCheckedContinuation { idleWaiters.append($0) }
+    }
+
+    /// FIFO: the next queued transaction starts only after this one restored; with none queued the gate is idle.
+    private func handOver() {
+        if !waiters.isEmpty { return waiters.removeFirst().resume() }
+        busy = false
+        idleWaiters.forEach { $0.resume() }
+        idleWaiters = []
     }
 
     /// Writes `string` as the only item, marked transient, concealed and auto-generated so clipboard managers skip it.
@@ -46,17 +64,29 @@ actor PasteboardGate {
         return pasteboard.changeCount
     }
 
-    /// Polls every 10 ms until changeCount moves off `count`; the change is then treated as ours (we asked the app to
-    /// copy). Waits 20 ms more first, because some apps write in two steps.
+    /// Polls every 10 ms until changeCount moves off `count` and takes that first observed change as ours (we asked the
+    /// app to copy). It must still be the current one 20 ms later: any later change is someone else's (Junior copying
+    /// meanwhile), so the copy is not verified (false) and the restore leaves that newer clipboard alone (Sol #3).
+    /// False too on timeout or cancellation.
+    // ponytail: a second copy landing inside the same 10 ms poll as the app's is indistinguishable from it.
     @MainActor func waitForChange(from count: Int, timeout: Double) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while pasteboard.changeCount == count {
-            if Date() >= deadline { return false }
+            if Date() >= deadline || Task.isCancelled { return false }
             try? await Task.sleep(for: .milliseconds(10))
         }
-        try? await Task.sleep(for: .milliseconds(20))
-        ours = pasteboard.changeCount
-        return true
+        let first = pasteboard.changeCount
+        ours = first
+        try? await Task.sleep(for: .milliseconds(20))   // settle: an app writing in two steps, or a newer copy
+        return pasteboard.changeCount == first
+    }
+
+    /// The pasteboard's string, only while it still holds this transaction's own change (checked again after the read,
+    /// so a copy by someone else in between is never returned as ours).
+    @MainActor func ownString() -> String? {
+        guard let ours, pasteboard.changeCount == ours, let string = pasteboard.string(forType: .string),
+              pasteboard.changeCount == ours else { return nil }
+        return string
     }
 
     // MARK: - Snapshot

@@ -17,7 +17,7 @@ enum SelfTestWindow {
             app.setActivationPolicy(.prohibited)
             Task { @MainActor in exit(await SelfTestClient.run(host: host, pane: args[i + 2], pasteboard: args[i + 3])) }
         } else {
-            app.setActivationPolicy(.accessory)
+            app.setActivationPolicy(.prohibited)   // never activated: Junior's app keeps focus (COMMON)
             Task { @MainActor in exit(await SelfTestHost().run()) }
         }
         app.run()
@@ -177,20 +177,106 @@ enum SelfTestWindow {
         record("Pasteboard external change kept", pb.string(forType: .string) == "The user's new copy" && pb.pasteboardItems?.count == 1,
                "a change by someone else during the transaction is left alone")
 
+        func copy(_ text: String) {
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+        }
         original = fill()
-        let copied = await gate.transaction { () -> String? in
+        let copied = await gate.transaction { () -> TextCapture.Copied in
             let before = pb.changeCount
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {   // the app answering Edit ▸ Copy
-                pb.clearContents()
-                pb.setString("copied by the app", forType: .string)
-            }
-            return await gate.waitForChange(from: before, timeout: 0.3) ? pb.string(forType: .string) : nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { copy("copied by the app") }   // the app answering Edit ▸ Copy
+            return await TextCapture.readCopy(gate: gate, before: before)
         }
         let start = Date()
         let changed = await gate.transaction { await gate.waitForChange(from: pb.changeCount, timeout: 0.3) }
         let waited = Date().timeIntervalSince(start)
-        record("Pasteboard copy wait", copied == "copied by the app" && contents() == original && !changed && (0.28...0.6).contains(waited),
-               "read \"\(copied ?? "nil")\" then restored; no change times out after \(Int(waited * 1000)) ms")
+        record("Pasteboard copy wait", copied == .text("copied by the app") && contents() == original && !changed && (0.28...0.6).contains(waited),
+               "read \(copied) then restored; no change times out after \(Int(waited * 1000)) ms")
+
+        // Sol #3: Junior copies just after the app answered (inside the 20 ms settle, or between the wait and the read).
+        // Not ours: nothing is read and his newer copy is never restored over.
+        _ = fill()
+        let duringSettle = await gate.transaction { () -> TextCapture.Copied in
+            let before = pb.changeCount
+            copy("copied by the app")   // the app answers at once; the first observed change is this one
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.008) { copy("Junior's newer copy") }
+            return await TextCapture.readCopy(gate: gate, before: before)
+        }
+        let keptAfterSettle = pb.string(forType: .string) == "Junior's newer copy" && pb.pasteboardItems?.count == 1
+        _ = fill()
+        let beforeRead = await gate.transaction { () -> String? in
+            let before = pb.changeCount
+            copy("copied by the app")
+            guard await gate.waitForChange(from: before, timeout: 0.3) else { return "not verified" }
+            copy("Junior's newer copy")   // lands between the verified wait and the read
+            return gate.ownString()
+        }
+        let keptAfterRead = pb.string(forType: .string) == "Junior's newer copy" && pb.pasteboardItems?.count == 1
+        record("Pasteboard newer copy kept (Sol #3)", duringSettle == .clipboardChanged && keptAfterSettle && beforeRead == nil && keptAfterRead,
+               "copy during the settle: \(duringSettle), kept: \(keptAfterSettle); copy before the read: \(beforeRead ?? "nil read"), kept: \(keptAfterRead)")
+
+        // Sol #4: the restore runs when the body throws, when its task is cancelled mid-body and when it is cancelled
+        // while queued; waitUntilIdle returns at once when idle and otherwise only after every queued transaction restored.
+        struct Thrown: Error {}
+        original = fill()
+        _ = try? await gate.transaction { () throws -> Void in
+            gate.write("temporary text")
+            throw Thrown()
+        }
+        let afterThrow = contents() == original
+        let cancelStart = Date()
+        let running = Task { @MainActor in
+            try await gate.transaction {
+                gate.write("dictated text")
+                try await Task.sleep(for: .seconds(5))
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+        running.cancel()
+        _ = await running.result
+        let afterCancel = contents() == original && Date().timeIntervalSince(cancelStart) < 1
+        let holder = Task { @MainActor in
+            await gate.transaction {
+                gate.write("first")
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        let queued = Task { @MainActor in
+            await gate.transaction { () -> Bool in
+                if !Task.isCancelled { gate.write("second") }   // what a caller does with a cancelled turn
+                return Task.isCancelled
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        queued.cancel()
+        let queuedSawCancel = await queued.value
+        await holder.value
+        let afterQueuedCancel = contents() == original && queuedSawCancel
+        let idleStart = Date()
+        await gate.waitUntilIdle()
+        let idleAtOnce = Date().timeIntervalSince(idleStart) < 0.05
+        _ = Task { @MainActor in
+            await gate.transaction {
+                gate.write("a")
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        _ = Task { @MainActor in
+            await gate.transaction {
+                gate.write("b")
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        let drainStart = Date()
+        await gate.waitUntilIdle()
+        let drained = Date().timeIntervalSince(drainStart)
+        let restoredAtIdle = contents() == original
+        record("Pasteboard throw/cancel/idle (Sol #4)",
+               afterThrow && afterCancel && afterQueuedCancel && idleAtOnce && restoredAtIdle && drained >= 0.2,
+               "restored after throw: \(afterThrow), after cancel mid-body: \(afterCancel), after cancel while queued: \(afterQueuedCancel); idle wait \(idleAtOnce ? "immediate" : "slow") when idle, \(Int(drained * 1000)) ms with two queued, original back at idle: \(restoredAtIdle)")
     }
 
     // MARK: Screenshot OCR (R12) and the OCR selection-colour anchor (R6, R7d), headless
@@ -423,10 +509,14 @@ enum SelfTestWindow {
             let r = rendered.rect(range)
             return toScreen(imageView, CGRect(x: r.minX, y: imageView.bounds.height - r.maxY, width: r.width, height: r.height))
         }
-        await pane("Rendered text (OCR)", "ocr", expected: SelfTestWindow.ocrSentence,
-                   truth: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrSecond.location)) },
-                   first: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrFirst.location)) },
-                   tolerance: 4, needed: 0.9)
+        let ocrOut = await pane("Rendered text (OCR)", "ocr", expected: SelfTestWindow.ocrSentence,
+                                truth: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrSecond.location)) },
+                                first: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrFirst.location)) },
+                                tolerance: 4, needed: 0.9)
+        if let stale = ocrOut?["ocrStale"] as? String {   // the pane above then proves the fresh recognition boxes the words
+            record("OCR stale result discarded (Sol #11)", stale == "discarded 0 shown",
+                   "a scroll during the first recognition: its result \(stale); \(ocrOut?["ocr"] as? String ?? "")")
+        }
 
         // R7b, the no-selection order. The test window is never key, so nothing in it has focus: the copy step finds
         // nothing (Copy answers with no selection), the caret step has no focused element, and the clipboard is read.
@@ -635,7 +725,17 @@ enum SelfTestClient {
         if pane == "capture" { return 0 }
         let tokens = TextKit.tokenize(capture.text)
         let locator = Locator(capture: capture, useOCR: pane == "ocr")
-        if pane == "ocr", let first = tokens.first {   // OCR answers asynchronously: wait for the first recognition
+        if pane == "ocr", let first = tokens.first {
+            // Sol #11: a scroll lands while the first recognition runs. Its result must be discarded, never shown.
+            _ = locator.rect(forWord: first.range)   // starts the first capture
+            locator.invalidate()
+            var staleShown = 0
+            for _ in 0..<100 where !locator.ocrSummary.contains("discarded") {
+                if locator.rect(forWord: first.range) != nil { staleShown += 1 }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            out["ocrStale"] = "\(locator.ocrSummary.contains("discarded") ? "discarded" : "kept") \(staleShown) shown"
+            // OCR answers asynchronously: wait for the fresh recognition.
             for _ in 0..<40 where locator.rect(forWord: first.range) == nil { try? await Task.sleep(for: .milliseconds(150)) }
         }
         func encode(_ r: CGRect?) -> Any { r.map { [$0.minX, $0.minY, $0.width, $0.height] } ?? NSNull() }
