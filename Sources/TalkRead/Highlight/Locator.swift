@@ -10,6 +10,8 @@ import TalkReadCore
 
     let capture: Capture
     private(set) var pathUsed: Path = .direct
+    /// What the last node map build saw, for logs and the self-test.
+    private(set) var nodeMapSummary = "not built"
     private let tokens: [Token]
     private let useOCR: Bool
 
@@ -76,6 +78,8 @@ import TalkReadCore
         return rect(forWord: range)
     }
 
+    var ocrSummary: String { (ocrLocator ?? nil)?.summary ?? "not used" }
+
     /// After a scroll, resize or window move. The node map stays (scrolling doesn't change nodes); OCR re-captures.
     func invalidate() {
         clipCache = nil
@@ -138,6 +142,7 @@ import TalkReadCore
         guard let window = capture.window, !tokens.isEmpty else { return }
 
         var nodes: [(element: AXUIElement, value: String, chrome: Bool, inside: Bool)] = []
+        var webAreas: [AXUIElement] = []
         var stack: [(element: AXUIElement, chrome: Bool, inside: Bool)] = [(window, false, false)]
         var visited = 0
         while let (node, parentChrome, parentInside) = stack.popLast(), visited < 8000 {
@@ -147,6 +152,7 @@ import TalkReadCore
             let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome)
             let inside = parentInside || capture.element.map { CFEqual($0, node) } == true
             var descend = true
+            if role == "AXWebArea" { webAreas.append(node) }
             if let role, role == "AXStaticText" || role == "AXTextArea" || role == "AXTextField",
                let value = axAttribute(node, kAXValueAttribute) as? String, !value.isEmpty {
                 if role != "AXStaticText", let children, !children.isEmpty {
@@ -165,8 +171,10 @@ import TalkReadCore
 
         let stream = NodeAlignment.stream(nodes.map { ($0.value, $0.chrome) })
         guard !stream.isEmpty else { return }
-        let prefer = start == 0 ? preferredStream(stream, nodes: nodes.map { ($0.element, $0.inside) }) : nil
-        for (i, q) in NodeAlignment.best(stream.map(\.word), tokens.map { $0.text.lowercased() }, from: start, prefer: prefer) {
+        let prefer = start == 0 ? preferredStream(stream, nodes: nodes.map { ($0.element, $0.inside) }, webAreas: webAreas) : nil
+        let aligned = NodeAlignment.best(stream.map(\.word), tokens.map { $0.text.lowercased() }, from: start, prefer: prefer)
+        nodeMapSummary = "from \(start): \(nodes.count) nodes, \(stream.count) words, prefer \(prefer.map { String($0.count) } ?? "nil"), placed \(aligned.count)"
+        for (i, q) in aligned {
             let range = stream[q].range
             map[i] = (nodes[stream[q].node].element, CFRange(location: range.lowerBound, length: range.count))
         }
@@ -175,13 +183,14 @@ import TalkReadCore
     /// Stream words that belong to the selection's own copy (PLAN decision 13): the capture element's words inside the
     /// selected range when the element is itself a text node; else the words drawn inside the selection's bounds
     /// (AXBoundsForRange on the element, or WebKit's selected text marker range); else every word under the element.
-    private func preferredStream(_ stream: [(node: Int, word: String, range: Range<Int>)], nodes: [(element: AXUIElement, inside: Bool)]) -> Set<Int>? {
+    private func preferredStream(_ stream: [(node: Int, word: String, range: Range<Int>)], nodes: [(element: AXUIElement, inside: Bool)],
+                                 webAreas: [AXUIElement]) -> Set<Int>? {
         let length = capture.text.utf16.count
         if let element = capture.element, let start = capture.selectionStart,
            let own = nodes.firstIndex(where: { CFEqual($0.element, element) }) {
             return Set(stream.indices.filter { stream[$0].node == own && stream[$0].range.lowerBound >= start && stream[$0].range.upperBound <= start + length })
         }
-        if let selection = selectionBounds() {
+        if let selection = selectionBounds(webAreas: webAreas) {
             var frames: [Int: CGRect?] = [:]
             return Set(stream.indices.filter { q in
                 let node = stream[q].node
@@ -198,19 +207,25 @@ import TalkReadCore
         return inside.isEmpty ? nil : Set(stream.indices.filter { inside.contains(stream[$0].node) })
     }
 
-    /// The selection's bounding box in AX (top-left) coordinates, read once.
+    /// The selection's bounding box in AX (top-left) coordinates, read once: AXBoundsForRange on the element when its
+    /// range is known; else the selected text marker range (WebKit, Chromium) of the element or, when the window is not
+    /// key and nothing has focus, of the web area whose selection is the captured text.
     private var selectionBoundsValue: CGRect?? = nil
-    private func selectionBounds() -> CGRect? {
+    private func selectionBounds(webAreas: [AXUIElement]) -> CGRect? {
         if let cached = selectionBoundsValue { return cached }
         var result: CGRect?
-        if let element = capture.element {
-            if let start = capture.selectionStart {
-                result = axBounds(element, location: start, length: capture.text.utf16.count)
-            } else if let marker = axAttribute(element, "AXSelectedTextMarkerRange"),
-                      let value = axParameterizedAttribute(element, "AXBoundsForTextMarkerRange", parameter: marker),
-                      CFGetTypeID(value) == AXValueGetTypeID() {
+        if let element = capture.element, let start = capture.selectionStart {
+            result = axBounds(element, location: start, length: capture.text.utf16.count)
+        } else {
+            let wanted = capture.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            for area in (capture.element.map { [$0] } ?? []) + webAreas {
+                guard let marker = axAttribute(area, "AXSelectedTextMarkerRange"),
+                      (axParameterizedAttribute(area, "AXStringForTextMarkerRange", parameter: marker) as? String)?
+                          .trimmingCharacters(in: .whitespacesAndNewlines) == wanted,
+                      let value = axParameterizedAttribute(area, "AXBoundsForTextMarkerRange", parameter: marker),
+                      CFGetTypeID(value) == AXValueGetTypeID() else { continue }
                 var rect = CGRect.zero
-                if AXValueGetValue(value as! AXValue, .cgRect, &rect), !rect.isEmpty { result = rect }
+                if AXValueGetValue(value as! AXValue, .cgRect, &rect), !rect.isEmpty { result = rect; break }
             }
         }
         selectionBoundsValue = .some(result)

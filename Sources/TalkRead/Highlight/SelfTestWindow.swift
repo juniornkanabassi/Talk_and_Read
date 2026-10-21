@@ -61,7 +61,8 @@ enum SelfTestWindow {
         layout.drawGlyphs(forGlyphRange: layout.glyphRange(for: container), at: origin)
         NSGraphicsContext.restoreGraphicsState()
         let rect = { (range: NSRange) -> CGRect in
-            layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)
+            _ = storage   // the layout manager does not retain its text storage
+            return layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)
                 .offsetBy(dx: origin.x, dy: origin.y)
         }
         return (context.makeImage()!, rect)
@@ -100,7 +101,7 @@ enum SelfTestWindow {
         NSPasteboard(name: NSPasteboard.Name(pasteboardName)).releaseGlobally()
 
         print("\nTalk and Read --selftest-window")
-        for r in results { print("\(r.status.padding(toLength: 5, withPad: " ", startingAt: 0)) \(r.name.padding(toLength: 34, withPad: " ", startingAt: 0)) \(r.detail)") }
+        for r in results { print("\(r.status.padding(toLength: 5, withPad: " ", startingAt: 0)) \(r.name.padding(toLength: 38, withPad: " ", startingAt: 0)) \(r.detail)") }
         let failed = results.filter { $0.status == "FAIL" }.count
         print("\(results.filter { $0.status == "PASS" }.count) passed, \(failed) failed, \(results.filter { $0.status == "SKIP" }.count) skipped")
         fflush(stdout)
@@ -157,7 +158,7 @@ enum SelfTestWindow {
         let capture = Task { @MainActor in
             await gate.transaction {
                 secondStarted = Date()
-                secondSaw = pb.string(forType: .string)
+                secondSaw = pb.pasteboardItems?.first?.string(forType: .string)
                 gate.write("copied selection")
             }
         }
@@ -284,7 +285,8 @@ enum SelfTestWindow {
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 1100, height: 960))
         let frame = NSRect(x: screen.visibleFrame.minX + 40, y: screen.visibleFrame.maxY - 1000, width: 1100, height: 960)
-        let window = Panel(contentRect: frame, styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
+        let window = Panel(contentRect: frame, styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: true)
+        window.setFrame(frame, display: false)   // a titled panel's init moves a frame on a second screen onto the main one
         window.title = "Talk and Read self-test"
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
@@ -337,6 +339,10 @@ enum SelfTestWindow {
         await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
             loaded = done
             web.loadHTMLString("<html><body style=\"margin:12px;font:17px -apple-system;background:#fff;color:#000\"><p id=\"a\">\(SelfTestWindow.webParagraph)</p><p id=\"b\">\(SelfTestWindow.webParagraph)</p></body></html>", baseURL: nil)
+        }
+        guard window.screen == screen, screen.frame.contains(window.frame) else {
+            record("Test window panes", nil, "not run: the window could not be placed on \(screen.localizedName) (frame \(window.frame))")
+            return
         }
         window.orderFrontRegardless()
         defer { window.orderOut(nil); window.close(); NSApp.mainMenu = nil }
@@ -422,6 +428,34 @@ enum SelfTestWindow {
                    first: sentenceTokens.map { imageRect(SelfTestWindow.ns($0.range, plus: ocrFirst.location)) },
                    tolerance: 4, needed: 0.9)
 
+        // R7b, the no-selection order. The test window is never key, so nothing in it has focus: the copy step finds
+        // nothing (Copy answers with no selection), the caret step has no focused element, and the clipboard is read.
+        await clearSelections()
+        forwarder.provide = { nil }
+        pasteboard.clearContents()
+        pasteboard.setString("Text already on the clipboard.", forType: .string)
+        let fromClipboard = await client("capture")
+        let concealed = NSPasteboardItem()
+        concealed.setString("a copied password", forType: .string)
+        concealed.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        pasteboard.clearContents()
+        pasteboard.writeObjects([concealed])
+        let fromConcealed = await client("capture")
+        pasteboard.clearContents()
+        let fromNothing = await client("capture")
+        record("No selection: clipboard, then nothing",
+               fromClipboard?["source"] as? String == "clipboard" && fromClipboard?["text"] as? String == "Text already on the clipboard."
+                   && fromConcealed?["error"] as? String == "no capture" && fromNothing?["error"] as? String == "no capture",
+               "clipboard text read as source=\(fromClipboard?["source"] as? String ?? "nil"); a concealed clipboard item and an empty clipboard give no capture (\"Select some text first\")")
+        // Caret to end, on the text view's element (what step 3 does with the focused element).
+        textView.setSelectedRange(NSRange(location: textSecond.location, length: 0))
+        try? await Task.sleep(for: .milliseconds(200))
+        let caret = await client("caret")
+        let expectedTail = text.substring(from: textSecond.location)
+        record("Caret to end", caret?["source"] as? String == "cursor" && caret?["text"] as? String == expectedTail
+                   && (caret?["selectionStart"] as? Int) == textSecond.location,
+               "source=\(caret?["source"] as? String ?? "nil") selectionStart=\(caret?["selectionStart"] as? Int ?? -1) (caret at \(textSecond.location)), \(TextKit.tokenize(caret?["text"] as? String ?? "").count) words to the end")
+
         await overlayCheck(screen: screen, word: textTruth[0], sentence: textTruth)
         record("Test window never key", !window.isKeyWindow && !window.isMainWindow, "shown with orderFrontRegardless on \(screen.localizedName)")
     }
@@ -444,6 +478,7 @@ enum SelfTestWindow {
         let (ok, onFirst) = Self.score(rects, truth: truth, first: first, tolerance: tolerance)
         let paths = Set((out["paths"] as? [String]) ?? []).sorted().joined(separator: ",")
         let pass = text == expected && rects.count == truth.count && Double(ok) >= needed * Double(truth.count) && onFirst == 0
+        if !pass { FileHandle.standardError.write(Data("  client: element=\(out["element"] ?? "-") nodeMap=\(out["nodeMap"] ?? "-") ocr=\(out["ocr"] ?? "-") rects=\(rects.prefix(3)) truth=\(truth.prefix(3))\n".utf8)) }
         record(name, pass, "source=\(out["source"] as? String ?? "?") path=\(paths) \(ok)/\(truth.count) boxed on the selected copy\(tolerance.map { " (centre within \(Int($0)) pt)" } ?? " (centre inside glyph rect)"), \(onFirst) on the other copy\(text == expected ? "" : "; captured text was \"\(text ?? "nil")\"")")
         return out
     }
@@ -532,26 +567,31 @@ enum SelfTestWindow {
                 let tokens = TextKit.tokenize(run)
                 let hits = tokens.filter { locator.rect(forWord: $0.range) != nil && locator.pathUsed == .nodeMap }.count
                 record("R5 node map (\(app.localizedName ?? app.bundleIdentifier ?? "?"))", hits * 10 >= tokens.count * 9,
-                       "\(hits)/\(tokens.count) words of a visible text run boxed with path=nodeMap (read-only)")
+                       "\(hits)/\(tokens.count) words of a visible text run boxed with path=nodeMap (read-only); node map \(locator.nodeMapSummary)")
                 return
             }
         }
         record("R5 node map", nil, "unverified: no open Chromium/Electron window exposes a visible text run of 30+ words without being woken (read-only probe)")
     }
 
-    /// The first AXStaticText of 30+ words, outside chrome, lying wholly inside the window and on a screen.
+    /// The first AXStaticText of 30+ words, outside chrome, whose first and last words both lie inside the window and on
+    /// a screen (a node can sit inside the window frame while its text is scrolled away).
     private static func visibleTextRun(in window: AXUIElement) -> String? {
         guard let windowFrame = axFrame(window) else { return nil }
+        func visible(_ node: AXUIElement, _ token: Token?) -> Bool {
+            guard let token, let r = axBounds(node, location: token.range.lowerBound, length: token.range.count), !r.isEmpty else { return false }
+            let cocoa = Locator.convert(topLeftScreenRect: r)
+            return windowFrame.contains(r) && NSScreen.screens.contains { $0.frame.contains(CGPoint(x: cocoa.midX, y: cocoa.midY)) }
+        }
         var stack: [(AXUIElement, Bool)] = [(window, false)]
         var visited = 0
         while let (node, parentChrome) = stack.popLast(), visited < 8000 {
             visited += 1
             let role = axAttribute(node, kAXRoleAttribute) as? String
             let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome)
-            if role == "AXStaticText", !chrome, let value = axAttribute(node, kAXValueAttribute) as? String,
-               TextKit.tokenize(value).count >= 30, let frame = axFrame(node), windowFrame.contains(frame),
-               NSScreen.screens.contains(where: { $0.frame.contains(Locator.convert(topLeftScreenRect: frame)) }) {
-                return value
+            if role == "AXStaticText", !chrome, let value = axAttribute(node, kAXValueAttribute) as? String {
+                let tokens = TextKit.tokenize(value)
+                if tokens.count >= 30, visible(node, tokens.first), visible(node, tokens.last) { return value }
             }
             if let children = axAttribute(node, kAXChildrenAttribute) as? [AXUIElement] { stack.append(contentsOf: children.reversed().map { ($0, chrome) }) }
         }
@@ -573,12 +613,26 @@ enum SelfTestClient {
             out["skipped"] = "no Screen Recording"
             return 0
         }
+        if pane == "caret" {   // the host's text view, its selection collapsed to a caret
+            var queue = (axAttribute(AXUIElementCreateApplication(host), kAXWindowsAttribute) as? [AXUIElement]) ?? []
+            while !queue.isEmpty {
+                let element = queue.removeFirst()
+                if (axAttribute(element, kAXRoleAttribute) as? String) == "AXTextArea" {
+                    let c = TextCapture.caretToEnd(element, pid: host, window: nil)
+                    (out["source"], out["text"], out["selectionStart"]) = (c.map { "\($0.source)" }, c?.text, c?.selectionStart)
+                    return 0
+                }
+                queue += (axAttribute(element, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+            }
+            return 1
+        }
         guard let capture = await TextCapture.capture(pid: host) else {
             out["error"] = "no capture"
             return 1
         }
         out["source"] = "\(capture.source)"
         out["text"] = capture.text
+        if pane == "capture" { return 0 }
         let tokens = TextKit.tokenize(capture.text)
         let locator = Locator(capture: capture, useOCR: pane == "ocr")
         if pane == "ocr", let first = tokens.first {   // OCR answers asynchronously: wait for the first recognition
@@ -592,6 +646,9 @@ enum SelfTestClient {
         }
         out["rects"] = rects
         out["paths"] = paths
+        out["nodeMap"] = locator.nodeMapSummary
+        out["ocr"] = locator.ocrSummary
+        out["element"] = capture.element.flatMap { axAttribute($0, kAXRoleAttribute) as? String } ?? "nil"
         if pane == "pdf", let window = capture.window {
             let anchor = PDFLocator.anchor(element: capture.element, selectionStart: capture.selectionStart)
             out["pdfAnchor"] = anchor.map { "page \($0.page) offset \($0.offset.map(String.init) ?? "nil")" } ?? "none"

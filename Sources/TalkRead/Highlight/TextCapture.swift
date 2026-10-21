@@ -44,7 +44,7 @@ enum TextCapture {
         let focusedWindow = axElement(appElement, kAXFocusedWindowAttribute)
         let window = focusedWindow ?? focused.flatMap { axElement($0, kAXWindowAttribute) }
             ?? (axAttribute(appElement, kAXWindowsAttribute) as? [AXUIElement])?.first
-        if let c = selection(appElement: appElement, pid: pid, focused: focused, focusedWindow: focusedWindow) { return c }
+        if let c = selection(appElement: appElement, pid: pid, focused: focused, focusedWindow: focusedWindow, window: window) { return c }
         let secure = focused.map(isSecure) ?? false   // never copy from, or read the value of, a password field
         if !secure, let text = await copySelection(appElement: appElement, pid: pid) {
             return Capture(text: text, pid: pid, element: focused, window: window, selectionStart: nil, source: .copied)
@@ -61,7 +61,8 @@ enum TextCapture {
     /// The focused element's selection, else the first one a breadth-first search finds. A selection whose range does not
     /// cover exactly its text (PDFKit's AXPage reports {0,0}) is kept only as a fallback and the search goes on below
     /// it for an exact one (the page's AXStaticText reports the real range).
-    private static func selection(appElement: AXUIElement, pid: pid_t, focused: AXUIElement?, focusedWindow: AXUIElement?) -> Capture? {
+    private static func selection(appElement: AXUIElement, pid: pid_t, focused: AXUIElement?, focusedWindow: AXUIElement?,
+                                  window: AXUIElement?) -> Capture? {
         func consider(_ element: AXUIElement, window: AXUIElement?) -> (capture: Capture, exact: Bool)? {
             guard !isSecure(element), let text = axAttribute(element, kAXSelectedTextAttribute) as? String,
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -71,7 +72,7 @@ enum TextCapture {
                             source: .accessibility), exact)
         }
         var loose: Capture?
-        if let focused, let found = consider(focused, window: focusedWindow) {
+        if let focused, let found = consider(focused, window: window) {
             if found.exact { return found.capture }
             loose = found.capture
         }
@@ -165,7 +166,7 @@ enum TextCapture {
 
     // MARK: - 3. Caret to end, 4. clipboard
 
-    private static func caretToEnd(_ element: AXUIElement, pid: pid_t, window: AXUIElement?) -> Capture? {
+    static func caretToEnd(_ element: AXUIElement, pid: pid_t, window: AXUIElement?) -> Capture? {
         guard let caret = selectedTextRange(of: element), caret.length == 0, caret.location != kCFNotFound,
               let value = axAttribute(element, kAXValueAttribute) as? String else { return nil }
         let ns = value as NSString

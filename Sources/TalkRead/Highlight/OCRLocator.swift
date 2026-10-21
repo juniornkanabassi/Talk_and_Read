@@ -23,6 +23,8 @@ import Vision
     private var scrollGeneration = 0
     private var missingSince: TimeInterval?
     private var lastAsked = 0
+    /// What the last recognition found, for logs and the self-test.
+    private(set) var summary = "no capture yet"
     /// True until the first recognition has finished (a nil rect then means "not yet", not "not there").
     private(set) var isPending = true
 
@@ -47,7 +49,10 @@ import Vision
     /// frame, so a window move needs no new capture; a resize, a scroll (debounced 150 ms) or a word missing for 1 s does.
     func rect(forTokenIndex index: Int) -> CGRect? {
         lastAsked = index
-        guard let frame = currentWindowFrame() else { return nil }
+        guard let frame = currentWindowFrame() else {
+            isPending = false   // no window to capture: nothing to wait for, so the AX paths keep their retries
+            return nil
+        }
         if let size = windowSize, size != frame.size { (map, windowSize, stale) = ([:], nil, true) }   // re-laid out
         refreshIfNeeded()
         guard let w = map[index] else {
@@ -88,12 +93,23 @@ import Vision
         let from = isPending ? 0 : lastAsked
         Task { @MainActor in
             defer { inFlight = false; isPending = false }
-            guard let image = try? await Self.captureWindow(id), let found = try? await Self.recognizeWords(image) else { return }
+            let image: CGImage, found: [Word]
+            do {
+                image = try await Self.captureWindow(id)
+                found = try await Self.recognizeWords(image)
+            } catch {
+                summary = "capture or recognition failed: \(error.localizedDescription)"
+                return
+            }
             words = found
             windowSize = currentWindowFrame()?.size
             let highlighted = Set(found.indices.filter { found[$0].highlighted })
-            map = NodeAlignment.best(found.map { $0.text.lowercased() }, selectionWords, from: from,
-                                     prefer: highlighted.isEmpty ? nil : highlighted)
+            // From the selection's start, anchored on the highlight; mid-read (after a scroll took the opening words away)
+            // from the word being asked for, which hides rather than picks between equal copies.
+            let stream = found.map { $0.text.lowercased() }
+            map = NodeAlignment.best(stream, selectionWords, from: 0, prefer: highlighted.isEmpty ? nil : highlighted)
+            if from > 0, map[from] == nil { map = NodeAlignment.best(stream, selectionWords, from: from) }
+            summary = "\(image.width)x\(image.height) px, \(found.count) words, \(highlighted.count) in the selection colour, placed \(map.count)"
         }
     }
 
@@ -119,7 +135,7 @@ import Vision
     private func currentWindowFrame() -> CGRect? {
         guard let id = windowID ?? findWindowID() else { return nil }
         windowID = id
-        guard let list = CGWindowListCreateDescriptionFromArray([NSNumber(value: id)] as CFArray) as? [[String: Any]],
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], id) as? [[String: Any]],
               let dict = list.first?[kCGWindowBounds as String], let rect = CGRect(dictionaryRepresentation: dict as! CFDictionary)
         else { windowID = nil; return nil }
         return Locator.convert(topLeftScreenRect: rect)
@@ -207,18 +223,21 @@ import Vision
             return (CGFloat(data[i]) / 255, CGFloat(data[i + 1]) / 255, CGFloat(data[i + 2]) / 255)
         }
 
-        /// At least two of the four points just outside the box (left, right, above, below) match a selection colour.
+        /// Whether the word sits on the selection colour: a selection paints the whole line band, so most of the box
+        /// between the glyph strokes is that colour. A grid of points inside the box is sampled (robust to a box a few
+        /// pixels off, which Vision's per-range boxes can be); highlighted when at least a third match.
         func isHighlighted(_ box: CGRect, colours: [(CGFloat, CGFloat, CGFloat)]) -> Bool {
-            let minX = box.minX * CGFloat(width), maxX = box.maxX * CGFloat(width)
-            let top = (1 - box.maxY) * CGFloat(height), bottom = (1 - box.minY) * CGFloat(height)
-            let margin = max(2, CGFloat(height) / 600)   // a couple of pixels at any scale
-            let points = [(minX - margin * 1.5, (top + bottom) / 2), (maxX + margin * 1.5, (top + bottom) / 2),
-                          ((minX + maxX) / 2, top - margin), ((minX + maxX) / 2, bottom + margin)]
-            let hits = points.filter { p in
-                guard let c = colour(x: Int(p.0), y: Int(p.1)) else { return false }
-                return colours.contains { max(abs($0.0 - c.0), abs($0.1 - c.1), abs($0.2 - c.2)) <= 0.06 }
+            var hits = 0, total = 0
+            for i in 1...6 {
+                for j in 1...3 {
+                    let x = (box.minX + box.width * CGFloat(i) / 7) * CGFloat(width)
+                    let y = (1 - box.minY - box.height * CGFloat(j) / 4) * CGFloat(height)
+                    guard let c = colour(x: Int(x), y: Int(y)) else { continue }
+                    total += 1
+                    if colours.contains(where: { max(abs($0.0 - c.0), abs($0.1 - c.1), abs($0.2 - c.2)) <= 0.06 }) { hits += 1 }
+                }
             }
-            return hits.count >= 2
+            return total > 0 && hits * 3 >= total
         }
     }
 }
