@@ -26,7 +26,7 @@ ACTUAL_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$STAG
 [[ "$ACTUAL_ID" == "$EXPECTED_ID" ]] || { print -u2 "Bundle identifier mismatch: $ACTUAL_ID"; exit 1; }
 [[ "$ACTUAL_VERSION" == "$EXPECTED_VERSION" ]] || { print -u2 "Archive version $ACTUAL_VERSION does not match source version $EXPECTED_VERSION."; exit 1; }
 [[ -n "$ACTUAL_EXECUTABLE" && -f "$STAGE/Contents/MacOS/$ACTUAL_EXECUTABLE" && ! -L "$STAGE/Contents/MacOS/$ACTUAL_EXECUTABLE" ]] || { print -u2 'Archive bundle executable is missing or is a symlink.'; exit 1; }
-/usr/bin/codesign --verify --strict "$STAGE"
+/usr/bin/codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "M6L2VW4W5Z"' "$STAGE" || { print -u2 "Refusing: not signed with the M6L2VW4W5Z Developer ID"; exit 1; }
 if pgrep -f -- "$DEST/Contents/MacOS/TalkRead" >/dev/null 2>&1; then print -u2 'Talk and Read started during verification. Install aborted; this installer will not kill it.'; exit 1; fi
 if [[ -e "$DEST" ]]; then /bin/mv "$DEST" "$BACKUP"; fi
 if ! /bin/mv "$STAGE" "$DEST"; then
