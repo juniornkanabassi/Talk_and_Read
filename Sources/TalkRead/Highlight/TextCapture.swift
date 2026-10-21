@@ -1,8 +1,8 @@
-// What to read when the user presses Read (PLAN decision 6): AX selection → Edit ▸ Copy (else ⌘C) inside the
-// PasteboardGate → caret to end of the focused text → the existing clipboard → nil. AX part ported from ReadAlong.
+// What to read when the user presses Read (PLAN decision 6): AX selection → Edit ▸ Copy inside the PasteboardGate
+// (pressed through AX only; no synthetic ⌘C, Sol #22) → caret to end of the focused text → the existing clipboard
+// → nil. AX part ported from ReadAlong.
 import AppKit
 import ApplicationServices
-import Carbon.HIToolbox
 import TalkReadCore
 
 struct Capture {
@@ -48,7 +48,7 @@ enum TextCapture {
         if let c = selection(appElement: appElement, pid: pid, focused: focused, focusedWindow: focusedWindow, window: window) { return c }
         let secure = focused.map(isSecure) ?? false   // never copy from, or read the value of, a password field
         if !secure {
-            switch await copySelection(appElement: appElement, pid: pid) {
+            switch await copySelection(appElement: appElement) {
             case .text(let text):
                 return Capture(text: text, pid: pid, element: focused, window: window, selectionStart: nil, source: .copied)
             case .clipboardChanged:
@@ -108,78 +108,48 @@ enum TextCapture {
 
     enum Copied: Equatable { case text(String), nothing, clipboardChanged }
 
-    /// Inside the gate: press the app's ⌘C menu item through AX (no menu item → post ⌘C to the app), wait ≤ 300 ms for
-    /// the pasteboard to change, read the string; the gate then restores the user's clipboard. A second change after
-    /// the app's (Junior copying meanwhile) is `.clipboardChanged`: nothing is read and that newer copy is kept.
-    @MainActor private static func copySelection(appElement: AXUIElement, pid: pid_t) async -> Copied {
+    /// Inside the gate: press the app's enabled ⌘C menu item through AX, wait for the pasteboard to change, read the
+    /// string; the gate then restores the user's clipboard. No enabled item (nothing selected, or no Copy in the menu
+    /// bar) is nothing: no synthetic ⌘C, whose handling could come after the transaction ended (Sol #22). A second
+    /// change after the app's (Junior copying meanwhile) is `.clipboardChanged`: nothing is read, that copy is kept.
+    @MainActor private static func copySelection(appElement: AXUIElement) async -> Copied {
         let gate = gate
         return await gate.transaction {
-            let before = gate.pasteboard.changeCount
-            switch copyMenuItem(appElement) {
-            case .some(let item?): AXUIElementPerformAction(item, kAXPressAction as CFString)
-            case .some(nil): return .nothing   // the app has Copy but disables it: nothing is selected
-            case nil: postCommandC(to: pid)
-            }
+            guard let item = copyMenuItem(appElement), let before = gate.prepareToChange() else { return .nothing }
+            AXUIElementPerformAction(item, kAXPressAction as CFString)
             return await readCopy(gate: gate, before: before)
         }
     }
 
-    /// After the copy was requested: the app's text, nothing (no change in 300 ms, or an empty copy) or a clipboard
-    /// that changed again after the app's change.
+    /// After Copy was pressed: the app's text, nothing (no change within 1 s, or an empty copy) or a clipboard that
+    /// changed again after the app's change. A busy app can answer later (Sol #22), so with no change after 1 s the
+    /// transaction stays open 1 s more, and a change in that grace is taken as the app's late copy: not read, but ours,
+    /// so the gate restores the snapshot over it before the next transaction or the quit.
+    // ponytail: a genuine user copy inside that grace would be undone; acceptable, the user just pressed the read
+    // shortcut. A Copy handled more than 2 s late still lands after the transaction.
     @MainActor static func readCopy(gate: PasteboardGate, before: Int) async -> Copied {
-        guard await gate.waitForChange(from: before, timeout: 0.3) else {
-            return gate.pasteboard.changeCount == before ? .nothing : .clipboardChanged
+        guard await gate.waitForChange(from: before, timeout: 1) else {
+            guard gate.pasteboard.changeCount == before else { return .clipboardChanged }
+            _ = await gate.waitForChange(from: before, timeout: 1)
+            return .nothing
         }
         guard let text = gate.ownString() else { return .clipboardChanged }
         return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .nothing : .text(text)
     }
 
-    /// nil: the menu bar has no ⌘C item. .some(nil): it has one but it is disabled. Two levels only: bar item → menu → item.
-    private static func copyMenuItem(_ appElement: AXUIElement) -> AXUIElement?? {
+    /// The menu bar's enabled ⌘C item; nil when it has none or it is disabled. Two levels only: bar item → menu → item.
+    private static func copyMenuItem(_ appElement: AXUIElement) -> AXUIElement? {
         guard let bar = axElement(appElement, kAXMenuBarAttribute) else { return nil }
-        var disabled = false
         for barItem in (axAttribute(bar, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
             for menu in (axAttribute(barItem, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
                 for item in (axAttribute(menu, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
-                    guard (axAttribute(item, kAXMenuItemCmdCharAttribute) as? String)?.lowercased() == "c",
-                          (axAttribute(item, kAXMenuItemCmdModifiersAttribute) as? NSNumber)?.intValue == 0 // ⌘ alone
-                    else { continue }
-                    if (axAttribute(item, kAXEnabledAttribute) as? Bool) == true { return .some(item) }
-                    disabled = true
+                    if (axAttribute(item, kAXMenuItemCmdCharAttribute) as? String)?.lowercased() == "c",
+                       (axAttribute(item, kAXMenuItemCmdModifiersAttribute) as? NSNumber)?.intValue == 0,   // ⌘ alone
+                       (axAttribute(item, kAXEnabledAttribute) as? Bool) == true { return item }
                 }
             }
         }
-        return disabled ? .some(nil) : nil
-    }
-
-    /// ⌘C as key down/up to the app only, on the key that types "c" in the current layout, tagged so our tap ignores it.
-    @MainActor private static func postCommandC(to pid: pid_t) {
-        let key = keyCode(typing: "c") ?? CGKeyCode(kVK_ANSI_C)
-        let source = CGEventSource(stateID: .privateState)
-        for down in [true, false] {
-            guard let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down) else { continue }
-            event.flags = .maskCommand
-            event.setIntegerValueField(.eventSourceUserData, value: PasteboardGate.eventTag)
-            event.postToPid(pid)
-        }
-    }
-
-    /// The virtual key code that types `character` in the current keyboard layout (Dvorak's "c" is not kVK_ANSI_C).
-    @MainActor static func keyCode(typing character: String) -> CGKeyCode? {
-        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
-              let pointer = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return nil }
-        let data = Unmanaged<CFData>.fromOpaque(pointer).takeUnretainedValue() as Data
-        return data.withUnsafeBytes { raw -> CGKeyCode? in
-            guard let layout = raw.bindMemory(to: UCKeyboardLayout.self).baseAddress else { return nil }
-            for code in 0..<128 {
-                var deadKeys: UInt32 = 0, length = 0
-                var chars = [UniChar](repeating: 0, count: 4)
-                let status = UCKeyTranslate(layout, UInt16(code), UInt16(kUCKeyActionDisplay), 0, UInt32(LMGetKbdType()),
-                                            OptionBits(kUCKeyTranslateNoDeadKeysBit), &deadKeys, 4, &length, &chars)
-                if status == noErr, String(utf16CodeUnits: chars, count: length) == character { return CGKeyCode(code) }
-            }
-            return nil
-        }
+        return nil
     }
 
     // MARK: - 3. Caret to end, 4. clipboard
