@@ -29,6 +29,7 @@ enum SelfTestWindow {
     static let webParagraph = "Talk and Read draws a yellow box on each word as the voice reads it aloud. \(phrase) When it cannot be sure, it hides the box instead."
     static let ocrSentence = "Reading aloud keeps the eye and the ear together on every line."
     static let ocrText = "\(ocrSentence) A different sentence sits between the two copies. \(ocrSentence)"
+    static let turned = "Sideways pages keep their boxes."
 
     /// Text drawn black on white into a 1x sRGB bitmap, optionally with the selection colour behind `highlight` (line
     /// fragments, like a real selection). `rect` gives a character range's glyph rect in image points, top-left origin.
@@ -88,6 +89,7 @@ enum SelfTestWindow {
         await pasteboardChecks()
         let probe = CGRect(x: 100, y: 50, width: 200, height: 20)
         record("Coordinate flip", Locator.convert(topLeftScreenRect: Locator.convert(topLeftScreenRect: probe)) == probe, "AX/CG top-left <-> Cocoa is its own inverse")
+        pageBaseCheck()
         await screenshotTextCheck()
         await ocrHighlightCheck()
         if let screen = NSScreen.screens.first(where: { $0.localizedName.contains("Prompter") }) {
@@ -395,7 +397,7 @@ enum SelfTestWindow {
         // PDF pane: two pages, the phrase on both.
         let pdfURL = directory.appendingPathComponent("selftest.pdf")
         Self.writePDF(to: pdfURL)
-        let pdfView = PDFView(frame: NSRect(x: 20, y: 300, width: 1060, height: 260))
+        let pdfView = PDFView(frame: NSRect(x: 20, y: 130, width: 1060, height: 430))
         pdfView.displayMode = .singlePageContinuous
         pdfView.autoScales = false
         pdfView.scaleFactor = 1
@@ -497,6 +499,21 @@ enum SelfTestWindow {
                 let shown = rects.compactMap { $0 }.count
                 let pass = key == "pdfAnchored" ? ok * 100 >= 95 * tokens.count && onFirst == 0 : shown == 0 || (ok == shown && onFirst == 0)
                 record(name, pass, "\(ok)/\(tokens.count) on page 2, \(onFirst) on page 1, \(shown) shown (anchor \(out["pdfAnchor"] as? String ?? "none"))")
+            }
+        }
+
+        // Sol #13: page 3 carries /Rotate 90; PDFLocator's boxes must land on PDFKit's own (rotated) glyph rects.
+        await clearSelections()
+        if let page3 = document.page(at: 2), let string3 = page3.string as NSString? {
+            let turned = string3.range(of: SelfTestWindow.turned), turnedTokens = TextKit.tokenize(SelfTestWindow.turned)
+            pdfView.go(to: page3)
+            pdfView.setCurrentSelection(page3.selection(for: turned), animate: false)
+            let turnedTruth = turnedTokens.map { pdfRect(page3, SelfTestWindow.ns($0.range, plus: turned.location)) }
+            if let out = await pane("PDFView rotated page", "pdf", expected: SelfTestWindow.turned, truth: turnedTruth, first: []) {
+                let rects = Self.rects(out["pdfAnchored"])
+                let ok = Self.score(rects, truth: turnedTruth, first: []).ok
+                record("PDFLocator rotated page (Sol #13)", page3.rotation == 90 && ok * 100 >= 95 * turnedTokens.count,
+                       "page rotation \(page3.rotation): \(ok)/\(turnedTokens.count) boxes inside PDFKit's glyph rects (anchor \(out["pdfAnchor"] as? String ?? "none"))")
             }
         }
 
@@ -619,9 +636,31 @@ enum SelfTestWindow {
             ("Page \(n). \(SelfTestWindow.phrase)" as NSString).draw(at: CGPoint(x: 24, y: 40), withAttributes: [.font: NSFont.systemFont(ofSize: 16)])
             context.endPDFPage()
         }
+        var turnedBox = CGRect(x: 0, y: 0, width: 300, height: 60)   // a short page, shown 60 wide and 300 tall
+        context.beginPDFPage([kCGPDFContextMediaBox: Data(bytes: &turnedBox, count: MemoryLayout<CGRect>.size)] as CFDictionary)
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        (SelfTestWindow.turned as NSString).draw(at: CGPoint(x: 16, y: 20), withAttributes: [.font: NSFont.systemFont(ofSize: 16)])
+        context.endPDFPage()
         NSGraphicsContext.restoreGraphicsState()
         context.closePDF()
-        data.write(to: url, atomically: true)
+        guard let document = PDFDocument(data: data as Data) else { return }
+        document.page(at: 2)?.rotation = 90   // stored as /Rotate, which PDFLocator reads back from the file
+        document.write(to: url)
+    }
+
+    // MARK: PDF page numbering (Sol #12), headless
+
+    /// AXPageIndex base from viewer metadata: Sol's case (a zero-based viewer exposing only its second page) must give 0,
+    /// the old guess gave 1; no metadata and a partial page set hides.
+    private func pageBaseCheck() {
+        let cases: [(descriptions: [Int: String?], count: Int, expected: Int?)] = [
+            ([1: "Page 2"], 5, 0), ([2: "Page 2"], 5, 1), ([1: "Seite 2 "], 5, 0), ([1: nil], 5, nil),
+            ([0: nil, 1: nil, 2: nil], 3, 0), ([1: nil, 2: nil, 3: nil], 3, 1), ([1: "Page 2", 3: "Page 3"], 5, nil),
+            ([4: "Page iv"], 9, nil), ([0: "Page 1", 1: "Page 2", 2: "Page 3"], 3, 0),
+        ]
+        let wrong = cases.filter { PDFLocator.base(descriptions: $0.descriptions, pageCount: $0.count) != $0.expected }
+        record("PDF page base from metadata (Sol #12)", wrong.isEmpty,
+               "\(cases.count - wrong.count)/\(cases.count) cases; only-page-2 exposed reads as zero-based, no metadata on a partial set hides\(wrong.isEmpty ? "" : "; wrong: \(wrong.map { "\($0.descriptions)" })")")
     }
 
     // MARK: Overlay (R4: never takes clicks, never key; no panel while idle)
