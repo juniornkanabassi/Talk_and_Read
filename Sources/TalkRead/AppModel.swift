@@ -341,10 +341,13 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
 
     func stopReading() { stopSession() }
 
+    /// The control route refuses a larger skip; every other path clamps to it (Sol #5).
+    nonisolated static let maxSkip = 10_000
+
     func skip(_ sentences: Int) {
         guard let s = liveSession else { return }
         owner?.caller = "user"
-        s.skip(sentences: sentences)
+        s.skip(sentences: min(max(sentences, -Self.maxSkip), Self.maxSkip))
     }
 
     func setSpeed(_ s: Float) {

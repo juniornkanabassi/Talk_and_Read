@@ -195,6 +195,14 @@ import TalkReadCore
         check(s?.display == "⇧⌘Space", "record ⇧⌘Space", s?.display ?? "nil")
         check(ShortcutRecorder.make(keyCode: 15, flags: [.shift], characters: "r") == nil && ShortcutRecorder.make(keyCode: 15, flags: [], characters: "r") == nil,
               "needs ⌃ ⌥ or ⌘", "⇧R and R refused")
+        // Sol #15: the hotkeys stand down while a recorder listens; only one listens; a stale end changes nothing.
+        let focus = RecorderFocus.shared, a = UUID(), b = UUID()
+        var paused: [Bool] = []
+        focus.begin(a); paused.append(AppModel.shared.hotkeysPaused)
+        focus.begin(b); paused.append(AppModel.shared.hotkeysPaused && focus.active == b)
+        focus.end(a); paused.append(AppModel.shared.hotkeysPaused && focus.active == b)
+        focus.end(b); paused.append(AppModel.shared.hotkeysPaused || focus.active != nil)
+        check(paused == [true, true, true, false], "recorder pauses hotkeys", "begin a, begin b, end a, end b → \(paused)")
         let key = MenuBarMenu.keyEquivalent(TalkReadCore.Settings().readShortcut)
         check(key?.0 == "r" && key?.1 == [.control, .option], "menu key equivalent", "\(key.map { "\($0.0) \($0.1.rawValue)" } ?? "nil")")
         let cycle = [1.0, 1.23, 2.5].map(SpeedControl.SpeedButton.next(after:))

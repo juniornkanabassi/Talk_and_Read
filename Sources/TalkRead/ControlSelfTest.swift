@@ -24,7 +24,7 @@ final class SilentEngine: SpeechEngine {
 }
 
 enum ControlSelfTest {
-    enum Expect { case ok, audio, busy, replayed }
+    enum Expect { case ok, audio, busy, replayed, badArgs }
     struct Outcome { let status: Int32; let response: ControlResponse?; let text: String }
 
     @MainActor static func run(clip: String?) async -> Int32 {
@@ -86,6 +86,11 @@ enum ControlSelfTest {
         print("\(stored ? "PASS" : "FAIL")  library: PDF copied as \(item?.fileName ?? "-"), text \(text.utf16.count) UTF-16 units")
         await step("a read-file sample.txt", ["read-file", docs.appendingPathComponent("sample.txt").path, "--caller", "a"], .audio)
         await step("b skip while a reads", ["skip", "--caller", "b"], .busy)
+        // Sol #5: an absurd skip is refused before it reaches the session, and the app stays up.
+        await step("a skip Int.max", ["skip", String(Int.max), "--caller", "a"], .badArgs)
+        await step("a skip Int.min", ["skip", String(Int.min), "--caller", "a"], .badArgs)
+        await step("a skip 10001", ["skip", "10001", "--caller", "a"], .badArgs)
+        await step("a skip -2 (still reading)", ["skip", "-2", "--caller", "a"], .ok)
         await step("a stop", ["stop", "--caller", "a"], .ok)
 
         // Two callers transcribe at once: the shared transcriber admits one, the other is told busy.
@@ -125,6 +130,7 @@ enum ControlSelfTest {
         case .audio: pass = r?.ok == true && r?.data?["firstAudioMs"]?.numberValue != nil
         case .busy: pass = r?.ok == false && r?.code == "busy"
         case .replayed: pass = r?.ok == true && r?.data?["replayed"]?.boolValue == true
+        case .badArgs: pass = r?.ok == false && r?.code == "bad_args"
         }
         let shown = o.text.count > 300 ? String(o.text.prefix(300)) + "…" : o.text
         print("\(pass ? "PASS" : "FAIL")  \(label.padding(toLength: 36, withPad: " ", startingAt: 0)) \(shown)")

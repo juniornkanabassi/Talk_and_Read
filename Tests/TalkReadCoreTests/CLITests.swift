@@ -184,6 +184,21 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(r[12].args, ["action": "status"]); XCTAssertEqual(r[13].args, ["action": "download"])
     }
 
+    func testOpenShowAndReadFlags() throws {
+        let seen = Recorder()
+        let server = try startServer(seen)
+        defer { server.stop() }
+        let doc = home.appendingPathComponent("a.pdf").standardizedFileURL.path
+        _ = try cli(["open", doc])
+        _ = try cli(["open", doc, "--show", "1", "--read=1"])
+        XCTAssertEqual(try cli(["open", doc, "--show", "yes"]).code, 2)
+        XCTAssertEqual(seen.requests.map(\.args), [["path": doc], ["path": doc, "show": "1", "read": "1"]])
+        let manifest = try cli(["mcp-manifest"])
+        let tools = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(manifest.out.utf8)) as? [[String: Any]])
+        let open = try XCTUnwrap(tools.first { $0["name"] as? String == "open" }?["inputSchema"] as? [String: Any])
+        XCTAssertEqual(Set((open["properties"] as? [String: Any])?.keys.map { $0 } ?? []), ["path", "show", "read", "force"])
+    }
+
     func testRetryWithTheSameRequestIdActsOnce() throws {
         let seen = Recorder()
         let server = try startServer(seen)

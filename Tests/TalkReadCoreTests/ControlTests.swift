@@ -293,6 +293,45 @@ final class ControlTests: XCTestCase {
         XCTAssertEqual(calls.requests.filter { $0.id == "a" }.count, 3)
     }
 
+    /// Sol #10: the lookup used to run after eviction, so a retry of the oldest of 64 keys executed again.
+    func testRetryOfTheOldestOf64Replays() async {
+        let cache = ReplayCache()
+        let calls = Recorder()
+        func run(_ id: String) async -> ControlResponse {
+            await cache.run(caller: "c", id: id, fingerprint: 1) { calls.add(ControlRequest(id: id, command: "x")); return ControlResponse(ok: true) }
+        }
+        for i in 0..<64 { _ = await run("k\(i)") }
+        let retry = await run("k0")
+        XCTAssertEqual(calls.count, 64, "the retry ran again")
+        XCTAssertEqual(retry.data?["replayed"], .bool(true))
+        _ = await run("k64")                                   // a new key evicts the oldest finished one
+        _ = await run("k0")
+        XCTAssertEqual(calls.requests.filter { $0.id == "k0" }.count, 2)
+    }
+
+    /// Sol #10: newer keys arriving during a long request must never evict it; its retry waits and replays.
+    func testEvictionNeverDropsInFlightWork() async throws {
+        let cache = ReplayCache(limit: 3)
+        let calls = Recorder()
+        func run(_ id: String, slow: Bool = false) async -> ControlResponse {
+            await cache.run(caller: "c", id: id, fingerprint: 1) {
+                calls.add(ControlRequest(id: id, command: "x"))
+                if slow { try? await Task.sleep(nanoseconds: 500_000_000) }
+                return ControlResponse(ok: true, data: ["id": .string(id)])
+            }
+        }
+        async let long = run("long", slow: true)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        for id in ["a", "b", "c", "d", "e"] { _ = await run(id) }   // well past the limit while "long" runs
+        let retry = await run("long", slow: true)
+        let first = await long
+        XCTAssertEqual(calls.requests.filter { $0.id == "long" }.count, 1, "the in-flight request ran twice")
+        XCTAssertEqual(retry.data?["replayed"], .bool(true))
+        XCTAssertEqual(retry.data?["id"], first.data?["id"])
+        _ = await run("a")                                     // finished keys are still evicted oldest first
+        XCTAssertEqual(calls.requests.filter { $0.id == "a" }.count, 2)
+    }
+
     func testJSONValueRoundTrip() throws {
         let value: JSONValue = ["s": "x", "n": 1.5, "b": true, "z": nil, "a": [1, "two", false], "o": ["k": "v"]]
         let data = try JSONEncoder().encode(value)
