@@ -47,7 +47,8 @@ enum SelfTest {
     @MainActor private static func timingRun(_ text: String, voice: String, rate: Float?) async throws -> Int32 {
         let tokens = TextKit.tokenize(text)
         let chunks = TextKit.chunks(text, tokens: tokens)
-        let engine = NeuralEngine()
+        // A Kokoro voice id runs the neural engine; anything else (an AVSpeechSynthesisVoice identifier) the system one.
+        let engine: SpeechEngine = KokoroAneConstants.englishVoices.contains(voice) ? NeuralEngine() : SystemEngine()
         var clock = Date()
         try await engine.prepare(voice: voice)
         print("model load + voice \(voice): \(ms(since: clock)) ms")
@@ -61,9 +62,13 @@ enum SelfTest {
         for (k, chunk) in chunks.enumerated() {
             let speakable = Speakable.make(text, range: chunk.range, lexicon: [:])
             clock = Date()
-            let s = try await engine.synthesize(speakable.text, voice: voice)
+            var s = try await engine.synthesize(speakable.text, voice: voice)
             synthSeconds += Date().timeIntervalSince(clock)
             if k == 0 { firstChunkMs = ms(since: clock) }
+            if s.sampleRate != Player.sampleRate {   // system voices: 22.05 kHz, resampled as the Player does
+                s = SynthChunk(samples: try AudioConverter(sampleRate: Player.sampleRate).resample(s.samples, from: s.sampleRate),
+                               sampleRate: Player.sampleRate, words: s.words)
+            }
             // Same arithmetic as ReadSession: offset = media start of the chunk, duration = its samples.
             let offset = Double(audio.count) / Player.sampleRate
             let duration = Double(s.samples.count) / s.sampleRate
@@ -121,17 +126,24 @@ enum SelfTest {
 
         if let rate {
             let clock1 = try clockError(rate: 1), clockR = try clockError(rate: rate)
-            print("clock vs rendered clicks: 1x mean \(Int(clock1.mean * 1000)) ms max |err| \(Int(clock1.maxAbs * 1000)) ms; \(rate)x mean \(Int(clockR.mean * 1000)) ms max |err| \(Int(clockR.maxAbs * 1000)) ms (\(clockR.count) clicks)")
+            print("clock vs rendered clicks: 1x mean \(Int((clock1.mean * 1000).rounded())) ms, max |err| \(Int((clock1.maxAbs * 1000).rounded())) ms; \(rate)x mean \(Int((clockR.mean * 1000).rounded())) ms, max |err| \(Int((clockR.maxAbs * 1000).rounded())) ms (\(clockR.count) clicks)")
+            // The production graph, all chunks queued back to back. The output is cut where the clock reaches each
+            // chunk's media start (inside the pause between sentences) and each piece is transcribed on its own, so the
+            // recogniser's 15 s window seams cannot drop words from 2.5x speech.
             let player = Player(manualRendering: true)
             player.rate = rate
-            for s in synths { player.enqueue(s) }
+            let starts = synths.map { player.enqueue($0) }
             player.play()
-            let rendered = try player.renderOffline(seconds: audioSeconds / Double(rate) + 0.5)
+            let (rendered, readings) = try renderWithClock(player, seconds: audioSeconds / Double(rate) + 0.5)
             try writeWAV(rendered, to: outDir.appendingPathComponent("tts-\(rate)x.wav"))
-            let heardR = try await asr.transcribe(rendered)
-            let werR = wer(reference: reference, hypothesis: heardR.text)
+            let cuts = starts.map { s in readings.first { $0.clock >= s }?.index ?? rendered.count } + [rendered.count]
+            var hypothesis: [String] = []
+            for k in synths.indices where cuts[k + 1] > cuts[k] {
+                hypothesis.append((try? await asr.transcribe(Array(rendered[cuts[k] ..< cuts[k + 1]])).text) ?? "")
+            }
+            let werR = wer(reference: reference, hypothesis: hypothesis.joined(separator: " "))
             let ok = werR <= 0.08 && clockR.maxAbs <= 0.020 && clockR.count >= 10
-            print("WER at \(rate)x through the Player graph: \(pct(werR))")
+            print("WER at \(rate)x through the Player graph: \(pct(werR)) (\(fmt(Double(rendered.count) / Player.sampleRate)) s rendered)")
             print("R3: \(ok ? "PASS" : "FAIL") (WER <= 8 %, clock within 20 ms)")
             pass = pass && ok
         }
@@ -155,13 +167,7 @@ enum SelfTest {
         player.rate = rate
         player.enqueue(SynthChunk(samples: clicks, sampleRate: sr, words: []))
         player.play()
-        var out: [Float] = []
-        var readings: [(index: Int, clock: Double)] = []
-        while Double(out.count) < (6 / Double(rate) + 0.3) * sr {
-            let blockStart = out.count
-            out += try player.renderOffline(seconds: 0.01)
-            readings.append((blockStart, player.currentTime))
-        }
+        let (out, readings) = try renderWithClock(player, seconds: 6 / Double(rate) + 0.3)
         let peak = out.map(abs).max() ?? 0
         var onsets: [Int] = []
         var i = 0
@@ -174,6 +180,18 @@ enum SelfTest {
             return r.clock + Double(k - r.index) / sr * Double(rate) - media
         }
         return (errors.reduce(0, +) / Double(errors.count), errors.map(abs).max() ?? 0, errors.count)
+    }
+
+    /// Renders in 10 ms blocks (about one realtime render cycle) and reads the clock after each block.
+    @MainActor static func renderWithClock(_ player: Player, seconds: Double) throws -> (out: [Float], readings: [(index: Int, clock: Double)]) {
+        var out: [Float] = []
+        var readings: [(index: Int, clock: Double)] = []
+        while Double(out.count) < seconds * Player.sampleRate {
+            let blockStart = out.count
+            out += try player.renderOffline(seconds: 0.01)
+            readings.append((blockStart, player.currentTime))
+        }
+        return (out, readings)
     }
 
     // MARK: - R10

@@ -7,9 +7,14 @@ import Foundation
 
 @MainActor final class Player {
     nonisolated static let sampleRate = 24_000.0
-    // ponytail: AVAudioUnitTimePitch latency in media (source) seconds, measured by `--selftest-tts --rate` with a click
-    // train through this exact graph; re-measure if the graph or macOS's time-pitch unit changes.
-    static let timePitchLatency = 0.0
+    // ponytail: how far the node's clock runs ahead of the graph's output, in media seconds: about 43 ms of time-pitch
+    // look-ahead plus 57.5 ms of output-side buffering scaled by the rate. Fitted 21 Oct (macOS 27.2, overlap 16) to a
+    // click train rendered through this exact graph at 0.5-3x (measured 77, 96, 128, 158, 189, 216 ms; residuals
+    // <= 5 ms); `SelfTest.clockError` re-measures it. Re-fit if the graph, the overlap or the time-pitch unit changes.
+    nonisolated static func graphLatency(rate: Float) -> Double { 0.043 + 0.0575 * Double(rate) }
+    /// Time-pitch analysis overlap (default 8). 16 measured better at 2.5x: recogniser WER 13.1 % vs 15.9 % on the
+    /// fixture, and half the clock jitter (10 ms peak to peak instead of 29).
+    static let overlap: Float = 16
 
     var rate: Float = 1.0 {
         didSet { rate = min(max(rate, 0.5), 3.0); timePitch.rate = rate }
@@ -65,6 +70,7 @@ import Foundation
         engine.connect(node, to: timePitch, format: format)
         engine.connect(timePitch, to: engine.mainMixerNode, format: format)
         timePitch.rate = rate
+        timePitch.overlap = Self.overlap
         engine.prepare()
     }
 
@@ -72,7 +78,7 @@ import Foundation
     var currentTime: Double {
         if isPlaying, let t = nodeSeconds() {
             let outputLatency = manual ? 0 : engine.outputNode.presentationLatency * Double(rate)
-            lastTime = min(max(t - shift - Self.timePitchLatency - outputLatency, 0), queuedUntil)
+            lastTime = min(max(t - shift - Self.graphLatency(rate: rate) - outputLatency, 0), queuedUntil)
         }
         return lastTime
     }

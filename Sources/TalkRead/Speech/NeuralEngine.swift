@@ -1,6 +1,9 @@
-// FluidAudio Kokoro-82M (ANE v3) engine: text chunk -> 24 kHz PCM plus per-word timings taken from the model's own
-// predicted durations (PLAN decision 1). Words come from walking `inputIds`/`predictedDurations` and pairing the
-// space-separated groups with the words of Kokoro's normalised text.
+// FluidAudio Kokoro-82M engine: text chunk -> 24 kHz PCM plus per-word timings taken from the model's own predicted
+// durations (PLAN decision 1). Words come from walking `inputIds`/`predictedDurations` and pairing the space-separated
+// groups with the words of Kokoro's normalised text.
+// Runs FluidAudio's seven-stage `.legacy` chain, not `.v3`: on macOS 27.2 the v3 fast path (any chunk under 5 s of audio)
+// aborts the process in MPSGraph (KokoroSourceGenerator is pinned to the GPU, "shape for TensorData is not static",
+// reproduced 21 Oct), while legacy routes noise and tail to the CPU on macOS 27 and is about 80 MB instead of 380 MB.
 import FluidAudio
 import Foundation
 import TalkReadCore
@@ -9,7 +12,7 @@ final class NeuralEngine: SpeechEngine {
     var kind: EngineKind { .neural }
     private let loader = KokoroLoader()
 
-    /// Kokoro vocab ids (vocab.json of the pinned ANE-v3 English checkpoint): BOS/EOS = 0, space = 16.
+    /// Kokoro vocab ids (vocab.json, identical for the ANE and ANE-v3 English checkpoints): BOS/EOS = 0, space = 16.
     static let boundaryIds: Set<Int32> = [0, 16]
     /// `; : , . ! ? — … " ( ) “ ”`: prosody tokens. They never open a word and do not stretch its span.
     static let punctuationIds: Set<Int32> = [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15]
@@ -31,15 +34,19 @@ final class NeuralEngine: SpeechEngine {
         .sorted { ($0.accent == "British" ? 0 : 1, $0.name) < ($1.accent == "British" ? 0 : 1, $1.name) }
     }
 
-    /// The v3 English checkpoint writes `vocab.json` last, after every model file has been fetched.
+    /// The seven compiled stages and the vocab of the legacy English chain are on disk (about 80 MB).
     static func modelInstalled() -> Bool {
-        guard let root = try? TtsCacheDirectory.ensure().appendingPathComponent("Models/kokoro-82m-coreml/ANE-v3") else { return false }
-        let revisions = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
-        return revisions.contains { FileManager.default.fileExists(atPath: root.appendingPathComponent("\($0)/en/vocab.json").path) }
+        guard let root = try? TtsCacheDirectory.ensure().appendingPathComponent("Models/kokoro-82m-coreml/ANE") else { return false }
+        return (KokoroAneStage.allCases.map(\.bundleName) + ["vocab.json"])
+            .allSatisfy { FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path) }
     }
 
+    /// Loads the model (downloading it on first use) and the voice, then synthesises one word: the first prediction
+    /// after a load is about a second slower, and that must not land on the reader's first chunk.
     func prepare(voice: String) async throws {
-        try await loader.manager().initialize(preloadVoices: [voice])
+        let manager = try await loader.manager()
+        try await manager.initialize(preloadVoices: [voice])
+        _ = try await manager.synthesizeDetailed(text: "Ready.", voice: voice, speed: 1)
     }
 
     func synthesize(_ text: String, voice: String) async throws -> SynthChunk {
@@ -47,6 +54,8 @@ final class NeuralEngine: SpeechEngine {
         let result = try await manager.synthesizeDetailed(text: text, voice: voice, speed: 1)
         guard !result.samples.isEmpty, result.samples.allSatisfy(\.isFinite) else { throw SpeechError.badAudio }
         let rate = Double(result.sampleRate)
+        assert(abs(result.samples.count - Int(result.predictedDurations.reduce(0, +)) * Int(Self.samplesPerFrame)) < Int(Self.samplesPerFrame),
+               "Kokoro audio length no longer matches its predicted durations")
         let groups = Self.groups(ids: result.inputIds, durations: result.predictedDurations, frame: Self.samplesPerFrame / rate)
         let words = Self.words(in: result.normalizedText ?? text)
         var counts: [Int]?
@@ -135,7 +144,7 @@ private actor KokoroLoader {
 
     func manager() async throws -> KokoroAneManager {
         let task = self.task ?? Task {
-            let m = KokoroAneManager(variant: .english, defaultVoice: KokoroAneConstants.defaultVoice, version: .v3)
+            let m = KokoroAneManager(variant: .english, defaultVoice: KokoroAneConstants.defaultVoice, version: .legacy)
             try await m.initialize()
             return m
         }
