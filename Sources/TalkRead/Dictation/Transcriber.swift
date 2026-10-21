@@ -7,9 +7,15 @@ import FluidAudio
 @MainActor protocol DictationASR: AnyObject {
     /// Transcribes one utterance: every buffer of `audio` (16 kHz mono Float32) until the stream finishes.
     func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> String
+    /// Downloads and loads the model once; a cancelled caller stops waiting at once while the load carries on.
     func load(progress: ((Double) -> Void)?) async throws
-    func unload()
+    /// Frees the model. False, freeing nothing, while it is in use or loading; true once nothing is resident (Sol #24).
+    @discardableResult func unload() -> Bool
     var isLoaded: Bool { get }
+    /// The model is downloading or loading; stays true until that ends, even after every caller stopped waiting.
+    var isLoading: Bool { get }
+    /// Called on the main actor whenever `isLoading` changes.
+    var onLoadingChange: (() -> Void)? { get set }
 }
 
 extension DictationASR {
@@ -24,12 +30,30 @@ extension DictationASR {
     }
 }
 
+/// One recognition at a time, first come first served: the recogniser is reset per utterance and its state cannot be
+/// shared. Work cancelled before or while it waited never enters (Sol #23). The self-test's fake recogniser uses it too.
+@MainActor final class RecogniserQueue {
+    private(set) var inUse = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func exclusive<T>(_ body: () async throws -> T) async throws -> T {
+        try Task.checkCancellation()
+        if inUse { await withCheckedContinuation { waiting.append($0) } }
+        inUse = true
+        defer { if waiting.isEmpty { inUse = false } else { waiting.removeFirst().resume() } }   // hand over, still in use
+        try Task.checkCancellation()
+        return try await body()
+    }
+}
+
 @MainActor final class Transcriber: DictationASR {
     static let variant = StreamingModelVariant.parakeetUnified640ms
     private var manager: StreamingUnifiedAsrManager?
-    private var loading: Task<StreamingUnifiedAsrManager, Error>?
-    private var inUse = false
-    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private(set) var isLoading = false { didSet { onLoadingChange?() } }
+    var onLoadingChange: (() -> Void)?
+    private var loadError: Error?
+    private var loadWaiters: [AsyncStream<Void>.Continuation] = []
+    private let queue = RecogniserQueue()
 
     var isLoaded: Bool { manager != nil }
 
@@ -43,51 +67,64 @@ extension DictationASR {
             .allSatisfy { FileManager.default.fileExists(atPath: dir.appendingPathComponent($0).path) }
     }
 
-    /// Downloads (huggingface.co, first use only) and loads the model; later calls return at once.
+    /// Downloads (huggingface.co, first use only) and loads the model; later calls return at once. One load, shared by
+    /// every caller, runs to the end even when its callers are cancelled (`isLoading` until then), so the idle unload
+    /// sees it (Sol #24) and a cancelled caller is not held up by it (Sol #23).
     func load(progress: ((Double) -> Void)? = nil) async throws {
         if manager != nil { return }
-        if loading == nil {
-            loading = Task {
-                let m = StreamingUnifiedAsrManager(config: Self.variant.unifiedConfig!, encoderPrecision: .int8)
-                try await m.loadModels(to: nil, configuration: nil) { p in
-                    Task { @MainActor in progress?(p.fractionCompleted) }
+        if !isLoading {
+            isLoading = true
+            Task {
+                do {
+                    let m = StreamingUnifiedAsrManager(config: Self.variant.unifiedConfig!, encoderPrecision: .int8)
+                    try await m.loadModels(to: nil, configuration: nil) { p in
+                        Task { @MainActor in progress?(p.fractionCompleted) }
+                    }
+                    manager = m
+                    loadError = nil
+                } catch {
+                    loadError = error
                 }
-                return m
+                isLoading = false
+                for waiter in loadWaiters { waiter.finish() }
+                loadWaiters = []
             }
         }
-        defer { loading = nil }
-        manager = try await loading!.value
+        let (done, waiter) = AsyncStream.makeStream(of: Void.self)
+        loadWaiters.append(waiter)
+        for await _ in done {}                    // ends when the load does, or at once when this task is cancelled
+        try Task.checkCancellation()
+        guard manager != nil else { throw loadError ?? ASRError.notInitialized }
     }
 
-    func unload() {
-        guard !inUse, let m = manager else { return }
-        manager = nil
-        Task { await m.cleanup() }
+    @discardableResult func unload() -> Bool {
+        guard !queue.inUse, !isLoading else { return false }
+        if let m = manager {
+            manager = nil
+            Task { await m.cleanup() }
+        }
+        return true
     }
 
     func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> String {
-        // One utterance at a time: the manager is reset per utterance and its state is not shareable.
-        if inUse { await withCheckedContinuation { waiting.append($0) } }
-        inUse = true
-        defer {
-            if waiting.isEmpty { inUse = false } else { waiting.removeFirst().resume() }   // hand over, still in use
-        }
-        try await load()
-        guard let m = manager else { throw ASRError.notInitialized }
-        try await m.reset()
-        await m.setPartialTranscriptCallback { text in Task { @MainActor in partial(text) } }
-        var frames = 0
-        for await buffer in audio {
+        try await queue.exclusive {
+            try await load()
+            guard let m = manager else { throw ASRError.notInitialized }
+            try await m.reset()
+            await m.setPartialTranscriptCallback { text in Task { @MainActor in partial(text) } }
+            var frames = 0
+            for await buffer in audio {
+                try Task.checkCancellation()
+                try await m.appendAudio(buffer)
+                frames += Int(buffer.frameLength)
+                try await m.processBufferedAudio()
+            }
             try Task.checkCancellation()
-            try await m.appendAudio(buffer)
-            frames += Int(buffer.frameLength)
-            try await m.processBufferedAudio()
+            if frames < 16_000 { try await m.appendAudio(Self.buffer(ArraySlice(repeating: 0, count: 16_000 - frames))) }
+            let text = try await m.finish()
+            await m.setPartialTranscriptCallback { _ in }
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        try Task.checkCancellation()
-        if frames < 16_000 { try await m.appendAudio(Self.buffer(ArraySlice(repeating: 0, count: 16_000 - frames))) }
-        let text = try await m.finish()
-        await m.setPartialTranscriptCallback { _ in }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     nonisolated static func buffer(_ samples: ArraySlice<Float>) -> AVAudioPCMBuffer {

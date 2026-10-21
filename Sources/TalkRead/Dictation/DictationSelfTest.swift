@@ -15,6 +15,7 @@ import WebKit
         var ok = checkHotkeys()
         if Paths.dataRoot.path.hasPrefix("/private/tmp") {
             ok = await checkOwnership(fixture: URL(fileURLWithPath: dir)) && ok
+            ok = await checkDrain(fixture: URL(fileURLWithPath: dir)) && ok
         } else {
             print("ownership: NOT RUN (data root \(Paths.dataRoot.path) is not a scratch folder)")
             ok = false
@@ -74,6 +75,7 @@ import WebKit
     private final class FakeAudio: DictationAudio {
         var onBuffer: ((AVAudioPCMBuffer) -> Void)?
         var onLevel: ((Float) -> Void)?
+        var log: ((String) -> Void)?                              // "mic" when an input starts
         var delay = Duration.zero
         private(set) var starts = 0
         private(set) var running = false
@@ -85,6 +87,7 @@ import WebKit
             starts += 1
             session += 1
             running = true
+            log?("mic")
             if delay > .zero {
                 let id = session, delay = delay
                 try await withCheckedThrowingContinuation { c in
@@ -109,18 +112,53 @@ import WebKit
         }
     }
 
+    /// Shaped like the Transcriber: the production `RecogniserQueue`, recognition that cancellation cannot interrupt
+    /// (`work` per buffer, like `processBufferedAudio`), and a cold load (`loadTime`) that runs to the end while a
+    /// cancelled caller stops waiting at once.
     private final class FakeASR: DictationASR {
-        var isLoaded: Bool { true }
+        private let queue = RecogniserQueue()
+        var isLoaded = true
+        private(set) var isLoading = false { didSet { onLoadingChange?() } }
+        var onLoadingChange: (() -> Void)?
+        var loadTime = Duration.zero
+        var work = Duration.milliseconds(50)
+        var log: ((String) -> Void)?                              // "enter" and "exit" of recognition
+        private(set) var entered = 0
         private var count = 0
-        func load(progress: ((Double) -> Void)?) async throws {}
-        func unload() {}
-        func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> String {
-            for await _ in audio {}
-            try await Task.sleep(for: .milliseconds(50))
-            try Task.checkCancellation()
-            count += 1
-            return "utterance \(count)"
+
+        func load(progress: ((Double) -> Void)?) async throws {
+            if isLoaded { return }
+            if !isLoading {
+                isLoading = true
+                let loadTime = loadTime
+                Task { await Self.uninterruptible(loadTime); isLoaded = true; isLoading = false }
+            }
+            while isLoading { try await Task.sleep(for: .milliseconds(5)) }
         }
+
+        @discardableResult func unload() -> Bool {
+            guard !queue.inUse, !isLoading else { return false }
+            isLoaded = false
+            return true
+        }
+
+        func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> String {
+            try await queue.exclusive {
+                try await load(progress: nil)
+                entered += 1
+                log?("enter")
+                defer { log?("exit") }
+                for await _ in audio {
+                    try Task.checkCancellation()
+                    await Self.uninterruptible(work)
+                }
+                try Task.checkCancellation()
+                count += 1
+                return "utterance \(count)"
+            }
+        }
+
+        static func uninterruptible(_ d: Duration) async { await Task.detached { try? await Task.sleep(for: d) }.value }
     }
 
     private static func checkOwnership(fixture dir: URL) async -> Bool {
@@ -258,6 +296,26 @@ import WebKit
             expect("#6 the human's text is typed", human3 != nil && typed.last == human3 && c.owner == nil && !c.isBusy)
         }
 
+        // #19: hotkeys paused for the shortcut recorder, or reloaded, during a hold recording. The release is then
+        // ignored (paused) or no longer tracked (reloaded), so the recording must be cancelled first: mic off, nothing
+        // typed. The tap is never started; raw key data goes straight to the main-thread handler.
+        let keys = Hotkeys(settings: Settings()) { c.handle($0) }
+        let ropt = Hotkeys.option | Hotkeys.rightOptionDeviceBit
+        let interruptions: [(String, () -> Void)] = [("pause", { keys.paused = true }), ("reload", { keys.reload(Settings()) })]
+        for (name, interrupt) in interruptions {
+            let before = typed.count
+            keys.process(.flagsChanged, keyCode: Hotkeys.rightOptionKeyCode, flags: ropt, at: ProcessInfo.processInfo.systemUptime)
+            await settle(300)                                       // held alone past 150 ms: the human is recording
+            let wasRecording = c.owner == user && recording() && audio.running
+            interrupt()
+            keys.process(.flagsChanged, keyCode: Hotkeys.rightOptionKeyCode, flags: 0, at: ProcessInfo.processInfo.systemUptime)
+            keys.paused = false
+            await settle(200)
+            expect("#19 \(name) during a hold recording: mic off, nothing typed",
+                   wasRecording && !audio.running && c.owner == nil && c.state == .idle && typed.count == before)
+            try? c.cancel(caller: user)                             // a failed check leaves nothing for the next one
+        }
+
         // #2: an utterance cancelled while its text waits for the pasteboard is never pasted (the real Inserter on a
         // private pasteboard; another transaction holds the gate meanwhile; nothing is posted).
         if CGPreflightPostEventAccess() {
@@ -294,6 +352,89 @@ import WebKit
         return failures.isEmpty
     }
 
+    // MARK: Drain and idle unload (Sol #23, #24) with the production recogniser queue
+
+    private static func checkDrain(fixture dir: URL) async -> Bool {
+        guard let file = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?
+            .first(where: { $0.pathExtension == "wav" }) else { print("drain: NOT RUN (no wav in \(dir.path))"); return false }
+        var events: [String] = [], typed: [String] = [], failures: [String] = []
+        let audio = FakeAudio(), asr = FakeASR()
+        audio.log = { events.append($0) }
+        asr.log = { events.append($0) }
+        asr.work = .milliseconds(100)
+        // A decode that takes 300 ms, so a takeover can land inside it.
+        let c = DictationController(audio: audio, asr: asr, insert: { text, _, _ in typed.append(text); return .inserted },
+                                    decode: { Thread.sleep(forTimeInterval: 0.3); return try Transcriber.samples(of: $0) })
+        c.quiet = true
+        let user = DictationController.user
+        func expect(_ name: String, _ condition: Bool) { if !condition { failures.append(name) } }
+        func settle(_ ms: Int) async { try? await Task.sleep(for: .milliseconds(ms)) }
+        func waitUntil(_ condition: () -> Bool) async { for _ in 0..<200 where !condition() { await settle(10) } }
+        func recording() -> Bool { if case .recording = c.state { true } else { false } }
+        func stopHuman() async -> String? {
+            guard c.owner == user, recording() else { return nil }
+            c.handle(.stopAndInsert)
+            return await c.result()
+        }
+
+        // #23: the human takes over a file mid-recognition. The slot is theirs at once, but the microphone starts only
+        // after the cancelled file has left the recogniser.
+        let a = Task { try await c.transcribe(file: file, caller: "A") }
+        await waitUntil { asr.entered == 1 }
+        await settle(30)                                            // inside an uninterruptible 100 ms step
+        events.removeAll()
+        c.handle(.startRecording)
+        await settle(20)
+        expect("#23 slot reserved, mic waits for the drain", c.owner == user && recording() && c.isBusy && c.preparing && !audio.running)
+        _ = await a.result
+        await waitUntil { audio.running }
+        let exit = events.firstIndex(of: "exit") ?? .max, mic = events.firstIndex(of: "mic") ?? -1
+        expect("#23 mic only after the cancelled file left the recogniser (\(events))", exit < mic && audio.running)
+        let human = await stopHuman()
+        expect("#23 the human's text is typed", human != nil && typed.last == human && !c.isBusy)
+
+        // #23: the human takes over a file while it is still decoding: the microphone waits for the decode, and the
+        // decoded file never enters the recogniser.
+        let entered = asr.entered
+        let b = Task { try await c.transcribe(file: file, caller: "B") }
+        await settle(100)                                           // B is decoding
+        c.handle(.startRecording)
+        await settle(50)
+        expect("#23 mic waits for the cancelled decode", c.owner == user && c.isBusy && !audio.running)
+        _ = await b.result
+        await waitUntil { audio.running }
+        await settle(50)
+        expect("#23 the cancelled file never entered the recogniser", asr.entered == entered + 1 && audio.running)   // + the human's
+        let human2 = await stopHuman()
+        expect("#23 the human's text is typed after a decode drain", human2 != nil && typed.last == human2)
+
+        // #24: a cancelled file keeps the controller busy (and the unload refused) until it has drained.
+        let d = Task { try await c.transcribe(file: file, caller: "D") }
+        await waitUntil { asr.entered == entered + 2 }
+        await settle(30)
+        try? c.cancel(caller: "D")
+        expect("#24 busy while the cancelled file drains", c.owner == nil && c.isBusy && !c.unloadModel() && asr.isLoaded)
+        _ = await d.result
+        await waitUntil { !c.isBusy }
+        expect("#24 idle after the drain, then the unload succeeds", !c.isBusy && c.unloadModel() && !asr.isLoaded)
+
+        // #24: a cold load outlives the cancelled file that started it: busy, unload refused, until the load ends.
+        asr.loadTime = .milliseconds(600)
+        let e = Task { try await c.transcribe(file: file, caller: "E") }
+        await waitUntil { asr.isLoading }
+        await settle(30)
+        try? c.cancel(caller: "E")
+        _ = await e.result
+        await settle(30)
+        expect("#24 busy while the abandoned load runs on", c.owner == nil && c.isBusy && asr.isLoading && !c.unloadModel())
+        await waitUntil { !asr.isLoading }
+        await settle(10)
+        expect("#24 idle once the load ends, then the unload succeeds", !c.isBusy && asr.isLoaded && c.unloadModel() && !asr.isLoaded)
+
+        print("drain: \(failures.isEmpty ? "ok" : "FAIL \(failures)") (typed \(typed))")
+        return failures.isEmpty
+    }
+
     // MARK: ASR fixtures
 
     private static func checkASR(dir: URL) async -> Bool {
@@ -303,8 +444,29 @@ import WebKit
         guard !clips.isEmpty else { print("asr: no clips in \(dir.path)"); return false }
         let transcriber = Transcriber()
         let started = Date()
+        // #23/#24 on the real recogniser: unloading is refused while it loads, a cancelled waiter returns at once and
+        // the load carries on, and unloading is refused while a run holds it.
+        let waiter = Task { try await transcriber.load(progress: nil) }
+        while !transcriber.isLoading, !transcriber.isLoaded { try? await Task.sleep(for: .milliseconds(1)) }
+        let refusedLoading = transcriber.isLoading && !transcriber.unload()
+        let cancelledAt = Date()
+        waiter.cancel()
+        let cancelled = await waiter.result
+        let waiterMs = Date().timeIntervalSince(cancelledAt) * 1000
+        let quit = { if case .failure(let e) = cancelled { e is CancellationError } else { false } }() && waiterMs < 100 && transcriber.isLoading
         do { try await transcriber.load(progress: nil) } catch { print("asr: model failed to load: \(error)"); return false }
         print(String(format: "asr: model ready in %.1f s (%@)", Date().timeIntervalSince(started), Transcriber.variant.rawValue))
+        let (held, holdFeed) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
+        let holding = Task { try await transcriber.run(held, partial: { _ in }) }
+        try? await Task.sleep(for: .milliseconds(100))
+        let refusedInUse = !transcriber.unload() && transcriber.isLoaded
+        holding.cancel()
+        let heldResult = await holding.result
+        holdFeed.finish()
+        let cancelledRun = { if case .failure(let e) = heldResult { e is CancellationError } else { false } }()
+        let api = refusedLoading && quit && refusedInUse && cancelledRun
+        print(String(format: "asr: unload refused while loading %@, while in use %@; cancelled load waiter returned in %.0f ms with the load carrying on %@; cancelled run ended %@",
+                     "\(refusedLoading)", "\(refusedInUse)", waiterMs, "\(quit)", "\(cancelledRun)"))
         let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _, _, _ in .inserted })
         controller.quiet = true
         var fileErrors = 0, liveErrors = 0, words = 0
@@ -334,7 +496,9 @@ import WebKit
         let sorted = latencies.sorted()
         print(String(format: "asr: %d clips, %d words; total WER file %.2f%%, live %.2f%% (limit 6%%); latency after last sample median %.0f ms, max %.0f ms",
                      clips.count, words, 100 * fileWER, 100 * liveWER, sorted[sorted.count / 2], sorted.last!))
-        return fileWER <= 0.06 && liveWER <= 0.06
+        let unloaded = controller.unloadModel() && !transcriber.isLoaded
+        print("asr: unloaded when idle \(unloaded)")
+        return fileWER <= 0.06 && liveWER <= 0.06 && api && unloaded
     }
 
     /// The live path: the clip re-sampled to a typical 48 kHz stereo input format, through the Recorder's converter in

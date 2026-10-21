@@ -103,6 +103,19 @@ final class HotkeyStateTests: XCTestCase {
         XCTAssertEqual(c.tick(at: 3.2), [.startRecording], "chord state cleared")
     }
 
+    func testResetCancelsAHoldRecordingAndForgetsTheKey() {
+        // Sol #19: paused (shortcut recorder) or reloaded mid-recording; the release that follows must not be needed.
+        var (s, _) = held(tickAt: 0.2)
+        XCTAssertEqual(s.reset(), [.cancelRecording])
+        XCTAssertEqual(s.handle(.holdKeyUp, at: 1), [], "nothing inserted on the late release")
+        XCTAssertEqual(s.reset(), [], "cancels once")
+        var (p, _) = held()
+        XCTAssertEqual(p.reset(), [], "a pending hold started nothing")
+        XCTAssertEqual(p.tick(at: 0.3), [], "and never starts after the reset")
+        var idle = HotkeyState()
+        XCTAssertEqual(idle.reset(), [], "toggle and agent recordings are left alone")
+    }
+
     func testTickWithoutHoldDoesNothing() {
         var s = HotkeyState()
         XCTAssertEqual(s.tick(at: 100), [])
