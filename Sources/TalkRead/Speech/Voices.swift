@@ -1,4 +1,5 @@
-// Voice catalogue types, the SpeechEngine protocol and the Engines pair. Types are scaffold; catalogue and download state are WP3.
+// Voice catalogue types, the SpeechEngine protocol, the Engines pair and the speech errors.
+// Each engine lists its own voices (`voices()`); the neural list reports whether the Kokoro model is downloaded.
 import Foundation
 import TalkReadCore
 
@@ -18,6 +19,18 @@ struct SynthChunk {
     let samples: [Float]
     let sampleRate: Double
     let words: [SpokenWord]
+}
+
+enum SpeechError: Error, LocalizedError {
+    /// No samples, or non-finite ones (the Kokoro v3 NaN regression on macOS 27).
+    case badAudio
+    case render(String)
+    var errorDescription: String? {
+        switch self {
+        case .badAudio: return "The voice produced no usable audio."
+        case .render(let why): return "Audio render failed: \(why)"
+        }
+    }
 }
 
 protocol SpeechEngine: AnyObject {
