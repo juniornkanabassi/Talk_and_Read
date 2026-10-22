@@ -426,10 +426,11 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
                 while true {
                     try? await Task.sleep(for: delay)
                     guard !Task.isCancelled, let self else { return }
-                    guard idle else { continue }   // busy without telling us: wait another period rather than give up
+                    // Busy without telling us, or the recogniser refused (still loading or draining, Sol #24): wait
+                    // another period rather than give up.
+                    guard idle, dictation.unloadModel() else { continue }
                     engines.neural.unload()
                     engines.system.unload()
-                    dictation.unloadModel()
                     modelsWarm = false
                     unloadTask = nil
                     Log.write("speech models unloaded after \(delay) idle")

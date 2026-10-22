@@ -149,9 +149,8 @@ enum ControlSelfTest {
         try? await Task.sleep(for: .milliseconds(100))
         let during = board.string(forType: .string)
         let quitStart = Date()
-        let atQuit: String? = await withCheckedContinuation { c in
-            AppDelegate.afterPasteboardIdle(gate) { c.resume(returning: board.string(forType: .string)) }
-        }
+        await gate.shutdown(grace: 3)                               // what applicationShouldTerminate awaits
+        let atQuit = board.string(forType: .string)
         let waited = Int(Date().timeIntervalSince(quitStart) * 1000)
         await paste.value
         board.releaseGlobally()
