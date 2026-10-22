@@ -54,7 +54,9 @@ import TalkReadCore
     func start() {
         startedAt = Date()
         restart(from: startToken)
-        player.warmUp()   // after the producer is off synthesising, so the engine's start-up overlaps it
+        // Queued behind the producer, so the engine starts while the first chunk is synthesised off the main actor;
+        // skipped when the read already finished (nothing speakable) or was paused (nothing would stop the engine).
+        Task { [weak self] in if let self, state == .preparing { player.warmUp() } }
     }
 
     func pause() {

@@ -176,11 +176,12 @@ import TalkReadCore
 
     /// Pauses the node; the engine keeps running for 30 s (instant resume), then pauses too to save power.
     func pause() {
-        guard isPlaying else { return }
-        _ = currentTime
-        node.pause()
-        isPlaying = false
-        guard !manual else { return }
+        if isPlaying {
+            _ = currentTime
+            node.pause()
+            isPlaying = false
+        }
+        guard !manual, engine.isRunning else { return }   // also an engine warmed up for a read paused before its first audio
         let stop = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { if let self, !self.isPlaying { self.engine.pause() } }
         }
