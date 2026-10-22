@@ -49,6 +49,14 @@ public struct HotkeyState: Equatable, Sendable {
         return [.startRecording]
     }
 
+    /// Forgets the hold key (hotkeys paused for the shortcut recorder, or shortcuts reloaded): a recording it started is
+    /// discarded first, because the release that would stop it is ignored or no longer recognised (Sol #19). A pending
+    /// hold has started nothing and only needs forgetting (its tick then finds `.up`).
+    public mutating func reset() -> [HotkeyAction] {
+        defer { hold = .up }
+        return hold == .recording ? [.cancelRecording] : []
+    }
+
     /// Another key while the hold key is down: before the delay it never records, after it the recording is discarded.
     private mutating func chord() -> [HotkeyAction] {
         switch hold {

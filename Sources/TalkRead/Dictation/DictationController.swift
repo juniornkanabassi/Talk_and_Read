@@ -23,7 +23,7 @@ enum DictationError: LocalizedError, Equatable {
     enum State: Equatable { case idle, recording(level: Float, partial: String), transcribing, done(String), failed(String) }
     @Published private(set) var state: State = .idle
     @Published private(set) var history: [DictationEntry] = []
-    /// The model is loading for this dictation (the pill says "Preparing…").
+    /// The model is loading, or cancelled work is still leaving the recogniser (the pill says "Preparing…").
     @Published private(set) var preparing = false
     /// The last 11 input levels, newest last (the pill's meter).
     @Published private(set) var levels = [Float](repeating: 0, count: 11)
@@ -34,7 +34,8 @@ enum DictationError: LocalizedError, Equatable {
     /// The one admission slot for live dictation and file transcription: one owner at a time; other control callers
     /// get `busy` unless forced; "user" (hotkeys, GUI) always wins.
     private(set) var owner: String? { didSet { updateBusy() } }
-    /// Recording, transcribing (live or a file) or typing (activity tracking and idle unload).
+    /// Recording, transcribing (live or a file), typing, draining cancelled work or loading the model (activity
+    /// tracking and idle unload, Sol #24).
     @Published private(set) var isBusy = false
     /// No pill and no sounds (self-tests).
     var quiet = false
@@ -51,13 +52,20 @@ enum DictationError: LocalizedError, Equatable {
     private var generation = 0                            // bumped on every start/cancel; stale work changes nothing
     private var insertOnStop = true
     private var inserting = 0 { didSet { updateBusy() } }  // paste-last and insert-again in flight
+    /// Cancelled transcripts and file jobs still running; the next recording starts only after them (Sol #23).
+    private var draining: Task<Void, Never>? { didSet { updateBusy() } }
+    private var drains = 0
+    private let decode: @Sendable (URL) throws -> [Float]
     private var pill: DictationPill?
 
-    init(audio: DictationAudio? = nil, asr: DictationASR? = nil, insert: Insert? = nil) {
+    init(audio: DictationAudio? = nil, asr: DictationASR? = nil, insert: Insert? = nil,
+         decode: (@Sendable (URL) throws -> [Float])? = nil) {
         self.audio = audio ?? Recorder()
         self.asr = asr ?? Transcriber()
         self.insert = insert ?? { await Inserter.insert($0, targetPID: $1, isCurrent: $2) }
+        self.decode = decode ?? { try Transcriber.samples(of: $0) }
         history = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
+        self.asr.onLoadingChange = { [weak self] in self?.updateBusy() }
     }
 
     // MARK: Control (CLI/MCP pass their caller and force; hotkeys and the GUI pass "user")
@@ -76,11 +84,7 @@ enum DictationError: LocalizedError, Equatable {
         lastPartial = ""
         state = .recording(level: 0, partial: "")
         showPill()
-        play("Tink")
-        if !asr.isLoaded {
-            preparing = true
-            Task { try? await asr.load(progress: nil); preparing = false }
-        }
+        if !asr.isLoaded { Task { try? await asr.load(progress: nil) } }   // load alongside any drain ("Preparing…")
         let (stream, feed) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
         self.feed = feed
         audio.onBuffer = { feed.yield($0) }
@@ -89,7 +93,11 @@ enum DictationError: LocalizedError, Equatable {
         let onPartial: @MainActor (String) -> Void = { [weak self] text in self?.update(gen, partial: text) }
         let transcript = Task { try await asr.run(stream, partial: onPartial) }
         self.transcript = transcript
-        work = Task { [weak self] in await self?.finish(gen, transcript) }
+        let drain = draining                                      // the slot is reserved; the microphone waits for it
+        work = Task { [weak self] in
+            await drain?.value
+            return await self?.finish(gen, transcript)
+        }
     }
 
     func stop(insert: Bool, caller: String, force: Bool = false) throws {
@@ -118,9 +126,12 @@ enum DictationError: LocalizedError, Equatable {
     func transcribe(file: URL, caller: String) async throws -> String {
         if let busy = owner { throw DictationError.busy(owner: busy) }
         owner = caller                                            // admitted before the first await
-        let asr = asr
+        let asr = asr, decode = decode
         let job = Task {
-            let samples = try await Task.detached { try Transcriber.samples(of: file) }.value
+            // ponytail: the decode reads the whole file and cannot be interrupted; a takeover waits for it (the drain),
+            // a few ms for a dictation clip. Make it chunked and cancellable if hour-long files ever matter.
+            let samples = try await Task.detached { try decode(file) }.value
+            try Task.checkCancellation()                          // taken over while decoding: never enters (Sol #23)
             return try await asr.transcribe(samples: samples)
         }
         fileJob = job
@@ -164,7 +175,9 @@ enum DictationError: LocalizedError, Equatable {
         }
     }
 
-    func unloadModel() { asr.unload() }
+    /// Frees the recogniser. False, freeing nothing, while dictation, a file, a drain or the model load still runs: the
+    /// caller keeps its idle timer and tries again later (Sol #24).
+    @discardableResult func unloadModel() -> Bool { !isBusy && asr.unload() }
 
     // MARK: Utterance
 
@@ -173,6 +186,7 @@ enum DictationError: LocalizedError, Equatable {
         // task never starts audio (it would stop the newer utterance's input) and a stop that came first is honoured.
         guard gen == generation else { return nil }
         guard case .recording = state else { return released() }
+        play("Tink")                                              // the microphone starts now, after any drain
         do {
             try await audio.start()
         } catch {
@@ -217,6 +231,7 @@ enum DictationError: LocalizedError, Equatable {
 
     /// Drops the current utterance or file transcription: stops the input, cancels its startup and transcript (or the
     /// file job), releases the owner. Called only for the current owner, so the input it stops is the current one.
+    /// The cancelled backend work drains: the next recording and the idle unload wait until it has exited (Sol #23).
     private func discard() {
         generation += 1
         work?.cancel()
@@ -224,8 +239,18 @@ enum DictationError: LocalizedError, Equatable {
         feed?.finish()
         feed = nil
         transcript?.cancel()
-        transcript = nil
         fileJob?.cancel()
+        if transcript != nil || fileJob != nil {
+            drains += 1
+            let id = drains, before = draining, transcript = transcript, fileJob = fileJob
+            draining = Task { [weak self] in
+                await before?.value
+                _ = await transcript?.result
+                _ = await fileJob?.result
+                if self?.drains == id { self?.draining = nil }
+            }
+        }
+        transcript = nil
         fileJob = nil
         owner = nil
     }
@@ -239,7 +264,9 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     private func updateBusy() {
-        let busy = owner != nil || inserting > 0
+        let preparing = draining != nil || asr.isLoading
+        if self.preparing != preparing { self.preparing = preparing }
+        let busy = owner != nil || inserting > 0 || preparing
         if isBusy != busy { isBusy = busy }
     }
 

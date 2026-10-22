@@ -11,7 +11,7 @@ final class Hotkeys {
     /// The tap exists and is enabled (for the permissions UI). Main thread.
     private(set) var isRunning = false
     /// No actions fire while true (the settings shortcut recorder is listening). Main thread.
-    var paused = false { didSet { state = HotkeyState() } }
+    var paused = false { didSet { resetHold() } }
 
     // Main thread only.
     private var settings: Settings
@@ -69,7 +69,12 @@ final class Hotkeys {
 
     func reload(_ settings: Settings) {
         self.settings = settings
-        state = HotkeyState()
+        resetHold()
+    }
+
+    /// Forgets the hold key; a recording it started is cancelled first (nothing typed), even while paused (Sol #19).
+    private func resetHold() {
+        for action in state.reset() { onAction?(action) }
     }
 
     // MARK: Tap thread
@@ -106,7 +111,7 @@ final class Hotkeys {
 
     fileprivate func received(_ type: CGEventType, _ event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { checkHealth(); return }
-        guard event.getIntegerValueField(.eventSourceUserData) != PasteboardGate.eventTag,   // our own ⌘V / ⌘C
+        guard event.getIntegerValueField(.eventSourceUserData) != PasteboardGate.eventTag,   // our own ⌘V (the only key event we post)
               event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return }
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags.rawValue
@@ -116,7 +121,8 @@ final class Hotkeys {
 
     // MARK: Main thread
 
-    private func process(_ type: CGEventType, keyCode: UInt16, flags: UInt64, at time: Double) {
+    /// Internal, not private: the dictation self-test feeds raw key data here (nothing is posted to the system).
+    func process(_ type: CGEventType, keyCode: UInt16, flags: UInt64, at time: Double) {
         guard !paused, let event = Self.keyEvent(type, keyCode: keyCode, flags: flags, settings: settings) else { return }
         emit(state.handle(event, at: time))
         if event == .holdKeyDown {
