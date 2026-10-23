@@ -20,9 +20,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "TalkReadCore", path: "Sources/TalkReadCore", swiftSettings: [.swiftLanguageMode(.v6)]),
+        // Catches the Objective-C exceptions AVFAudio raises instead of returning errors (Player.play).
+        .target(name: "ObjCExceptionCatch", path: "Sources/ObjCExceptionCatch"),
         // Swift 5 mode for the app, as in ReadAlong: AX and AppKit callbacks are not Sendable-clean.
         .executableTarget(name: "TalkRead",
-                          dependencies: ["TalkReadCore", .product(name: "FluidAudio", package: "FluidAudio"),
+                          dependencies: ["TalkReadCore", "ObjCExceptionCatch", .product(name: "FluidAudio", package: "FluidAudio"),
                                          .product(name: "MLXAudioTTS", package: "mlx-audio-swift"),
                                          .product(name: "MLXAudioCore", package: "mlx-audio-swift"),
                                          .product(name: "MLX", package: "mlx-swift")],
