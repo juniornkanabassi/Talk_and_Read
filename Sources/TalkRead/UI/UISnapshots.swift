@@ -230,8 +230,10 @@ import TalkReadCore
         check(paused == [true, true, true, false], "recorder pauses hotkeys", "begin a, begin b, end a, end b → \(paused)")
         let key = MenuBarMenu.keyEquivalent(TalkReadCore.Settings().readShortcut)
         check(key?.0 == "a" && key?.1 == [.control], "menu key equivalent", "\(key.map { "\($0.0) \($0.1.rawValue)" } ?? "nil")")
-        let cycle = [1.0, 1.23, 2.5, 3.0].map(SpeedControl.SpeedButton.next(after:))
-        check(cycle == [1.5, 1.5, 3.0, 1.0], "speed button cycles", cycle.map { Theme.speed($0) }.joined(separator: " "))
+        let items = SpeedControl.SpeedButton.presetItems(current: 2.5)
+        let ticked = items.filter(\.on).map(\.value)
+        check(items.map(\.value) == [1, 1.5, 2, 2.5, 3] && ticked == [2.5], "speed button menu",
+              items.map { $0.on ? "[\($0.title)]" : $0.title }.joined(separator: " "))
         return failures
     }
 

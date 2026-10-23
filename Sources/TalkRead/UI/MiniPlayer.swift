@@ -307,7 +307,7 @@ struct Subtitles: View {
     }
 }
 
-/// "1.50×": click cycles 1 / 1.5 / 2 / 2.5 / 3, scrolling fine-tunes by 0.05. AppKit, because SwiftUI has no scroll-wheel hook.
+/// "1.50×": click to choose 1×, 1.5×, 2×, 2.5× or 3×; scroll to fine-tune. AppKit, because SwiftUI has no scroll-wheel hook.
 struct SpeedControl: NSViewRepresentable {
     let speed: Double
     let set: (Double) -> Void
@@ -332,15 +332,31 @@ struct SpeedControl: NSViewRepresentable {
             super.init(frame: frame)
             isBordered = false
             target = self
-            action = #selector(cycle)
-            toolTip = "Click for 1×, 1.5×, 2×, 2.5× or 3×; scroll to fine-tune"
+            action = #selector(showMenu)
+            toolTip = "Click to choose 1×, 1.5×, 2×, 2.5× or 3×; scroll to fine-tune"
             setAccessibilityLabel("Speed")
         }
         required init?(coder: NSCoder) { fatalError("not used") }
 
-        @objc private func cycle() { onChange?(Self.next(after: speed)) }
+        static func presetItems(current: Double) -> [(title: String, value: Double, on: Bool)] {
+            presets.map { (title: Theme.speed($0), value: $0, on: abs($0 - current) < 0.001) }
+        }
 
-        static func next(after speed: Double) -> Double { presets.first { $0 > speed + 0.001 } ?? presets[0] }
+        @objc private func showMenu() {
+            let menu = NSMenu()
+            for item in Self.presetItems(current: speed) {
+                let menuItem = NSMenuItem(title: item.title, action: #selector(choose(_:)), keyEquivalent: "")
+                menuItem.target = self
+                menuItem.representedObject = item.value
+                menuItem.state = item.on ? .on : .off
+                menu.addItem(menuItem)
+            }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 4), in: self)
+        }
+
+        @objc private func choose(_ sender: NSMenuItem) {
+            if let value = sender.representedObject as? Double { onChange?(value) }
+        }
 
         override func scrollWheel(with event: NSEvent) {
             scrolled += event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / 10 : event.scrollingDeltaY
