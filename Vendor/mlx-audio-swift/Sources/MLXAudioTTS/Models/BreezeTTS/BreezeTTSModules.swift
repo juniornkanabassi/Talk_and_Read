@@ -105,26 +105,32 @@ final class BreezeDepthAttention: Module {
         _output.wrappedValue = Linear(config.numAttentionHeads * config.headDim, config.hiddenSize, bias: false)
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, cache: KVCache? = nil) -> MLXArray {
         let batch = x.dim(0)
         let length = x.dim(1)
+        let offset = cache?.offset ?? 0
         let queries = rope(
             query(x).reshaped([batch, length, config.numAttentionHeads, config.headDim])
-                .transposed(0, 2, 1, 3)
+                .transposed(0, 2, 1, 3),
+            offset: offset
         )
-        let keys = rope(
+        var keys = rope(
             key(x).reshaped([batch, length, config.numKeyValueHeads, config.headDim])
-                .transposed(0, 2, 1, 3)
+                .transposed(0, 2, 1, 3),
+            offset: offset
         )
-        let values = value(x)
+        var values = value(x)
             .reshaped([batch, length, config.numKeyValueHeads, config.headDim])
             .transposed(0, 2, 1, 3)
+        if let cache {
+            (keys, values) = cache.update(keys: keys, values: values)
+        }
         let attended = MLXFast.scaledDotProductAttention(
             queries: queries,
             keys: keys,
             values: values,
             scale: scale,
-            mask: .causal
+            mask: length > 1 ? .causal : .none
         )
         return output(attended.transposed(0, 2, 1, 3).reshaped([batch, length, -1]))
     }
@@ -159,8 +165,8 @@ final class BreezeDepthLayer: Module {
         _postAttentionNorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let attended = x + attention(inputNorm(x))
+    func callAsFunction(_ x: MLXArray, cache: KVCache? = nil) -> MLXArray {
+        let attended = x + attention(inputNorm(x), cache: cache)
         return attended + mlp(postAttentionNorm(attended))
     }
 }
@@ -208,6 +214,19 @@ final class BreezeDepthModel: Module {
         }
         return norm(hidden)
     }
+
+    /// Runs new positions through the stack, extending `cache` in place.
+    func step(_ embeddings: MLXArray, cache: [KVCache]) -> MLXArray {
+        var hidden = inputProjector(embeddings)
+        for (layer, layerCache) in zip(layers, cache) {
+            hidden = layer(hidden, cache: layerCache)
+        }
+        return norm(hidden)
+    }
+
+    func makeCache() -> [KVCache] {
+        layers.map { _ in KVCacheSimple() }
+    }
 }
 
 final class BreezeCodebooksHead: Module {
@@ -235,6 +254,21 @@ final class BreezeDepthDecoder: Module {
         let headIndex = tokenIDs.dim(1) - 2
         precondition(headIndex >= 0 && headIndex < codebooksHead.weight.dim(0), "Invalid depth head")
         let hidden = model(tokenIDs, backboneHiddenState: backboneHiddenState)[0..., -1, 0...]
+        return matmul(hidden, codebooksHead.weight[headIndex])
+    }
+
+    /// Predicts codebook `headIndex + 1` from the token at `headIndex`, one cached position at a time.
+    /// Head zero also seeds the frame's empty cache with the backbone hidden state, in the same pass.
+    func stepLogits(tokenID: MLXArray, headIndex: Int, backboneHiddenState: MLXArray, cache: [KVCache]) -> MLXArray {
+        var embeddings = model.embedTokens(tokenID.reshaped([1, 1]) + headIndex * model.config.vocabSize)
+        if headIndex == 0 {
+            var backbone = backboneHiddenState
+            if let projector = model.backboneProjector {
+                backbone = projector(backbone)
+            }
+            embeddings = concatenated([backbone.expandedDimensions(axis: 1), embeddings], axis: 1)
+        }
+        let hidden = model.step(embeddings, cache: cache)[0..., -1, 0...]
         return matmul(hidden, codebooksHead.weight[headIndex])
     }
 }

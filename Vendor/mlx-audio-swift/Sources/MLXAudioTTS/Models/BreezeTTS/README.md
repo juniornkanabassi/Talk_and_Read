@@ -47,7 +47,7 @@ You can also set `voice` while cloning to direct the cloned voice. The model use
 
 ## Output and streaming
 
-Breeze returns mono audio at 24 kHz. `generateStream` reports token and timing events while it generates, then yields the decoded waveform as one audio event. The public API can add codec chunk streaming later without changing model loading or prompt controls.
+Breeze returns mono audio at 24 kHz. `generateStream` yields token events and decoded audio chunks while it generates, then a timing event. Pass `streamingInterval:` (seconds of audio per chunk, 2.0 by default) to trade first-audio latency against decoding overhead; 0.32 gives first audio in about a third of a second on an M3 Max.
 
 ## License
 
