@@ -42,7 +42,8 @@ final class Aligner: @unchecked Sendable {
         let audio = try AudioConverter().resample(samples, from: sampleRate)
         var state = try TdtDecoderState(decoderLayers: await asr.decoderLayerCount)
         let result = try await asr.transcribe(audio, decoderState: &state, language: language == "fr" ? .french : .english)
-        let words = buildWordTimings(from: result.tokenTimings ?? []).map { SpokenWord(text: $0.word, start: $0.startTime, end: $0.endTime) }
+        let words = Self.corrected(buildWordTimings(from: result.tokenTimings ?? []).map { SpokenWord(text: $0.word, start: $0.startTime, end: $0.endTime) },
+                                   samples: samples, sampleRate: sampleRate)
         let matched = Alignment.assign(spoken: words.map(\.text), source: TextKit.tokenize(text).map(\.text), language: language)
         let lastEnd = matched.lastIndex { $0 != nil }.map { words[$0].end } ?? 0
         let keep = Self.keptSamples(samples, sampleRate: sampleRate, lastMatchedEnd: lastEnd)
@@ -53,16 +54,49 @@ final class Aligner: @unchecked Sendable {
     /// end and the last audible 10 ms frame (RMS within 40 dB of the chunk's loudest frame); a silent tail longer than
     /// 300 ms after that is cut to 150 ms. Audible audio is never cut, so an ASR miss alone trims nothing that is heard.
     static func keptSamples(_ samples: [Float], sampleRate: Double, lastMatchedEnd: Double) -> Int {
+        let (rms, floor, hop) = frames(samples, sampleRate: sampleRate)
+        let lastAudible = rms.lastIndex { $0 >= floor }.map { Double(($0 + 1) * hop) / sampleRate } ?? 0
+        let speechEnd = max(lastMatchedEnd, lastAudible)
+        guard Double(samples.count) / sampleRate - speechEnd > 0.3 else { return samples.count }
+        return min(samples.count, Int(((speechEnd + 0.15) * sampleRate).rounded()))
+    }
+
+    /// 10 ms RMS frames, the audible floor (40 dB under the loudest frame) and the hop in samples: the stop guard's and
+    /// the start correction's notion of silence.
+    static func frames(_ samples: [Float], sampleRate: Double) -> (rms: [Float], floor: Float, hop: Int) {
         let hop = max(Int(sampleRate / 100), 1)
         let rms: [Float] = stride(from: 0, to: samples.count, by: hop).map { i in
             let frame = samples[i ..< min(i + hop, samples.count)]
             return (frame.reduce(0) { $0 + $1 * $1 } / Float(frame.count)).squareRoot()
         }
-        let floor = max((rms.max() ?? 0) * 0.01, 1e-4)
-        let lastAudible = rms.lastIndex { $0 >= floor }.map { Double(($0 + 1) * hop) / sampleRate } ?? 0
-        let speechEnd = max(lastMatchedEnd, lastAudible)
-        guard Double(samples.count) / sampleRate - speechEnd > 0.3 else { return samples.count }
-        return min(samples.count, Int(((speechEnd + 0.15) * sampleRate).rounded()))
+        return (rms, max((rms.max() ?? 0) * 0.01, 1e-4), hop)
+    }
+
+    /// Parakeet v3 through FluidAudio starts words early on synthesised speech (24 Oct, against Kokoro's own timings and
+    /// two recognisers, Qwen3 and Breeze, English and French: 90-150 ms mid-phrase, 200-400 ms after a silence, often the
+    /// whole word inside the pause); 80 ms of it is FluidAudio's own shift (`startTime = (frame - 1) x 80 ms`).
+    // ponytail: tied to FluidAudio's default TDT_EMISSION_DELAY_FRAMES = 1 (one 80 ms frame); re-measure when FluidAudio
+    // changes it or its decoder.
+    static let lead = 0.08
+
+    /// Words `lead` later; a start still in silence (a 10 ms frame under the floor) moves to the next audible frame and
+    /// keeps at least one Parakeet frame. Never earlier; words stay in order and do not overlap (a start pushed past the
+    /// previous end waits for it).
+    static func corrected(_ words: [SpokenWord], samples: [Float], sampleRate: Double) -> [SpokenWord] {
+        let (rms, floor, hop) = frames(samples, sampleRate: sampleRate)
+        var previousEnd = 0.0
+        return words.map { w in
+            var start = w.start + lead, end = w.end + lead
+            let k = max(Int(start * sampleRate) / hop, 0)
+            if k < rms.count, rms[k] < floor, let j = rms[k...].firstIndex(where: { $0 >= floor }) {
+                start = Double(j * hop) / sampleRate
+                end = max(end, start + 0.08)
+            }
+            start = max(start, previousEnd)
+            end = max(end, start)
+            previousEnd = end
+            return SpokenWord(text: w.text, start: start, end: end, range: w.range)
+        }
     }
 }
 
