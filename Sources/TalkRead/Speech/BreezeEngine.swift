@@ -42,7 +42,8 @@ final class BreezeEngine: SpeechEngine, @unchecked Sendable {   // mutable state
     static let parameters = GenerateParameters(maxTokens: 750, temperature: 0.9, topP: 1, topK: 50, repetitionPenalty: 1)
     /// The fastest playback rate a read keeps up at with no hand-over to Kokoro (PLAN 0.4.0 Sol rev. 8: the speed measured
     /// through the real session, not the spike's): 1.5x for both voices, 60 s reads on the M3 Max on mains power, 23 Oct;
-    /// at 2x both hand over to Kokoro within 5-40 s. The Voices page and the sustained self-test both use it.
+    /// at 2x both hand over to Kokoro within 5-40 s. Above it a read starts on Kokoro (ReadSession.start) and choosing
+    /// Breeze loads nothing (AppModel.warm); the Voices page and the sustained self-test use it too.
     static let keepsUpTo: Float = 1.5
 
     let aligner: Aligner
@@ -55,6 +56,7 @@ final class BreezeEngine: SpeechEngine, @unchecked Sendable {   // mutable state
     init(aligner: Aligner, queue: MLXQueue) { self.aligner = aligner; self.queue = queue }
 
     var isBusy: Bool { queue.isBusy }
+    var keepsUpTo: Float? { Self.keepsUpTo }
 
     static func modelInstalled() -> Bool {
         files.allSatisfy { f in

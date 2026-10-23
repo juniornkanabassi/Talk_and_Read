@@ -188,6 +188,12 @@ extension EngineKind {
     /// Loads a chosen voice ahead of its first read (PLAN 0.3.0 decision 3); the idle timer frees it again.
     private func warm(_ v: Voice) {
         guard v.installed, v.engine != .system else { return }
+        // Above the speed its engine sustains a read starts on Kokoro (ReadSession.start), so warm Kokoro, not the model;
+        // a read at or below the limit loads the model itself. Speed changes load and unload nothing.
+        if let limit = engines.engine(for: v).keepsUpTo, settings.speed > limit {
+            if let k = kokoroFallback(v.language) { warm(k) }
+            return
+        }
         modelsWarm = true
         updateActivity()
         let engine = engines.engine(for: v)

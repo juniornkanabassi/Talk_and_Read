@@ -353,15 +353,16 @@ enum SelfTest {
 
     /// A sustained Qwen3 or Breeze read through a real session and Player at volume 0 (V3, V7): the model is loaded
     /// first, as on selection; then 60 s at `rate` with the Kokoro fallback warm. Passes with no starvation, no duplicated
-    /// or skipped token, a clean hand-over if any, the queued audio heard back (`queuedSpeech`), first audio <= 2.5 s
-    /// (Qwen3 at every rate, PLAN 0.3.0 build results; Breeze at 2.5x and above, recorded below, PLAN 0.4.0 proof), and
-    /// (PLAN 0.4.0 Sol rev. 8) the outcome the rate promises: Breeze reads up to `BreezeEngine.keepsUpTo` with no
-    /// fallback (the 2x of the plan was not reached, so the measured speed is promised), above it it may hand over;
-    /// Qwen3 keeps its 0.3.0 rule (either).
+    /// or skipped token, a clean hand-over if any, the queued audio heard back (`queuedSpeech`), and the outcome the
+    /// rate promises: Qwen3 first audio <= 2.5 s, kept up or handed over (PLAN 0.3.0); Breeze up to
+    /// `BreezeEngine.keepsUpTo` with no fallback, first audio recorded (PLAN 0.4.0 Sol rev. 8: the 2x of the plan was
+    /// not reached, so the measured speed is promised); above it Breeze is not loaded and the read starts on Kokoro with
+    /// the reason and Kokoro's first audio, under R10's 1000 ms (lead, 0.4.0).
     @MainActor private static func mlxLongRun(_ fixture: String, voice: String, rate: Float, aligner: Aligner) async throws -> Int32 {
         var text = fixture
         while text.utf16.count < 20_000 { text += "\n\n" + fixture }
         let breeze = voice.hasPrefix("breeze."), name = breeze ? "Breeze" : "Qwen3"
+        let above = breeze && rate > BreezeEngine.keepsUpTo
         let queue = MLXQueue(), log = ChunkLog()
         let slow = LoggingEngine(breeze ? BreezeEngine(aligner: aligner, queue: queue) : QwenEngine(aligner: aligner, queue: queue) as SpeechEngine, log)
         let engines = Engines(neural: LoggingEngine(NeuralEngine(), log), qwen: breeze ? nil : slow, breeze: breeze ? slow : nil, aligner: aligner, mlx: queue)
@@ -371,10 +372,15 @@ enum SelfTest {
         }
         let before = footprint()
         var clock = Date()
-        try await slow.prepare(voice: voice)
-        print(String(format: "%@ load + voice + warm-up: %d ms; footprint %.0f MB before, %.0f MB loaded (MLX active %.0f MB, cache %.0f MB)",
-                     name, ms(since: clock), before, footprint(), Double(Memory.activeMemory) / 1e6, Double(Memory.cacheMemory) / 1e6))
         let fallbackID = v.language == "fr" ? "ff_siwis" : "af_heart"
+        if above {   // as AppModel.warm on selection: Kokoro, not the model
+            try await engines.neural.prepare(voice: fallbackID)
+            print("\(name) not loaded above its \(BreezeEngine.keepsUpTo)x; Kokoro warmed in \(ms(since: clock)) ms")
+        } else {
+            try await slow.prepare(voice: voice)
+            print(String(format: "%@ load + voice + warm-up: %d ms; footprint %.0f MB before, %.0f MB loaded (MLX active %.0f MB, cache %.0f MB)",
+                         name, ms(since: clock), before, footprint(), Double(Memory.activeMemory) / 1e6, Double(Memory.cacheMemory) / 1e6))
+        }
         let fallback = Voice(id: fallbackID, name: fallbackID, accent: "", gender: "Female", engine: .neural, installed: true, language: v.language)
         // As the app does at launch: the first audio engine start in a process costs ~0.3 s (measured 1.65 s first audio
         // without this, 1.35 s with it). The read warms its Kokoro fallback itself.
@@ -419,11 +425,12 @@ enum SelfTest {
         print(String(format: "%@ rendered %.2fx real time over its %d chunks, alignment included (a quiet M3 Max: Breeze about 2.2x)", name,
                      own.reduce(0) { $0 + Double($1.samples.count) / $1.sampleRate } / max(own.reduce(0) { $0 + $1.work }, 0.001), own.count))
         let heard = try await queuedSpeech(made: made, log: log, language: v.language, aligner: aligner)
-        let promised = !breeze || rate > BreezeEngine.keepsUpTo || switched == nil
-        let quick = breeze && rate < 2.5 || first <= 2500
-        let pass = playing && quick && starvations == 0 && consecutive && clean && promised && heard
-        print("\(name) sustained: \(pass ? "PASS" : "FAIL") (\(breeze && rate < 2.5 ? "first audio recorded" : "first audio <= 2500 ms"), starvations 0, consecutive tokens, "
-              + "\(breeze && rate <= BreezeEngine.keepsUpTo ? "no fallback at \(rate)x" : "clean or no fallback"), queued speech heard back, still playing at 60 s)")
+        let outcome = above ? made.allSatisfy { $0.voice == fallbackID } && session.fallbackReason != nil && first < 1000
+            : breeze ? switched == nil : first <= 2500
+        let rule = above ? "started on Kokoro with the reason, first audio < 1000 ms"
+            : breeze ? "no fallback at \(rate)x, first audio recorded" : "first audio <= 2500 ms, clean or no fallback"
+        let pass = playing && starvations == 0 && consecutive && clean && heard && outcome
+        print("\(name) sustained: \(pass ? "PASS" : "FAIL") (\(rule), starvations 0, consecutive tokens, queued speech heard back, still playing at 60 s)")
         return pass ? 0 : 1
     }
 
@@ -804,9 +811,22 @@ enum SelfTest {
                                system: system, qwen: FakeEngine(kind: .qwen, realTime: 4)), voice: frKokoro, fallback: nil)
         check("6: a failing French Kokoro chunk is retried with a French system voice", whole(s) && !system.voiceIDs.isEmpty && system.voiceIDs.allSatisfy(french))
 
+        // 7. An engine that keeps up to 1.5x (as Breeze): a read started above that starts on the fallback, never asks the
+        // slow engine (no prepare, no chunk) and stays there when the rate drops; at the limit itself it starts as before.
+        func limited() -> Engines { Engines(neural: FakeEngine(kind: .neural, realTime: 60), system: SystemEngine(), qwen: FakeEngine(kind: .qwen, realTime: 4, keepsUpTo: 1.5)) }
+        (s, slow, _) = await read(excerpt(250), rate: 2.5, slowRTF: 4, engines: limited()) { s, _ in s.setRate(1) }   // ~20 s at 1x
+        describe("7 above the limit", s, slow)
+        check("7: above its limit the read starts on the fallback, with the reason", whole(s) && s.made.allSatisfy { $0.voice == fastVoice.id }
+              && s.fallbackReason == "Qwen3 keeps up to 1.5×; Kokoro is reading at 2.5×" && s.effectiveVoice == fastVoice && s.voice == slowVoice)
+        check("7: the limited engine is never prepared or asked, also after the rate drops to 1x", slow.prepares == 0 && slow.calls == 0)
+        check("7: first audio as the fallback's, no starvation", (s.firstAudioMs ?? .max) < 1000 && s.player.starvations == 0)
+        (s, slow, _) = await read(excerpt(250), rate: 1.5, slowRTF: 4, engines: limited())
+        describe("7 at the limit", s, slow)
+        check("7: at its limit the read starts on the engine as before", whole(s) && s.made.first?.voice == slowVoice.id && slow.prepares == 1)
+
         let pass = checks.allSatisfy(\.1)
         print("fake-engine checks: \(checks.filter(\.1).count)/\(checks.count) passed")
-        print("V3 fake engines: \(pass ? "PASS" : "FAIL") (fallback boundary, mid-chunk rate change, keep-up, cancellation, unload, cold fallback after an idle unload, French system fallback; 0 starvations, no duplicated or skipped tokens)")
+        print("V3 fake engines: \(pass ? "PASS" : "FAIL") (fallback boundary, mid-chunk rate change, keep-up, cancellation, unload, cold fallback after an idle unload, French system fallback, start on the fallback above an engine's limit; 0 starvations, no duplicated or skipped tokens)")
         return pass ? 0 : 1
     }
 
@@ -1029,13 +1049,13 @@ private struct Recogniser {
 /// speakable ranges; `failing` throws instead. Records every call; state behind `lock`.
 private final class FakeEngine: SpeechEngine, @unchecked Sendable {
     let kind: EngineKind
-    let coldLoad: Double, failing: Bool
+    let coldLoad: Double, failing: Bool, keepsUpTo: Float?
     private let lock = NSLock()
     private var _texts: [String] = [], _voiceIDs: [String] = [], _cancelled = 0, _prepares = 0, _unloads = 0, _inFlight = 0, _loaded = false,
                 _unloadedSynths = 0, _realTime: Double
 
-    init(kind: EngineKind, realTime: Double, coldLoad: Double = 0, failing: Bool = false) {
-        self.kind = kind; _realTime = realTime; self.coldLoad = coldLoad; self.failing = failing
+    init(kind: EngineKind, realTime: Double, coldLoad: Double = 0, failing: Bool = false, keepsUpTo: Float? = nil) {
+        self.kind = kind; _realTime = realTime; self.coldLoad = coldLoad; self.failing = failing; self.keepsUpTo = keepsUpTo
     }
 
     /// Settable mid-read: a lower value makes the engine fall behind from its next chunk.
@@ -1098,4 +1118,5 @@ private final class LoggingEngine: SpeechEngine {
         return c
     }
     func unload() { engine.unload() }
+    var keepsUpTo: Float? { engine.keepsUpTo }
 }
