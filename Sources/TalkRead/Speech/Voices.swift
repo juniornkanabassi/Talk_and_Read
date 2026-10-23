@@ -44,10 +44,13 @@ protocol SpeechEngine: AnyObject {
     func unload()
     /// Preparing, synthesising or unloading right now (V-A, additive): the idle unload waits for it.
     var isBusy: Bool { get }
+    /// The fastest playback rate a read keeps up at; above it a read starts on its fallback (lead, 0.4.0). nil: no limit.
+    var keepsUpTo: Float? { get }
 }
 
 extension SpeechEngine {
     var isBusy: Bool { false }
+    var keepsUpTo: Float? { nil }
     /// Renders well below real time, so a read uses bounded chunks, the time budget and the Kokoro fallback (V3).
     var isSlow: Bool { kind == .qwen || kind == .breeze }
 }
