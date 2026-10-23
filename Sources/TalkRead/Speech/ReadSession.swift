@@ -356,12 +356,14 @@ import TalkReadCore
     }
 
     /// The fallback's fixed time for a chunk: 0.2 s once prepared since the last unload (the system voice needs none),
-    /// else what is left of its load since the warm-up began (all of it when none is running).
-    // ponytail: a load slower than `fallbackColdLoad` counts as warm once that time has passed; track the warm-up's own
-    // completion if first-launch loads (8-14 s) ever coincide with a hand-over.
+    /// else what is left of its load since the warm-up began (all of it when none is running), and never the warm 0.2 s
+    /// until the warm-up has really finished (Sol verification 5, #2): a slow reload keeps 0.5 s in reserve, so the
+    /// hand-over comes earlier rather than late.
+    // ponytail: the 0.5 s floor is a guess for a reload slower than `fallbackColdLoad`; first-launch loads (8-14 s) that
+    // coincide with a hand-over would need the warm-up's own progress.
     private var fallbackFixed: Double {
         guard fallback != nil, fallbackPreparedAt != engines.unloads else { return 0.2 }
-        return max(0.2, Self.fallbackColdLoad - (fallbackWarming.map { Date().timeIntervalSince($0) } ?? 0))
+        return max(0.5, Self.fallbackColdLoad - (fallbackWarming.map { Date().timeIntervalSince($0) } ?? 0))
     }
 
     private var fallbackName: String { (fallback?.engine ?? .system) == .neural ? "Kokoro" : "the system voice" }
