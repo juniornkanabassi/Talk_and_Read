@@ -305,14 +305,17 @@ enum SelfTest {
         checks["skip(Int.min) goes to the first sentence"] = session.state == .playing && session.currentSentence == 0
         session.stop()
         // Sol #7: an output that will not start fails the read (AppModel releases ownership) instead of leaving it
-        // "playing" with a frozen clock; no first-audio time is reported.
-        let broken = ReadSession(text: fixture, capture: nil, voice: v, rate: 1, startToken: 0, engines: engines, lexicon: [:])
-        broken.player.volume = 0
-        broken.player.failNextStart = true
-        broken.start()
-        for _ in 0 ..< 50 where broken.state == .preparing { try await Task.sleep(nanoseconds: 100_000_000) }
-        checks["output that will not start fails the read"] = { if case .failed = broken.state { return broken.firstAudioMs == nil && !broken.player.isPlaying } else { return false } }()
-        broken.stop()
+        // "playing" with a frozen clock; no first-audio time is reported. Sol inspection 5 #1: the engine start and the
+        // node's play each raise as AVFAudio does, never crashing the app.
+        for step in [Player.Failure.start, .play] {
+            let broken = ReadSession(text: fixture, capture: nil, voice: v, rate: 1, startToken: 0, engines: engines, lexicon: [:])
+            broken.player.volume = 0
+            broken.player.failNext = step
+            broken.start()
+            for _ in 0 ..< 50 where broken.state == .preparing { try await Task.sleep(nanoseconds: 100_000_000) }
+            checks["output that will not start (\(step)) fails the read"] = { if case .failed = broken.state { return broken.firstAudioMs == nil && !broken.player.isPlaying } else { return false } }()
+            broken.stop()
+        }
         let first = session.firstAudioMs ?? .max
         let pass = session.player.starvations == 0 && first < 1000 && checks.values.allSatisfy { $0 }
         print("long text: \(text.utf16.count) characters, \(session.tokens.count) tokens")
