@@ -52,6 +52,9 @@ enum TalkReadMain {
     private var pollTimer: Timer?
     private var lastSettings: TalkReadCore.Settings?
     private var watchers: Set<AnyCancellable> = []
+    /// S3: the speed and skip keys act, and are swallowed, only while a read is playing or paused; Esc only while recording.
+    private var reading = false { didSet { hotkeys?.reading = reading } }
+    private var recording = false { didSet { hotkeys?.recording = recording } }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = Self.mainMenu()
@@ -78,6 +81,12 @@ enum TalkReadMain {
         model.$settings.sink { [weak self] in self?.settingsChanged($0) }.store(in: &watchers)
         model.objectWillChange.receive(on: RunLoop.main).sink { [weak self] in self?.updateStatusIcon() }.store(in: &watchers)
         model.$hotkeysPaused.sink { [weak self] in self?.hotkeys?.paused = $0 }.store(in: &watchers)
+        model.$session
+            .map { $0?.$state.map { $0 == .playing || $0 == .paused }.eraseToAnyPublisher() ?? Just(false).eraseToAnyPublisher() }
+            .switchToLatest().removeDuplicates()
+            .sink { [weak self] in self?.reading = $0 }.store(in: &watchers)
+        model.dictation.$state.map { if case .recording = $0 { true } else { false } }.removeDuplicates()
+            .sink { [weak self] in self?.recording = $0 }.store(in: &watchers)
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { AppModel.shared.pauseForSleep() }
         }
@@ -121,7 +130,7 @@ enum TalkReadMain {
     }
 
     private static func keys(_ s: TalkReadCore.Settings) -> [TalkReadCore.Settings.Shortcut] {
-        [s.readShortcut, s.pauseShortcut, s.screenshotShortcut, s.dictationToggleShortcut, s.pasteLastShortcut]
+        TalkReadCore.Settings.chords.map { s[keyPath: $0.path] }
     }
 
     /// Only the installed copy registers as a login item; builds and test runs never touch it.
@@ -154,6 +163,8 @@ enum TalkReadMain {
         if hotkeys == nil, model.permissions.accessibility {
             let keys = Hotkeys(settings: model.settings) { [weak self] in self?.perform($0) }
             keys.paused = model.hotkeysPaused
+            keys.reading = reading
+            keys.recording = recording
             keys.start()
             hotkeys = keys
         }
@@ -168,6 +179,9 @@ enum TalkReadMain {
         case .read: model.readSelection()
         case .pause: model.togglePause()
         case .screenshot: model.readScreenshot()
+        // The current read only (S4); without one the key was not swallowed and typed its character.
+        case .increaseSpeed, .decreaseSpeed: if reading { model.setSpeed(model.settings.speed + (action == .increaseSpeed ? 0.05 : -0.05)) }
+        case .skipBackward, .skipForward: if reading { model.skip(action == .skipForward ? 1 : -1) }
         default: model.dictation.handle(action)   // caller "user": the human always wins
         }
     }

@@ -11,20 +11,30 @@ public struct Settings: Codable, Equatable, Sendable {
         public init(keyCode: UInt16, modifiers: UInt64, display: String) {
             self.keyCode = keyCode; self.modifiers = modifiers; self.display = display
         }
-        static func ctrlOpt(_ keyCode: UInt16, _ letter: String) -> Shortcut {
-            Shortcut(keyCode: keyCode, modifiers: (1 << 18) | (1 << 19), display: "⌃⌥" + letter)
-        }
-    }
-    public enum HoldKey: String, Codable, Sendable, CaseIterable { case rightOption, fn, off }
+        /// Turned off: never matches (keyCode 0 alone would be "a").
+        public static let off = Shortcut(keyCode: 0, modifiers: 0, display: "")
+        public var isOff: Bool { display.isEmpty || modifiers == 0 }
 
-    public var readShortcut = Shortcut.ctrlOpt(15, "R")
-    public var pauseShortcut = Shortcut.ctrlOpt(35, "P")
-    public var screenshotShortcut = Shortcut.ctrlOpt(1, "S")
-    public var dictationToggleShortcut = Shortcut.ctrlOpt(2, "D")
-    public var pasteLastShortcut = Shortcut.ctrlOpt(9, "V")
+        public static let command: UInt64 = 1 << 20, option: UInt64 = 1 << 19, control: UInt64 = 1 << 18, shift: UInt64 = 1 << 17
+        /// The four modifiers a shortcut is made of; everything else in an event's flags (caps lock, fn, device bits) is ignored.
+        public static let modifierMask = command | option | control | shift
+    }
+    /// Left Option is not offered: it types characters (∂, ß…) in every app.
+    public enum HoldKey: String, Codable, Sendable, CaseIterable { case rightOption, fn, rightCommand, off }
+
+    // Junior's Speechify set (S1, 23 Oct).
+    public var readShortcut = Shortcut(keyCode: 0, modifiers: Shortcut.control, display: "⌃A")
+    public var pauseShortcut = Shortcut(keyCode: 12, modifiers: Shortcut.control | Shortcut.option, display: "⌃⌥Q")
+    public var screenshotShortcut = Shortcut(keyCode: 7, modifiers: Shortcut.control | Shortcut.option | Shortcut.command, display: "⌃⌥⌘X")
+    public var dictationToggleShortcut = Shortcut(keyCode: 50, modifiers: Shortcut.control, display: "⌃`")
+    public var pasteLastShortcut = Shortcut(keyCode: 9, modifiers: Shortcut.control | Shortcut.command, display: "⌃⌘V")
+    public var increaseSpeedShortcut = Shortcut(keyCode: 2, modifiers: Shortcut.option, display: "⌥D")
+    public var decreaseSpeedShortcut = Shortcut(keyCode: 1, modifiers: Shortcut.option, display: "⌥S")
+    public var skipBackwardShortcut = Shortcut(keyCode: 13, modifiers: Shortcut.option, display: "⌥W")
+    public var skipForwardShortcut = Shortcut(keyCode: 14, modifiers: Shortcut.option, display: "⌥E")
     public var dictationHoldKey = HoldKey.rightOption
     public var voiceID = "af_heart"
-    public var speed: Float = 1.0                  // 0.5...3.0, step 0.05
+    public var speed: Float = 2.5                  // 0.5...3.0, step 0.05; Junior's Speechify speed
     public var highlightHex = "#FFD21F"
     public var tintEnabled = true
     public var opacity = 0.85
@@ -52,6 +62,8 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.readShortcut, &readShortcut); get(.pauseShortcut, &pauseShortcut)
         get(.screenshotShortcut, &screenshotShortcut); get(.dictationToggleShortcut, &dictationToggleShortcut)
         get(.pasteLastShortcut, &pasteLastShortcut); get(.dictationHoldKey, &dictationHoldKey)
+        get(.increaseSpeedShortcut, &increaseSpeedShortcut); get(.decreaseSpeedShortcut, &decreaseSpeedShortcut)
+        get(.skipBackwardShortcut, &skipBackwardShortcut); get(.skipForwardShortcut, &skipForwardShortcut)
         get(.voiceID, &voiceID); get(.speed, &speed); get(.highlightHex, &highlightHex)
         get(.tintEnabled, &tintEnabled); get(.opacity, &opacity); get(.showMiniPlayer, &showMiniPlayer)
         get(.miniPlayerAutoHideSeconds, &miniPlayerAutoHideSeconds); get(.miniPlayerOrigin, &miniPlayerOrigin)
@@ -66,7 +78,7 @@ public struct Settings: Codable, Equatable, Sendable {
     /// A copy with every value clamped into its legal range.
     public func validated() -> Settings {
         var s = self
-        s.speed = min(3.0, max(0.5, ((speed.isFinite ? speed : 1.0) * 20).rounded() / 20)) // 0.05 steps
+        s.speed = min(3.0, max(0.5, ((speed.isFinite ? speed : 2.5) * 20).rounded() / 20)) // 0.05 steps
         s.opacity = opacity.isFinite ? min(1.0, max(0.1, opacity)) : 0.85
         s.miniPlayerAutoHideSeconds = miniPlayerAutoHideSeconds.isFinite ? min(60, max(0, miniPlayerAutoHideSeconds)) : 3
         s.unloadAfterMinutes = min(240, max(1, unloadAfterMinutes))
@@ -109,7 +121,7 @@ public struct Settings: Codable, Equatable, Sendable {
     }
 
     /// Changes one setting from its text form, then clamps. Shortcuts and the mini player position are changed in the
-    /// Settings window only (ponytail: no shortcut text parser; add one if an agent needs to rebind keys).
+    /// Settings window only (ponytail: no shortcut text parser; add one, checked by `refusal`, if an agent needs to rebind keys).
     public mutating func set(_ key: String, to raw: String) throws {
         func bool() throws -> Bool {
             switch raw.lowercased() {
@@ -147,11 +159,69 @@ public struct Settings: Codable, Equatable, Sendable {
         case "launchAtLogin": launchAtLogin = try bool()
         case "onboardingDone": onboardingDone = try bool()
         case "historyLimit": historyLimit = Int(try number())
-        case "readShortcut", "pauseShortcut", "screenshotShortcut", "dictationToggleShortcut", "pasteLastShortcut", "miniPlayerOrigin":
+        case _ where key == "miniPlayerOrigin" || Self.chords.contains(where: { $0.key == key }):
             throw ControlError("read_only_setting", "\(key) can only be changed in the Settings window.")
         default:
             throw ControlError("unknown_setting", "Unknown setting '\(key)'. Keys: \(Settings.keys.joined(separator: ", ")).")
         }
         self = validated()
+    }
+
+    // MARK: Shortcuts (S1, S2)
+
+    /// Every chord shortcut with its settings key and action, in the order the Shortcuts page lists them. The hotkey
+    /// tap, the page and settings-set all use this list.
+    public static var chords: [(key: String, path: WritableKeyPath<Settings, Shortcut>, action: HotkeyAction)] {
+        [("dictationToggleShortcut", \.dictationToggleShortcut, .toggleRecording), ("pasteLastShortcut", \.pasteLastShortcut, .pasteLast),
+         ("readShortcut", \.readShortcut, .read), ("pauseShortcut", \.pauseShortcut, .pause),
+         ("screenshotShortcut", \.screenshotShortcut, .screenshot), ("increaseSpeedShortcut", \.increaseSpeedShortcut, .increaseSpeed),
+         ("decreaseSpeedShortcut", \.decreaseSpeedShortcut, .decreaseSpeed), ("skipBackwardShortcut", \.skipBackwardShortcut, .skipBackward),
+         ("skipForwardShortcut", \.skipForwardShortcut, .skipForward)]
+    }
+
+    /// The action bound to exactly this key and these modifiers (only ⌘ ⌥ ⌃ ⇧ count); a turned-off shortcut never matches.
+    public func action(keyCode: UInt16, modifiers: UInt64) -> HotkeyAction? {
+        let mods = modifiers & Shortcut.modifierMask
+        return Self.chords.first {
+            let s = self[keyPath: $0.path]
+            return !s.isOff && s.keyCode == keyCode && s.modifiers & Shortcut.modifierMask == mods
+        }?.action
+    }
+
+    public enum Refusal: Equatable, Sendable {
+        /// No ⌃, ⌥ or ⌘: the key would stop typing in every app.
+        case needsModifier
+        /// macOS (or every app) already uses it.
+        case reserved
+        /// Another shortcut has it; the settings key of that one.
+        case taken(String)
+    }
+
+    /// macOS combinations a shortcut may not take over: quit, close, hide, minimise, app and window switching,
+    /// Spotlight, input sources, force quit, lock screen and the screenshot keys.
+    public static let reserved: [(keyCode: UInt16, modifiers: UInt64)] = {
+        let c = Shortcut.command, o = Shortcut.option, ctl = Shortcut.control, sh = Shortcut.shift
+        return [(12, c), (13, c), (4, c), (46, c), (48, c), (48, c | sh), (50, c), (49, c), (49, ctl), (49, c | o), (53, c | o),
+                (12, c | ctl), (20, c | sh), (21, c | sh), (23, c | sh)]
+    }()
+
+    /// Why `s` cannot be the shortcut stored under `key`, or nil when it can. Turning a shortcut off is always allowed.
+    public func refusal(_ s: Shortcut, for key: String) -> Refusal? {
+        if s == .off { return nil }
+        let mods = s.modifiers & Shortcut.modifierMask
+        guard mods & (Shortcut.control | Shortcut.option | Shortcut.command) != 0 else { return .needsModifier }
+        if Self.reserved.contains(where: { $0.keyCode == s.keyCode && $0.modifiers == mods }) { return .reserved }
+        if let other = Self.chords.first(where: { c in
+            let o = self[keyPath: c.path]
+            return c.key != key && !o.isOff && o.keyCode == s.keyCode && o.modifiers & Shortcut.modifierMask == mods
+        }) { return .taken(other.key) }
+        return nil
+    }
+
+    /// Every shortcut and the hold key back to the defaults.
+    public mutating func resetShortcuts() {
+        let d = Settings()
+        for c in Self.chords { self[keyPath: c.path] = d[keyPath: c.path] }
+        dictationHoldKey = d.dictationHoldKey
     }
 }

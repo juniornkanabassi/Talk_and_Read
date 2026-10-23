@@ -79,7 +79,7 @@ final class HotkeyStateTests: XCTestCase {
 
     func testChordShortcutsPassThroughAndCancelAHoldRecording() {
         var s = HotkeyState()
-        for a in [HotkeyAction.read, .pause, .screenshot, .pasteLast] {
+        for a in [HotkeyAction.read, .pause, .screenshot, .pasteLast, .increaseSpeed, .decreaseSpeed, .skipBackward, .skipForward] {
             XCTAssertEqual(s.handle(.chord(a), at: 0), [a])
         }
         var (h, _) = held(tickAt: 0.2)

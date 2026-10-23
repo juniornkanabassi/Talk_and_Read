@@ -307,7 +307,7 @@ struct Subtitles: View {
     }
 }
 
-/// "1.50×": click cycles 1.0 / 1.5 / 2.0 / 2.5, scrolling fine-tunes by 0.05. AppKit, because SwiftUI has no scroll-wheel hook.
+/// "1.50×": click cycles 1 / 1.5 / 2 / 2.5 / 3, scrolling fine-tunes by 0.05. AppKit, because SwiftUI has no scroll-wheel hook.
 struct SpeedControl: NSViewRepresentable {
     let speed: Double
     let set: (Double) -> Void
@@ -323,7 +323,7 @@ struct SpeedControl: NSViewRepresentable {
     }
 
     final class SpeedButton: NSButton {
-        static let presets = [1.0, 1.5, 2.0, 2.5]
+        static let presets = Theme.quickSpeeds
         var speed = 1.0
         var onChange: ((Double) -> Void)?
         private var scrolled: CGFloat = 0
@@ -333,7 +333,7 @@ struct SpeedControl: NSViewRepresentable {
             isBordered = false
             target = self
             action = #selector(cycle)
-            toolTip = "Click for 1×, 1.5×, 2× or 2.5×; scroll to fine-tune"
+            toolTip = "Click for 1×, 1.5×, 2×, 2.5× or 3×; scroll to fine-tune"
             setAccessibilityLabel("Speed")
         }
         required init?(coder: NSCoder) { fatalError("not used") }

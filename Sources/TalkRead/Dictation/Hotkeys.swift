@@ -1,8 +1,9 @@
-// One listen-only CGEvent tap on its own thread for the dictation hold key and the chord shortcuts, feeding
-// TalkReadCore's HotkeyState on the main thread (PLAN decision 8). Gated on Accessibility. Listen-only, so the app
-// underneath also receives the keys (⌃⌥ letters type nothing in normal apps).
+// One active CGEvent tap on its own thread for the dictation hold key and the chord shortcuts, feeding TalkReadCore's
+// HotkeyState on the main thread (PLAN decision 8). Gated on Accessibility. Active (S3): a matched shortcut is
+// swallowed on the tap thread (KeyConsumer decides from a locked snapshot), so ⌃A never reaches the app underneath.
 import AppKit
 import ApplicationServices
+import os
 import TalkReadCore
 
 final class Hotkeys {
@@ -10,27 +11,36 @@ final class Hotkeys {
     var onAction: ((HotkeyAction) -> Void)?
     /// The tap exists and is enabled (for the permissions UI). Main thread.
     private(set) var isRunning = false
-    /// No actions fire while true (the settings shortcut recorder is listening). Main thread.
-    var paused = false { didSet { resetHold() } }
+    /// No actions fire and nothing is swallowed while true (the settings shortcut recorder is listening). Main thread.
+    var paused = false { didSet { context.withLock { $0.paused = paused }; resetHold() } }
+    /// A read is playing or paused / dictation is recording: the speed and skip keys, and Esc, are swallowed only then. Main thread.
+    var reading = false { didSet { context.withLock { $0.reading = reading } } }
+    var recording = false { didSet { context.withLock { $0.recording = recording } } }
 
     // Main thread only.
     private var settings: Settings
     private var state = HotkeyState()
+
+    /// What the tap thread decides with; written on the main thread, read on the tap thread.
+    private let context: OSAllocatedUnfairLock<KeyConsumer.Context>
 
     // Tap thread only (set up before `start` returns).
     private var thread: Thread?
     private var runLoop: CFRunLoop?
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
+    private var consumer = KeyConsumer()
 
-    static let rightOptionKeyCode: UInt16 = 61, fnKeyCode: UInt16 = 63
+    static let rightOptionKeyCode: UInt16 = 61, fnKeyCode: UInt16 = 63, rightCommandKeyCode: UInt16 = 54
     static let rightOptionDeviceBit: UInt64 = 0x40, leftOptionDeviceBit: UInt64 = 0x20   // NX_DEVICE[RL]ALTKEYMASK
+    static let rightCommandDeviceBit: UInt64 = 0x10, leftCommandDeviceBit: UInt64 = 0x08 // NX_DEVICE[RL]CMDKEYMASK
     static let command: UInt64 = 1 << 20, option: UInt64 = 1 << 19, control: UInt64 = 1 << 18, shift: UInt64 = 1 << 17
     static let secondaryFn: UInt64 = 1 << 23
 
     init(settings: Settings, onAction: ((HotkeyAction) -> Void)? = nil) {
         self.settings = settings
         self.onAction = onAction
+        context = OSAllocatedUnfairLock(initialState: KeyConsumer.Context(settings: settings))
     }
 
     /// Starts the tap; false without Accessibility or when the tap cannot be created. Never prompts. The tap thread
@@ -69,6 +79,7 @@ final class Hotkeys {
 
     func reload(_ settings: Settings) {
         self.settings = settings
+        context.withLock { $0.settings = settings }
         resetHold()
     }
 
@@ -80,8 +91,8 @@ final class Hotkeys {
     // MARK: Tap thread
 
     private func createTap() -> Bool {
-        let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
-        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
+        let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
+        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                           eventsOfInterest: CGEventMask(mask), callback: tapCallback,
                                           userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return false }
         let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
@@ -109,14 +120,34 @@ final class Hotkeys {
         DispatchQueue.main.async { self.isRunning = ok }
     }
 
-    fileprivate func received(_ type: CGEventType, _ event: CGEvent) {
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { checkHealth(); return }
-        guard event.getIntegerValueField(.eventSourceUserData) != PasteboardGate.eventTag,   // our own ⌘V (the only key event we post)
-              event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return }
+    /// True = swallow the event. Decided here, synchronously and quickly (a slow callback gets the tap switched off);
+    /// the action itself runs on the main thread.
+    fileprivate func received(_ type: CGEventType, _ event: CGEvent) -> Bool {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { checkHealth(); return false }
+        let ours = event.getIntegerValueField(.eventSourceUserData) == PasteboardGate.eventTag   // our own ⌘V (the only key event we post)
+        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags.rawValue
-        let time = ProcessInfo.processInfo.systemUptime
-        DispatchQueue.main.async { self.process(type, keyCode: keyCode, flags: flags, at: time) }
+        let kind: KeyConsumer.Event = switch type {
+        case .keyUp: .up
+        case .flagsChanged: .flagsChanged
+        default: isRepeat ? .autoRepeat : .down
+        }
+        let swallow = consumer.swallow(kind, keyCode: keyCode, modifiers: flags, ours: ours, in: context.withLock { $0 })
+        if !ours, kind == .down || kind == .flagsChanged {
+            let time = ProcessInfo.processInfo.systemUptime
+            DispatchQueue.main.async { self.process(type, keyCode: keyCode, flags: flags, at: time) }
+        }
+        return swallow
+    }
+
+    /// True when this process has an enabled active tap (`.defaultTap`, able to swallow events); for the self-test.
+    static func ownTapIsActive() -> Bool {
+        var count: UInt32 = 0
+        guard CGGetEventTapList(0, nil, &count) == .success, count > 0 else { return false }
+        var taps = [CGEventTapInformation](repeating: CGEventTapInformation(), count: Int(count))
+        guard CGGetEventTapList(count, &taps, &count) == .success else { return false }
+        return taps.prefix(Int(count)).contains { $0.tappingProcess == getpid() && $0.options == .defaultTap && $0.enabled }
     }
 
     // MARK: Main thread
@@ -140,18 +171,17 @@ final class Hotkeys {
 
     /// Raw key data -> state-machine event (pure; checked by the dictation self-test).
     static func keyEvent(_ type: CGEventType, keyCode: UInt16, flags: UInt64, settings: Settings) -> KeyEvent? {
-        let holdKeyCode: UInt16? = switch settings.dictationHoldKey {
-        case .rightOption: rightOptionKeyCode
-        case .fn: fnKeyCode
+        // The hold key's code, the flag that says it is down, and the modifiers that make it part of a shortcut instead.
+        let hold: (keyCode: UInt16, down: UInt64, others: UInt64)? = switch settings.dictationHoldKey {
+        case .rightOption: (rightOptionKeyCode, rightOptionDeviceBit, command | control | shift | leftOptionDeviceBit)
+        case .fn: (fnKeyCode, secondaryFn, command | control | shift | option)
+        case .rightCommand: (rightCommandKeyCode, rightCommandDeviceBit, option | control | shift | leftCommandDeviceBit)
         case .off: nil
         }
         switch type {
-        case .flagsChanged where keyCode == holdKeyCode:
-            let down = settings.dictationHoldKey == .fn ? flags & secondaryFn != 0 : flags & rightOptionDeviceBit != 0
-            guard down else { return .holdKeyUp }
-            // Held together with another modifier it is part of a shortcut, not the dictation key.
-            let others = command | control | shift | (settings.dictationHoldKey == .fn ? option : leftOptionDeviceBit)
-            return flags & others == 0 ? .holdKeyDown : .otherKeyDown(keyCode: keyCode, modifiers: flags)
+        case .flagsChanged where keyCode == hold?.keyCode:
+            guard let hold, flags & hold.down != 0 else { return .holdKeyUp }
+            return flags & hold.others == 0 ? .holdKeyDown : .otherKeyDown(keyCode: keyCode, modifiers: flags)
         case .flagsChanged:
             let mask: UInt64 = switch keyCode {
             case 54, 55: command
@@ -163,13 +193,7 @@ final class Hotkeys {
             }
             return flags & mask != 0 ? .otherKeyDown(keyCode: keyCode, modifiers: flags) : nil   // modifier released
         case .keyDown:
-            let chords: [(Settings.Shortcut, HotkeyAction)] = [
-                (settings.readShortcut, .read), (settings.pauseShortcut, .pause), (settings.screenshotShortcut, .screenshot),
-                (settings.dictationToggleShortcut, .toggleRecording), (settings.pasteLastShortcut, .pasteLast)]
-            let mods = flags & (command | option | control | shift)
-            // A shortcut turned off is stored as keyCode 0, modifiers 0, empty display: never match it (it would be "a").
-            if let match = chords.first(where: { !$0.0.display.isEmpty && $0.0.modifiers != 0
-                && $0.0.keyCode == keyCode && $0.0.modifiers == mods }) { return .chord(match.1) }
+            if let action = settings.action(keyCode: keyCode, modifiers: flags) { return .chord(action) }
             return .otherKeyDown(keyCode: keyCode, modifiers: flags)
         default:
             return nil
@@ -178,6 +202,6 @@ final class Hotkeys {
 }
 
 private func tapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, info: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
-    if let info { Unmanaged<Hotkeys>.fromOpaque(info).takeUnretainedValue().received(type, event) }
+    if let info, Unmanaged<Hotkeys>.fromOpaque(info).takeUnretainedValue().received(type, event) { return nil }
     return Unmanaged.passUnretained(event)
 }

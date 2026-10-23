@@ -308,6 +308,7 @@ func holdHint(_ s: TalkReadCore.Settings) -> String {
     switch s.dictationHoldKey {
     case .rightOption: "Hold the right Option key and speak"
     case .fn: "Hold Fn and speak"
+    case .rightCommand: "Hold the right Command key and speak"
     case .off: "Press \(s.dictationToggleShortcut.display) and speak"
     }
 }

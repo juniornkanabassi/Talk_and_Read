@@ -6,7 +6,7 @@ import SwiftUI
 import TalkReadCore
 
 @MainActor enum UISnapshots {
-    static let output = URL(fileURLWithPath: "/private/tmp/talkread-wp6-shots", isDirectory: true)
+    static let output = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TALKREAD_SHOTS"] ?? "/private/tmp/talkread-wp6-shots", isDirectory: true)
     /// Source checkout root (fixtures and icon); this is a developer self-test, not a shipped feature.
     static let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         .deletingLastPathComponent().deletingLastPathComponent()
@@ -93,6 +93,27 @@ import TalkReadCore
             for dark in [false, true] {
                 let url = output.appendingPathComponent("\(name)-\(dark ? "dark" : "light").png")
                 if render(view, size: size, titled: titled, dark: dark, to: url, wait: name.contains("pdf") ? 3 : 0.7) { written += 1 } else { failures += 1; print("FAIL render \(url.lastPathComponent)") }
+            }
+        }
+        // The Shortcuts page (S2, S5) at full height: as it opens, listening for keys, a refused duplicate, Speechify open.
+        let focus = RecorderFocus.shared
+        let duplicate = TalkReadCore.Settings().readShortcut
+        let pages: [(String, () -> Void, Bool)] = [
+            ("shortcuts", {}, false),
+            ("shortcuts-recording", { focus.begin("pauseShortcut") }, false),
+            ("shortcuts-duplicate", {
+                focus.begin("increaseSpeedShortcut")
+                focus.refusal = model.settings.refusal(duplicate, for: "increaseSpeedShortcut").map { ShortcutsPage.message($0, duplicate) }
+            }, false),
+            ("shortcuts-speechify", {}, true),
+        ]
+        for (name, setUp, speechify) in pages {
+            for dark in [false, true] {
+                setUp()
+                let url = output.appendingPathComponent("\(name)-\(dark ? "dark" : "light").png")
+                let page = AnyView(ShortcutsPage(model: model, speechifyRunning: { speechify }))
+                if render(page, size: CGSize(width: 680, height: speechify ? 1080 : 1000), titled: true, dark: dark, to: url) { written += 1 } else { failures += 1; print("FAIL render \(url.lastPathComponent)") }
+                if let key = focus.active { focus.end(key) }
             }
         }
         print("rendered \(written) PNGs to \(output.path)")
@@ -190,13 +211,17 @@ import TalkReadCore
 
         // Shortcut recorder and menu key equivalents.
         let r = ShortcutRecorder.make(keyCode: 15, flags: [.control, .option], characters: "r")
-        check(r?.display == "⌃⌥R" && r?.modifiers == (1 << 18 | 1 << 19), "record ⌃⌥R", "\(r?.display ?? "nil") modifiers=\(r?.modifiers ?? 0)")
+        check(r.display == "⌃⌥R" && r.modifiers == (1 << 18 | 1 << 19), "record ⌃⌥R", "\(r.display) modifiers=\(r.modifiers)")
         let s = ShortcutRecorder.make(keyCode: 49, flags: [.command, .shift], characters: " ")
-        check(s?.display == "⇧⌘Space", "record ⇧⌘Space", s?.display ?? "nil")
-        check(ShortcutRecorder.make(keyCode: 15, flags: [.shift], characters: "r") == nil && ShortcutRecorder.make(keyCode: 15, flags: [], characters: "r") == nil,
-              "needs ⌃ ⌥ or ⌘", "⇧R and R refused")
+        check(s.display == "⇧⌘Space", "record ⇧⌘Space", s.display)
+        let defaults = TalkReadCore.Settings()
+        let refusals = [ShortcutRecorder.make(keyCode: 15, flags: [.shift], characters: "r"), ShortcutRecorder.make(keyCode: 15, flags: [], characters: "r"),
+                        ShortcutRecorder.make(keyCode: 12, flags: [.command], characters: "q"), ShortcutRecorder.make(keyCode: 0, flags: [.control], characters: "a")]
+            .map { s in defaults.refusal(s, for: "pauseShortcut").map { ShortcutsPage.message($0, s) } ?? "accepted" }
+        check(refusals[0].contains("Add ⌃") && refusals[1].contains("Add ⌃") && refusals[2].contains("macOS") && refusals[3].contains("Start reading"),
+              "refusal messages", refusals.joined(separator: " | "))
         // Sol #15: the hotkeys stand down while a recorder listens; only one listens; a stale end changes nothing.
-        let focus = RecorderFocus.shared, a = UUID(), b = UUID()
+        let focus = RecorderFocus.shared, a = "readShortcut", b = "pauseShortcut"
         var paused: [Bool] = []
         focus.begin(a); paused.append(AppModel.shared.hotkeysPaused)
         focus.begin(b); paused.append(AppModel.shared.hotkeysPaused && focus.active == b)
@@ -204,9 +229,9 @@ import TalkReadCore
         focus.end(b); paused.append(AppModel.shared.hotkeysPaused || focus.active != nil)
         check(paused == [true, true, true, false], "recorder pauses hotkeys", "begin a, begin b, end a, end b → \(paused)")
         let key = MenuBarMenu.keyEquivalent(TalkReadCore.Settings().readShortcut)
-        check(key?.0 == "r" && key?.1 == [.control, .option], "menu key equivalent", "\(key.map { "\($0.0) \($0.1.rawValue)" } ?? "nil")")
-        let cycle = [1.0, 1.23, 2.5].map(SpeedControl.SpeedButton.next(after:))
-        check(cycle == [1.5, 1.5, 1.0], "speed button cycles", cycle.map { Theme.speed($0) }.joined(separator: " "))
+        check(key?.0 == "a" && key?.1 == [.control], "menu key equivalent", "\(key.map { "\($0.0) \($0.1.rawValue)" } ?? "nil")")
+        let cycle = [1.0, 1.23, 2.5, 3.0].map(SpeedControl.SpeedButton.next(after:))
+        check(cycle == [1.5, 1.5, 3.0, 1.0], "speed button cycles", cycle.map { Theme.speed($0) }.joined(separator: " "))
         return failures
     }
 

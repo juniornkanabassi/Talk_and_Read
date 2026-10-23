@@ -14,6 +14,8 @@ enum Theme {
     static let card = Color(nsColor: .dynamic(light: "#FFFFFF", dark: "#1F2229"))
     static let readingWidth: CGFloat = 680
     static let speedPresets: [Double] = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3]
+    /// One click away in the mini player and the menu bar menu (S4).
+    static let quickSpeeds: [Double] = [1, 1.5, 2, 2.5, 3]
 
     static func speed(_ s: Double) -> String { String(format: "%.2f×", s) }
 

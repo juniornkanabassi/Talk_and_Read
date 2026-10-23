@@ -1,76 +1,89 @@
-// Records a key chord for a Settings shortcut: needs at least one of ⌃ ⌥ ⌘ plus a key, shows glyphs, warns on clashes,
-// Esc cancels, the clear button turns the shortcut off (empty `display`, keyCode 0, no modifiers). Owned by WP6.
+// Records a key chord for one Settings shortcut: shows its key caps (or "Record shortcut" when off); click to listen.
+// Esc cancels, Delete turns the shortcut off, a refused combination (no ⌃ ⌥ ⌘, reserved by macOS, used by another
+// action) shows why and keeps listening. Owned by WP6; reworked for the Shortcuts page (S2).
 import AppKit
 import SwiftUI
 import TalkReadCore
 
-/// Which recorder is listening: one at a time, and the global hotkeys stand down meanwhile (Sol #15), so recording
-/// ⌃⌥R does not also start a read.
+/// Which recorder is listening, by settings key: one at a time, and the global hotkeys stand down meanwhile (Sol #15),
+/// so recording ⌃A does not also start a read. `refusal` explains the last combination the listening one refused.
 @MainActor final class RecorderFocus: ObservableObject {
     static let shared = RecorderFocus()
-    @Published private(set) var active: UUID?
+    @Published private(set) var active: String?
+    @Published var refusal: String?
 
     /// Takes over from any other recorder (which then stops listening).
-    func begin(_ id: UUID) {
-        active = id
+    func begin(_ key: String) {
+        active = key
+        refusal = nil
         AppModel.shared.hotkeysPaused = true
     }
 
-    /// Finish, cancel or disappear; ignored unless `id` is the one listening.
-    func end(_ id: UUID) {
-        guard active == id else { return }
+    /// Finish, cancel or disappear; ignored unless `key` is the one listening.
+    func end(_ key: String) {
+        guard active == key else { return }
         active = nil
+        refusal = nil
         AppModel.shared.hotkeysPaused = false
     }
 }
 
 struct ShortcutRecorder: View {
+    /// Settings key of the shortcut ("readShortcut").
+    let key: String
     @Binding var shortcut: TalkReadCore.Settings.Shortcut
-    /// Name of another action using the same chord, if any.
-    let clash: String?
+    /// Why a combination cannot be used here, or nil when it can.
+    let check: (TalkReadCore.Settings.Shortcut) -> String?
     @ObservedObject private var focus = RecorderFocus.shared
-    @State private var id = UUID()
     @State private var monitor: Any?
-    private var recording: Bool { focus.active == id }
+    private var recording: Bool { focus.active == key }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            HStack(spacing: 6) {
-                Button { recording ? focus.end(id) : focus.begin(id) } label: {
-                    Text(recording ? "Type a shortcut…" : (shortcut.display.isEmpty ? "Off" : shortcut.display))
-                        .font(.body.monospaced())
-                        .frame(minWidth: 120)
-                        .foregroundStyle(recording ? .secondary : .primary)
+            Button { recording ? focus.end(key) : focus.begin(key) } label: {
+                Group {
+                    if recording {
+                        Text("Press the new keys…").font(.callout).foregroundStyle(.secondary)
+                            .padding(.horizontal, 10).frame(minHeight: 24)
+                            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.accent, lineWidth: 1.5))
+                    } else if shortcut.isOff {
+                        Text("Record shortcut").font(.callout).foregroundStyle(.secondary).frame(minHeight: 24)
+                    } else {
+                        KeyCaps(display: shortcut.display)
+                    }
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel(shortcut.display.isEmpty ? "No shortcut. Record a shortcut" : "Shortcut \(shortcut.display). Record a new one")
-                if !shortcut.display.isEmpty, !recording {
-                    Button { shortcut = TalkReadCore.Settings.Shortcut(keyCode: 0, modifiers: 0, display: "") } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.borderless).foregroundStyle(.secondary)
-                        .help("Turn this shortcut off").accessibilityLabel("Clear shortcut")
-                }
+                .contentShape(Rectangle())
             }
-            if let clash { Text("Also used by \(clash)").font(.caption).foregroundStyle(.orange) }
+            .buttonStyle(.plain)
+            .help(recording ? "Esc cancels; Delete turns the shortcut off" : "Click, then press the new keys")
+            .accessibilityLabel(recording ? "Listening for a new shortcut" : shortcut.isOff ? "No shortcut. Record a shortcut" : "Shortcut \(shortcut.display). Record a new one")
+            if recording {
+                Text(focus.refusal ?? "Esc cancels · Delete turns it off")
+                    .font(.caption).foregroundStyle(focus.refusal == nil ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.orange))
+                    .multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .onChange(of: recording) { _, on in on ? startMonitor() : stopMonitor() }
         .onDisappear {
             stopMonitor()
-            focus.end(id)
+            focus.end(key)
         }
         // Leaving the app cancels, so the hotkeys are never left paused behind a forgotten recorder.
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in focus.end(id) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in focus.end(key) }
     }
 
     private func startMonitor() {
         stopMonitor()
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [focus, id] event in
-            if event.keyCode == 53, event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.function).isEmpty {
-                focus.end(id)   // Esc alone cancels
-            } else if let s = Self.make(keyCode: event.keyCode, flags: event.modifierFlags, characters: event.charactersIgnoringModifiers) {
-                shortcut = s
-                focus.end(id)
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [focus, key] event in
+            let plain = event.modifierFlags.intersection([.control, .option, .shift, .command]).isEmpty
+            if plain, event.keyCode == 53 {
+                focus.end(key)                                       // Esc cancels
+            } else if plain, event.keyCode == 51 || event.keyCode == 117 {
+                shortcut = .off                                      // Delete turns it off
+                focus.end(key)
             } else {
-                NSSound.beep()   // needs ⌃, ⌥ or ⌘
+                let s = Self.make(keyCode: event.keyCode, flags: event.modifierFlags, characters: event.charactersIgnoringModifiers)
+                if let why = check(s) { focus.refusal = why } else { shortcut = s; focus.end(key) }
             }
             return nil   // swallow while recording
         }
@@ -81,10 +94,10 @@ struct ShortcutRecorder: View {
         monitor = nil
     }
 
-    /// A shortcut from a key event, or nil without ⌃ ⌥ or ⌘. `modifiers` uses CGEventFlags bits, which match NSEvent's.
-    static func make(keyCode: UInt16, flags: NSEvent.ModifierFlags, characters: String?) -> TalkReadCore.Settings.Shortcut? {
+    /// A shortcut from a key event. `modifiers` uses CGEventFlags bits, which match NSEvent's; whether it is usable is
+    /// `Settings.refusal`'s call.
+    static func make(keyCode: UInt16, flags: NSEvent.ModifierFlags, characters: String?) -> TalkReadCore.Settings.Shortcut {
         let mods = flags.intersection([.control, .option, .shift, .command])
-        guard !mods.intersection([.control, .option, .command]).isEmpty else { return nil }
         var glyphs = ""
         if mods.contains(.control) { glyphs += "⌃" }
         if mods.contains(.option) { glyphs += "⌥" }
