@@ -13,8 +13,9 @@ let package = Package(
         .package(url: "https://github.com/FluidInference/FluidAudio.git",
                  revision: "c79c4106b954f81205113c3343e5a7e59a1089b5",
                  traits: ["TTS", "NemoTextProcessing"]),
-        // Qwen3-TTS through MLX (PLAN 0.3.0 decision 3): mlx-audio-swift has no tags, so a commit; mlx-swift exact.
-        .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", revision: "013853a70b7c657256e748ff9527e5817f6f1b31"),
+        // Qwen3-TTS and Breeze through MLX: mlx-audio-swift 013853a7 vendored with the Breeze patches (PLAN 0.4.0
+        // decision 1; upstream has no tags); mlx-swift exact.
+        .package(path: "Vendor/mlx-audio-swift"),
         .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.32.3")
     ],
     targets: [
