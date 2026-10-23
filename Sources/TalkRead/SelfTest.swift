@@ -53,8 +53,8 @@ enum SelfTest {
         let tokens = TextKit.tokenize(text)
         let qwen = voice.hasPrefix("qwen.")
         let language = QwenEngine.references.first { $0.id == voice }?.language ?? (voice.hasPrefix("ff_") ? "fr" : "en")
-        // Qwen3 reads in the session's bounded chunks: the opening chunk, then at most 160 characters.
-        let chunks = qwen ? TextKit.chunks(text, tokens: tokens, firstMax: ReadSession.openingChars, max: ReadSession.slowChars)
+        // Qwen3 reads in the session's bounded chunks: the opening chunk at 1x, then at most 160 characters.
+        let chunks = qwen ? TextKit.chunks(text, tokens: tokens, firstMax: ReadSession.openingChars(rate: 1), max: ReadSession.slowChars)
                           : TextKit.chunks(text, tokens: tokens)
         // A Kokoro voice id (English, or French ff_*) runs the neural engine, qwen.* Qwen3, anything else (an
         // AVSpeechSynthesisVoice identifier) the system one.
@@ -642,8 +642,9 @@ private struct Recogniser {
     }
 }
 
-/// A test engine `realTime` times faster than real time (a cancellable sleep), 15 characters of speech per second of
-/// silent audio, words at their exact speakable ranges. Records every call; state behind `lock`.
+/// A test engine `realTime` times faster than real time (a cancellable sleep, plus 0.15 s per chunk for a slow kind),
+/// 15 characters of speech per second of silent audio, words at their exact speakable ranges. Records every call;
+/// state behind `lock`.
 private final class FakeEngine: SpeechEngine, @unchecked Sendable {
     let kind: EngineKind
     let realTime: Double
@@ -671,7 +672,8 @@ private final class FakeEngine: SpeechEngine, @unchecked Sendable {
         lock.withLock { _texts.append(text); _inFlight += 1; if !_loaded { _unloadedSynths += 1 } }
         defer { lock.withLock { _inFlight -= 1 } }
         let seconds = Double(text.utf16.count) / 15
-        do { try await Task.sleep(nanoseconds: UInt64(seconds / realTime * 1e9)) } catch { lock.withLock { _cancelled += 1 }; throw error }
+        let work = (kind == .neural ? 0 : 0.15) + seconds / realTime   // a slow engine's fixed cost per chunk, as Qwen3's
+        do { try await Task.sleep(nanoseconds: UInt64(work * 1e9)) } catch { lock.withLock { _cancelled += 1 }; throw error }
         let tokens = TextKit.tokenize(text)
         let words = tokens.enumerated().map { i, t in
             SpokenWord(text: t.text, start: seconds * Double(i) / Double(tokens.count), end: seconds * Double(i + 1) / Double(tokens.count), range: t.range)

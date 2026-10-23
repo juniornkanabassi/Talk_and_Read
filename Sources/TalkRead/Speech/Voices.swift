@@ -84,7 +84,9 @@ final class Engines {
     /// Every engine's voices, all languages and genders; the UI filters (female only, by model, by language).
     func allVoices() async -> [Voice] { await neural.voices() + qwen.voices() + system.voices() }
     /// Models the user may download, with sizes (Models page and onboarding).
-    @MainActor func downloadables() -> [DownloadableModel] { [qwen as? DownloadableModel, aligner].compactMap { $0 } }
+    @MainActor func downloadables() -> [DownloadableModel] {
+        [qwen as? DownloadableModel, aligner, (neural as? NeuralEngine)?.frenchPack].compactMap { $0 }
+    }
     /// Preparing, synthesising or unloading somewhere: the idle unload waits.
     var isBusy: Bool { neural.isBusy || qwen.isBusy || system.isBusy }
     /// Frees every engine's model memory (idle timer, quit). An engine finishes its in-flight work first.

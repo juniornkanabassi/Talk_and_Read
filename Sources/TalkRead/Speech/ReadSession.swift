@@ -27,13 +27,27 @@ import TalkReadCore
     /// Which voice made each chunk queued since the last (re)start (self-test evidence).
     private(set) var made: [(tokens: Range<Int>, voice: String)] = []
 
-    /// Slow-engine chunk sizes in UTF-16 characters: a short opening chunk for first audio within 1.5 s, then at most
+    /// Slow-engine chunk sizes in UTF-16 characters: the opening chunk (see `openingChars(rate:)`), then at most
     /// `slowChars`; a chunk the budget cannot fit to `minSlowChars` goes to the fallback.
-    static let openingChars = 60, slowChars = 160, minSlowChars = 25
-    /// Buffered playback a slow chunk must leave when ready: the watchdog's deadline (the fallback's fixed 0.2 s plus its
-    /// per-character time, plus 0.3 s) and the plan's 0.5 s to spare beyond it. Measured 23 Oct: with 0.5 (finishing on
-    /// the deadline itself) ordinary chunk-to-chunk variance tripped the watchdog even at 2x; with 1.0 Qwen3 read 60 s at 2x.
-    static let spare = 1.0
+    static let slowChars = 160, minSlowChars = 25
+    /// Media seconds a slow engine may run ahead of the clock (about three full 160-character chunks).
+    static let slowAhead = 30.0
+    /// The opening chunk is all the buffer the next chunk can be made in, so it grows with the rate: about 30 characters
+    /// per 1x (about 2 s of playback), filled to that size across sentences. Smaller openings left the read handing over
+    /// at its second chunk even at 2x (Qwen3, 23 Oct). The price is first audio: measured 0.9-1.3 s at 2x in French,
+    /// 1.8 s in English, 1.4-2.4 s at 2.5x (target 1.5 s); a fixed 60 brings 2.5x back to about 1.5 s but then Qwen3
+    /// mostly hands over to Kokoro within seconds at 2.5x.
+    static func openingChars(rate: Float) -> Int { min(max(40, Int(30 * rate)), slowChars) }
+    // ponytail: Qwen3's fixed cost per chunk (prefill, decoder start, alignment), fitted 23 Oct over 148 chunks as
+    // 0.18 s + 0.27 s per second of audio; the budget charges it once per chunk so small chunks are not mistaken for a
+    // slow engine. Estimate it per engine if Breeze differs.
+    static let chunkOverhead = 0.18
+    /// Buffered playback a slow chunk must leave when ready, on top of the fallback's per-character time for it: the
+    /// watchdog's deadline is 0.5 s of it (the fallback's fixed 0.2 s plus 0.3 s), the rest is the margin before that
+    /// deadline. Measured 23 Oct with Qwen3 on the M3 Max, 60 s reads: 0.5 (finishing on the deadline itself) let
+    /// ordinary chunk-to-chunk variance trip the watchdog even at 2x; 1.0 kept up at 2x but could not grow past the
+    /// opening chunk at 2.5x; 0.75 kept up at both, with no starvation.
+    static let spare = 0.75
 
     private let engines: Engines
     private let lexicon: [String: String]
@@ -47,8 +61,8 @@ import TalkReadCore
     private var needsRestart = false
     private var generation = 0
     private var startedAt: Date?
-    /// Measured seconds of work per spoken (speakable) character: the slow engine's (synthesis plus alignment) and the
-    /// fallback's. Spoken characters, because "14 March 2027" costs what "the fourteenth of March twenty twenty-seven" does.
+    /// Measured seconds of work per spoken (speakable) character: the slow engine's (synthesis plus alignment, beyond
+    /// `chunkOverhead`) and the fallback's. Spoken characters, because the engine pays for what it hears.
     private var slowSecondsPerChar: Double?
     // ponytail: seeded from the R2 run of 23 Oct (Kokoro .legacy, M3 Max: 6.4 s of work for about 2,000 spoken
     // characters, first chunk 0.2 s), rounded up; replaced by measurement once the fallback speaks.
@@ -178,9 +192,11 @@ import TalkReadCore
         var next = plan.first!.tokens.lowerBound
         var k = 0
         while next < tokens.count {
-            // ponytail: polls the clock every 50 ms to keep at most three chunks queued; a completion-driven wait if
-            // 50 ms ever matters (chunks are seconds long).
-            while gen == generation, chunkEnds.filter({ $0 > player.currentTime }).count >= 3 {
+            // ponytail: polls the clock every 50 ms to keep at most three chunks queued (a slow engine: `slowAhead` seconds,
+            // since its early chunks are small and three of them would stop the buffer growing); a completion-driven
+            // wait if 50 ms ever matters (chunks are seconds long).
+            while gen == generation, engines.engine(for: effectiveVoice).isSlow ? player.queuedUntil - player.currentTime >= Self.slowAhead
+                    : chunkEnds.filter({ $0 > player.currentTime }).count >= 3 {
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
             guard gen == generation, !Task.isCancelled else { return }
@@ -245,26 +261,40 @@ import TalkReadCore
     /// Nil when not even a `minSlowChars` chunk fits: that chunk and the rest go to the fallback. Chunks thus grow only
     /// as fast as the engine's measured headroom allows.
     private func nextSlowChunk(from next: Int, opening: Bool) -> Chunk? {
-        if opening { return slowChunk(from: next, limit: Self.openingChars) }
+        if opening { return slowChunk(from: next, limit: Self.openingChars(rate: player.rate), fill: 10) }   // the buffer: fill it
         // Paused (nothing drains) or nothing measured yet: the largest chunk; the watchdog covers a later resume.
         guard player.isPlaying, let spc = slowSecondsPerChar else { return slowChunk(from: next, limit: Self.slowChars) }
-        var limit = Self.slowChars
+        let room = (bufferedSeconds - Self.spare - Self.chunkOverhead) / (spc + fallbackSecondsPerChar)   // spoken characters that fit
+        var limit = min(Int(room), Self.slowChars)
         // ponytail: each try re-chunks the rest of the text (linear in it, about 1 ms per 10k characters); a token
         // window if 100k-character reads ever show it.
         while limit >= Self.minSlowChars {
             let c = slowChunk(from: next, limit: limit)
-            if Double(speakable(c).text.utf16.count) * (spc + fallbackSecondsPerChar) <= bufferedSeconds - Self.spare { return c }
-            limit = limit * 3 / 4
+            let n = speakable(c).text.utf16.count
+            if Double(n) <= room { return c }
+            limit = min(limit - 1, Int(Double(limit) * room / Double(n)))   // shrink by the overshoot
         }
+        Log.write(String(format: "read: budget %.2f s buffered at %gx, %.4f s per character, room %.0f characters",
+                         bufferedSeconds, player.rate, spc + fallbackSecondsPerChar, room))
         return nil
     }
 
-    /// The rest of the current sentence (cut at `limit`) plus the whole sentences after it that still fit; a remainder
-    /// shorter than `minSlowChars` ("2027." after a cut) always takes the next sentences with it rather than travel alone.
-    private func slowChunk(from next: Int, limit: Int) -> Chunk {
-        let cs = TextKit.chunks(text, tokens: tokens, from: next, firstMax: limit, max: limit)
-        guard cs.count > 1, cs[0].range.count < Self.minSlowChars || cs[1].range.upperBound - cs[0].range.lowerBound <= limit else { return cs[0] }
-        return Chunk(range: cs[0].range.lowerBound ..< cs[1].range.upperBound, tokens: cs[0].tokens.lowerBound ..< cs[1].tokens.upperBound)
+    /// About `limit` characters from `next`: the rest of the current sentence, then the next ones while at least `fill`
+    /// characters of room are left (the opening chunk fills from 10), the last cut by TextKit's rule (clause mark, else
+    /// space); never under `minSlowChars` in all. A sentence that overruns the room by less than `minSlowChars` is taken
+    /// whole, so a cut never leaves a sliver ("2027." alone costs a chunk's fixed overhead for one word).
+    private func slowChunk(from next: Int, limit: Int, fill: Int = minSlowChars) -> Chunk {
+        var range = 0 ..< 0, end = next
+        repeat {
+            let room = max(limit - range.count, Self.minSlowChars)
+            var c = TextKit.chunks(text, tokens: tokens, from: end, firstMax: room + Self.minSlowChars, max: room)[0]
+            if c.tokens.upperBound < tokens.count, tokens[c.tokens.upperBound].sentence == tokens[c.tokens.upperBound - 1].sentence {
+                c = TextKit.chunks(text, tokens: tokens, from: end, firstMax: room, max: room)[0]   // longer still: cut at the room
+            }
+            range = (end == next ? c.range.lowerBound : range.lowerBound) ..< c.range.upperBound
+            end = c.tokens.upperBound
+        } while end < tokens.count && (limit - range.count >= fill || range.count < Self.minSlowChars)
+        return Chunk(range: range, tokens: next ..< end)
     }
 
     /// Playback time queued ahead of the clock, in real seconds at the current rate.
@@ -295,7 +325,7 @@ import TalkReadCore
         }
         switch box.value! {
         case .success(let s):
-            let spc = Date().timeIntervalSince(started) / Double(max(spoken.utf16.count, 1))
+            let spc = max(Date().timeIntervalSince(started) - Self.chunkOverhead, 0) / Double(max(spoken.utf16.count, 1))
             slowSecondsPerChar = slowSecondsPerChar.map { 0.5 * $0 + 0.5 * spc } ?? spc
             return s
         case .failure(let error):
