@@ -914,19 +914,27 @@ enum SelfTest {
         check("8: resuming after a device change above the limit continues on the fallback with the reason",
               from(s, heldAt) && s.made.allSatisfy { $0.voice == fastVoice.id } && slow.calls == callsAtSwitch && s.fallbackReason?.hasPrefix("Qwen3 keeps up to 1.5×") == true)
 
-        // 9. Sol inspection 5 #7: the queue's join, with a fake dependency stream whose producer ignores cancellation and
-        // lives 300 ms past it. Started as an ordinary task (as the dependencies start theirs) it inherits the probe and
-        // the next queued operation begins only after it exits; started detached it does not, and the next one begins
-        // while it still runs: what this check reports if a dependency ever detaches its producer.
-        func join(detached: Bool) async -> Double {   // seconds from the producer's exit to the next operation's start
+        // 9. Sol inspection 5 #7, verification 6: the queue's join, with a fake dependency stream whose producer ignores
+        // cancellation and runs until the test releases it. Handshakes, not sleeps: the cancel comes only once the
+        // producer has started inside the queue, and every wait is bounded and reports instead of hanging. Started as an
+        // ordinary task (as the dependencies start theirs) it inherits the probe: the next queued operation must not
+        // begin while it is held, and begins after it exits. Started detached it does not: the next operation begins
+        // while it is held, which is what this check reports if a dependency ever detaches its producer.
+        func waitFor(_ seconds: Double, _ condition: () -> Bool) async -> Bool {
+            let end = Date().addingTimeInterval(seconds)
+            while !condition() { if Date() >= end { return false }; try? await Task.sleep(nanoseconds: 5_000_000) }
+            return true
+        }
+        func join(detached: Bool) async -> (heldBack: Bool, problem: String?) {   // heldBack: the next operation waited for the producer
             let queue = MLXQueue()
+            let entered = OSAllocatedUnfairLock(initialState: false), released = OSAllocatedUnfairLock(initialState: false)
             let exited = OSAllocatedUnfairLock<Date?>(initialState: nil), began = OSAllocatedUnfairLock<Date?>(initialState: nil)
             let stream: () -> AsyncThrowingStream<AudioGeneration, Error> = {
                 AsyncThrowingStream { c in
                     let producer: @Sendable () async -> Void = {
+                        entered.withLock { $0 = true }
                         c.yield(.token(0))
-                        let end = Date().addingTimeInterval(0.3)
-                        while Date() < end { try? await Task.sleep(nanoseconds: 10_000_000) }   // cancelled or not
+                        while !released.withLock({ $0 }) { try? await Task.sleep(nanoseconds: 5_000_000) }   // cancelled or not
                         exited.withLock { $0 = Date() }
                         c.finish()
                     }
@@ -935,18 +943,22 @@ enum SelfTest {
                 }
             }
             let first = Task { try await queue.run { _ = try await MLXQueue.collect(stream) } }
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            defer { released.withLock { $0 = true } }   // never leave a producer spinning
+            guard await waitFor(5, { entered.withLock { $0 } }) else { first.cancel(); return (false, "the producer never started") }
             first.cancel()
             let next = Task { try await queue.run { began.withLock { $0 = Date() } } }
+            let beganWhileHeld = await waitFor(0.5, { began.withLock { $0 } != nil })
+            released.withLock { $0 = true }
+            guard await waitFor(5, { exited.withLock { $0 } != nil && began.withLock { $0 } != nil }) else { return (false, "the next operation never began") }
             _ = try? await first.value
             _ = try? await next.value
-            while exited.withLock({ $0 }) == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
-            return began.withLock { $0 }!.timeIntervalSince(exited.withLock { $0 }!)
+            let order = began.withLock { $0 }! >= exited.withLock { $0 }!
+            return (!beganWhileHeld && order, nil)
         }
         let joined = await join(detached: false), loose = await join(detached: true)
-        print(String(format: "9 join: the next operation began %.0f ms after an inherited producer exited, %.0f ms before a detached one did", joined * 1000, -loose * 1000))
-        check("9: a producer that outlives the cancel holds the queue until it exits (next began \(Int(joined * 1000)) ms after it)", joined >= 0)
-        check("9: a detached producer is not joined (next began \(Int(-loose * 1000)) ms before it exited), so the check can fail", loose < 0)
+        print("9 join: an inherited producer held the next operation back: \(joined.heldBack)\(joined.problem.map { " (\($0))" } ?? ""); a detached one did: \(loose.heldBack)\(loose.problem.map { " (\($0))" } ?? "")")
+        check("9: a producer that outlives the cancel holds the queue until it exits", joined.problem == nil && joined.heldBack)
+        check("9: a detached producer is not joined (the next operation began while it ran), so the check can fail", loose.problem == nil && !loose.heldBack)
 
         let pass = checks.allSatisfy(\.1)
         print("fake-engine checks: \(checks.filter(\.1).count)/\(checks.count) passed")
