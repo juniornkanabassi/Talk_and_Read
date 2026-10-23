@@ -1007,27 +1007,33 @@ enum SelfTest {
         let caught = TRCatchException { NSException(name: .genericException, reason: "probe reason", userInfo: nil).raise() }
         check(caught?.localizedDescription == "probe reason" && TRCatchException({}) == nil, "exception catch: \(String(describing: caught))")
 
-        // Sol inspection 5 #6: the acoustic check must be able to fail. 30 tone words of 150 ms, each after 600 ms of
-        // silence (as the phrase starts it pairs, far apart, so a shifted start cannot borrow the next word's onset).
-        var words: [Float] = [], truth: [Double] = []
-        for _ in 0 ..< 30 {
-            words += [Float](repeating: 0, count: 14_400)
-            truth.append(Double(words.count) / 24_000)
-            words += (0 ..< 3600).map { Float(0.3 * sin(Double($0) * 0.2)) }
-        }
-        words += [Float](repeating: 0, count: 4800)
-        func shifted(_ shift: (Int) -> Double, extra: Bool = false) -> [TalkReadCore.WordTiming] {
-            truth.enumerated().flatMap { k, t -> [TalkReadCore.WordTiming] in
-                let word = TalkReadCore.WordTiming(token: k, start: t + shift(k), end: t + shift(k) + 0.12)
-                return extra ? [TalkReadCore.WordTiming(token: k, start: t - 0.1, end: t - 0.05), word] : [word]   // a start with no onset
+        // Sol inspection 5 #6 and verification 6: the acoustic check must be able to fail. 30 tone words of 150 ms, each
+        // after a silence of `gap(k)` seconds, timed as `shift(k)` after their true start (`extra`: plus a start with no
+        // onset 100 ms before each word).
+        func fixture(_ gap: (Int) -> Double, _ shift: (Int) -> Double, extra: Bool = false) -> Onsets {
+            var audio: [Float] = [], timings: [TalkReadCore.WordTiming] = []
+            for k in 0 ..< 30 {
+                audio += [Float](repeating: 0, count: Int(gap(k) * 24_000))
+                let t = Double(audio.count) / 24_000
+                if extra { timings.append(TalkReadCore.WordTiming(token: 2 * k, start: t - 0.1, end: t - 0.05)) }
+                timings.append(TalkReadCore.WordTiming(token: 2 * k + 1, start: t + shift(k), end: t + shift(k) + 0.12))
+                audio += (0 ..< 3600).map { Float(0.3 * sin(Double($0) * 0.2)) }
             }
+            return onsets(audio + [Float](repeating: 0, count: 4800), timings: timings)
         }
-        let good = onsets(words, timings: shifted { _ in 0.03 })
-        check(mlxTimingPass(good), "acoustic check: well-timed words pass (\(good.summary))")
-        for (what, o) in [("all 250 ms late", onsets(words, timings: shifted { _ in 0.25 })), ("one in three 200 ms late", onsets(words, timings: shifted { $0 % 3 == 0 ? 0.2 : 0.03 })),
-                          ("half the starts with no onset", onsets(words, timings: shifted({ _ in 0.03 }, extra: true)))] {
+        let sparse: (Int) -> Double = { _ in 0.6 }, irregular: (Int) -> Double = { 0.4 + 0.1 * Double(($0 * 7) % 6) }   // 0.4-0.9 s
+        var verdicts: [String] = []
+        for (what, o) in [("600 ms gaps", fixture(sparse, { _ in 0.03 })), ("irregular gaps", fixture(irregular, { _ in 0.03 }))] {
+            check(mlxTimingPass(o), "acoustic check: well-timed words with \(what) pass (\(o.summary))")
+            verdicts.append("\(what) \(mlxTimingPass(o) ? "pass" : "FAIL")")
+        }
+        for (what, o) in [("all 250 ms late, 600 ms gaps", fixture(sparse, { _ in 0.25 })), ("all 250 ms late, 100 ms gaps", fixture({ _ in 0.1 }, { _ in 0.25 })),
+                          ("all 250 ms late, irregular gaps", fixture(irregular, { _ in 0.25 })), ("one onset late (350 ms), 200 ms gaps", fixture({ _ in 0.2 }, { _ in 0.35 })),
+                          ("one in three 200 ms late", fixture(sparse, { $0 % 3 == 0 ? 0.2 : 0.03 })), ("half the starts with no onset", fixture(sparse, { _ in 0.03 }, extra: true))] {
             check(!mlxTimingPass(o), "acoustic check: \(what) must fail (\(o.summary))")
+            verdicts.append("\(what) \(mlxTimingPass(o) ? "PASSED" : "fails")")
         }
+        print("acoustic check fixtures: \(verdicts.joined(separator: "; "))")
 
         // Stop guard (PLAN 0.3.0 decision 9): 1 s of tone at 24 kHz, then silence.
         let tone = (0 ..< 24_000).map { Float(0.3 * sin(Double($0) * 0.1)) }
@@ -1094,39 +1100,47 @@ enum SelfTest {
     /// Our start minus the paired onset, per pair, out of `candidates` starts of ours that follow a pause.
     struct Onsets {
         let errors: [Double], candidates: Int
+        /// Our first start had the audio's first onset, and only it, within the window.
+        var anchored = true
         var coverage: Double { candidates == 0 ? 0 : Double(errors.count) / Double(candidates) }
         var absMedian: Double { SelfTest.percentile(errors.map(abs).sorted(), 0.5) }
         var absP90: Double { SelfTest.percentile(errors.map(abs).sorted(), 0.9) }
         var signedMedian: Double { SelfTest.percentile(errors.sorted(), 0.5) }
         var summary: String {
-            "\(errors.count) of \(candidates) phrase starts paired with an onset (\(SelfTest.pct(coverage))); |ours - onset| median "
+            (anchored ? "" : "not anchored (the first word is not at the audio's first onset alone); ")
+                + "\(errors.count) of \(candidates) phrase starts paired with an onset (\(SelfTest.pct(coverage))); |ours - onset| median "
                 + "\(Int((absMedian * 1000).rounded())) ms, p90 \(Int((absP90 * 1000).rounded())) ms; signed median \(Int((signedMedian * 1000).rounded())) ms"
         }
     }
 
-    /// Reference-free timing check (Sol inspection 5 #6). Onsets are found in the audio alone: a 5 ms RMS frame within
-    /// 34 dB of the peak after a pause, `pause` frames (100 ms) below it. Our candidates are the word starts that follow
-    /// a gap as long in our own timings (and the first), so both sides are phrase starts, far enough apart that a
-    /// shifted start cannot borrow a neighbour's onset (with every 40 ms silence and every gap, Kokoro paired 44 % and
-    /// neighbours leaked in). Pairs are made one to one, nearest first, within 400 ms: an association bound well beyond
-    /// the 150 ms bar, so a mistimed word is a large error, not a dropped one, and a start with no onset near it lowers
-    /// the coverage. Kokoro on 23 Oct: English 56 of 64 paired, median 15 ms, p90 60 ms; French 60 of 65, signed +25 ms.
-    static func onsets(_ audio: [Float], timings: [TalkReadCore.WordTiming], pause: Int = 20) -> Onsets {
+    /// Reference-free timing check (Sol inspection 5 #6, verification 6). Onsets are found in the audio alone: a 5 ms RMS
+    /// frame within 34 dB of the peak after a pause, `pause` frames (100 ms) below it (the audio's start counts as
+    /// silence). Our candidates are the word starts that follow a gap as long in our own timings, and the first: phrase
+    /// starts on both sides (with every 40 ms silence Kokoro paired 44 %). They are paired in order, anchored: our first
+    /// start must have the audio's first onset, and only it, within `window`; each later start takes the one unused
+    /// onset after the last pair within `window`, none if there is none, and none if there are several. So a uniform
+    /// shift cannot slide by one onset (nearest-first pairing let every start borrow the next onset: 250 ms late with
+    /// 100 ms gaps paired 29 of 30 at 0 ms), a mistimed start is a large error rather than a dropped one (the window is
+    /// twice the 150 ms bar), and a start with no onset, or an ambiguous one, lowers the coverage.
+    static func onsets(_ audio: [Float], timings: [TalkReadCore.WordTiming], pause: Int = 20, window: Double = 0.3) -> Onsets {
         let hop = 120   // 5 ms at 24 kHz
         let env: [Float] = stride(from: 0, to: audio.count, by: hop).map { i in
             let s = audio[i ..< min(i + hop, audio.count)]
             return (s.reduce(0) { $0 + $1 * $1 } / Float(s.count)).squareRoot()
         }
         let threshold = (env.max() ?? 0) * powf(10, -34 / 20)
-        let found = env.indices.dropFirst(pause).filter { j in env[j] >= threshold && (1 ... pause).allSatisfy { env[j - $0] < threshold } }.map { Double($0) / 200 }
+        let found = env.indices.filter { j in env[j] >= threshold && (max(j - pause, 0) ..< j).allSatisfy { env[$0] < threshold } }.map { Double($0) / 200 }
         let spoken = timings.filter { $0.end > $0.start }
         let starts = spoken.indices.filter { $0 == 0 || spoken[$0].start - spoken[$0 - 1].end >= Double(pause) / 200 }.map { spoken[$0].start }
-        var near: [(d: Double, i: Int, j: Int)] = []
-        for (i, s) in starts.enumerated() { for (j, o) in found.enumerated() where abs(s - o) <= 0.4 { near.append((abs(s - o), i, j)) } }
-        var usedStart = Set<Int>(), usedOnset = Set<Int>(), errors: [Double] = []
-        for p in near.sorted(by: { $0.d < $1.d }) where !usedStart.contains(p.i) && !usedOnset.contains(p.j) {
-            usedStart.insert(p.i); usedOnset.insert(p.j)
-            errors.append(starts[p.i] - found[p.j])
+        var errors: [Double] = [], next = 0
+        for (i, s) in starts.enumerated() {
+            let near = found.indices.dropFirst(next).prefix { found[$0] <= s + window }.filter { found[$0] >= s - window }
+            guard near.count == 1, i > 0 || near[0] == 0 else {
+                if i == 0 { return Onsets(errors: [], candidates: starts.count, anchored: false) }
+                continue
+            }
+            errors.append(s - found[near[0]])
+            next = near[0] + 1
         }
         return Onsets(errors: errors, candidates: starts.count)
     }
