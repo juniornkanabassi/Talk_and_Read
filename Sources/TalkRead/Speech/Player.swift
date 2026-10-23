@@ -29,8 +29,10 @@ import TalkReadCore
     /// Output device changed (headphones unplugged, sample rate change), playing or paused: everything queued was
     /// dropped; restart from the clock.
     var onInterrupted: (() -> Void)?
-    /// Self-test only: the next `play()` fails as an output device that never cycles does (the node raises).
-    var failNextStart = false
+    /// Self-test only: the next `play()` fails at that step, raising as AVFAudio does when there is no output (`start`)
+    /// or the device never cycles (`play`).
+    enum Failure { case start, play }
+    var failNext: Failure?
     var volume: Float {
         get { engine.mainMixerNode.outputVolume }
         set { engine.mainMixerNode.outputVolume = newValue }
@@ -52,6 +54,8 @@ import TalkReadCore
     private var lastTime = 0.0
     private var engineStop: DispatchWorkItem?
     private var observer: NSObjectProtocol?
+    /// The graph connected and prepared; when not (no output at the time), `play()` tries again and fails the read.
+    private var graphReady = false
 
     /// `manualRendering` pulls the real graph offline (AVAudioEngine manual mode) for tests.
     init(manualRendering: Bool = false) {
@@ -73,12 +77,29 @@ import TalkReadCore
         if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 
-    private func connect() {
-        engine.connect(node, to: timePitch, format: format)
-        engine.connect(timePitch, to: engine.mainMixerNode, format: format)
-        applyRate()
-        engine.prepare()
+    /// Connecting to the main mixer creates the output node, which AVAudioEngine documents may raise when no output is
+    /// available; preparing allocates the device's resources.
+    @discardableResult private func connect() -> Bool {
+        graphReady = Self.guarded("audio graph did not connect") {
+            engine.connect(node, to: timePitch, format: format)
+            engine.connect(timePitch, to: engine.mainMixerNode, format: format)
+            applyRate()
+            engine.prepare()
+        }
+        return graphReady
     }
+
+    /// Runs AVFAudio steps that may throw or raise an Objective-C exception (Swift cannot catch those: three crashes on
+    /// 23 Oct, Sol inspection 5 #1) and logs either as `player: <what>: <reason>`; false when they failed.
+    nonisolated static func guarded(_ what: String, _ body: () throws -> Void) -> Bool {
+        var thrown: Error?
+        let raised = TRCatchException { do { try body() } catch { thrown = error } }
+        guard let error = raised ?? thrown else { return true }
+        Log.write("player: \(what): \(error.localizedDescription)")
+        return false
+    }
+
+    private static func raise(_ reason: String) { NSException(name: .genericException, reason: reason, userInfo: nil).raise() }
 
     private func applyRate() { AudioUnitSetParameter(timePitch.audioUnit, 0, kAudioUnitScope_Global, 0, rate, 0) }
 
@@ -151,35 +172,36 @@ import TalkReadCore
     nonisolated static func warmOutput() {
         DispatchQueue.global(qos: .utility).async {
             let engine = AVAudioEngine()
-            engine.mainMixerNode.outputVolume = 0
-            engine.prepare()
-            if (try? engine.start()) != nil { engine.stop() }
+            _ = guarded("output warm-up failed") {
+                engine.mainMixerNode.outputVolume = 0
+                engine.prepare()
+                try engine.start()
+                engine.stop()
+            }
         }
     }
 
     /// Starts the output hardware while the first chunk is still being synthesised, so its ~300 ms start-up overlaps
     /// synthesis instead of following it. Silent until `play()`; a failure here is retried (and reported) by `play()`.
     func warmUp() {
-        guard !manual, !engine.isRunning, !failNextStart else { return }
-        try? engine.start()
+        guard !manual, graphReady, !engine.isRunning, failNext == nil else { return }
+        _ = Self.guarded("output warm-up did not start the engine") { try engine.start() }
     }
 
+    /// Any step that throws or raises leaves `isPlaying` false, which the reader turns into a failed read. The node
+    /// raises, not throws, when the output device never cycles ("player did not see an IO cycle", after blocking up to
+    /// ~9 s: heavy load, Low Power Mode, another app holding the device).
     func play() {
         engineStop?.cancel()
-        do {
-            if !engine.isRunning { try engine.start() }
-        } catch {
-            Log.write("player: audio engine did not start: \(error.localizedDescription)")
-            return
-        }
-        // The node raises, not throws, when the output device never cycles ("player did not see an IO cycle", after
-        // blocking up to ~9 s: heavy load, Low Power Mode, another app holding the device; three crashes on 23 Oct).
-        // Caught, it is the same failed start as an engine that will not start: the reader fails the read.
-        if let error = TRCatchException({
-            if failNextStart { failNextStart = false; NSException(name: .genericException, reason: "simulated: player did not see an IO cycle").raise() }
-            node.play()
-        }) {
-            Log.write("player: output did not start: \(error.localizedDescription)")
+        guard graphReady || connect(),
+              Self.guarded("audio engine did not start", {
+                  if failNext == .start { failNext = nil; Self.raise("simulated: no audio output available") }
+                  if !engine.isRunning { try engine.start() }
+              }),
+              Self.guarded("output did not start", {
+                  if failNext == .play { failNext = nil; Self.raise("simulated: player did not see an IO cycle") }
+                  node.play()
+              }) else {
             if !manual { engine.stop() }
             return
         }
