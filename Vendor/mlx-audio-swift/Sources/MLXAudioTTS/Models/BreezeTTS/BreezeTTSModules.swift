@@ -89,6 +89,8 @@ final class BreezeDepthAttention: Module {
     let config: BreezeDepthDecoderConfig
     let scale: Float
     let rope: RoPE
+    /// Llama 3 scaled RoPE periods when `rope_scaling` asks for them, as Python mlx-audio applies; nil keeps plain RoPE.
+    private let _ropeFreqs: MLXArray?
 
     @ModuleInfo(key: "q_proj") var query: Linear
     @ModuleInfo(key: "k_proj") var key: Linear
@@ -99,6 +101,11 @@ final class BreezeDepthAttention: Module {
         self.config = config
         self.scale = Foundation.pow(Float(config.headDim), -0.5)
         self.rope = RoPE(dimensions: config.headDim, traditional: false, base: config.ropeTheta, scale: 1)
+        self._ropeFreqs = breezeLlama3RopeFrequencies(
+            dimensions: config.headDim,
+            base: config.ropeTheta,
+            scaling: config.ropeScaling
+        )
         _query.wrappedValue = Linear(config.hiddenSize, config.numAttentionHeads * config.headDim, bias: false)
         _key.wrappedValue = Linear(config.hiddenSize, config.numKeyValueHeads * config.headDim, bias: false)
         _value.wrappedValue = Linear(config.hiddenSize, config.numKeyValueHeads * config.headDim, bias: false)
@@ -109,12 +116,12 @@ final class BreezeDepthAttention: Module {
         let batch = x.dim(0)
         let length = x.dim(1)
         let offset = cache?.offset ?? 0
-        let queries = rope(
+        let queries = applyRope(
             query(x).reshaped([batch, length, config.numAttentionHeads, config.headDim])
                 .transposed(0, 2, 1, 3),
             offset: offset
         )
-        var keys = rope(
+        var keys = applyRope(
             key(x).reshaped([batch, length, config.numKeyValueHeads, config.headDim])
                 .transposed(0, 2, 1, 3),
             offset: offset
@@ -134,6 +141,36 @@ final class BreezeDepthAttention: Module {
         )
         return output(attended.transposed(0, 2, 1, 3).reshaped([batch, length, -1]))
     }
+
+    private func applyRope(_ x: MLXArray, offset: Int) -> MLXArray {
+        guard let _ropeFreqs else { return rope(x, offset: offset) }
+        return MLXFast.RoPE(
+            x, dimensions: config.headDim, traditional: false, base: nil, scale: 1, offset: offset, freqs: _ropeFreqs
+        )
+    }
+}
+
+/// Llama 3 frequency scaling (`rope_type: llama3`), matching `Llama3RoPE` in Python mlx-lm.
+func breezeLlama3RopeFrequencies(dimensions: Int, base: Float, scaling: [String: StringOrNumber]?) -> MLXArray? {
+    guard let scaling, scaling["rope_type"] == .string("llama3") else { return nil }
+    func value(_ key: String, _ fallback: Float) -> Float {
+        switch scaling[key] {
+        case .float(let v): v
+        case .int(let v): Float(v)
+        default: fallback
+        }
+    }
+    let factor = value("factor", 1)
+    let low = value("low_freq_factor", 1)
+    let high = value("high_freq_factor", 4)
+    let context = value("original_max_position_embeddings", 8192)
+    let exponents = MLXArray(stride(from: 0, to: dimensions, by: 2)).asType(.float32) / Float(dimensions)
+    let freqs = MLX.pow(MLXArray(base), exponents)
+    let wavelengths = 2 * Float.pi * freqs
+    let scaled = MLX.where(wavelengths .> context / low, freqs * factor, freqs)
+    let smooth = (context / wavelengths - low) / (high - low)
+    let medium = logicalAnd(wavelengths .> context / high, wavelengths .< context / low)
+    return MLX.where(medium, scaled / ((1 - smooth) / factor + smooth), scaled)
 }
 
 final class BreezeDepthMLP: Module {
