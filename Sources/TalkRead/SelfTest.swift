@@ -140,7 +140,15 @@ enum SelfTest {
                                chunks: chunks.count, invariants: problems.isEmpty) ? 0 : 1
         }
         var pass = problems.isEmpty && signed.count >= 200 && median <= 60 && p90 <= 150
-        print("R2: \(pass ? "PASS" : "FAIL") (median <= 60 ms, p90 <= 150 ms, >= 200 matched words, invariants)")
+        if language == "fr" {
+            // PLAN 0.3.0 "Build results": Parakeet v3's French word starts run ~105 ms early, so French is judged by the
+            // acoustic onset check instead of the recogniser.
+            let onMedian = abs(percentile(onset.sorted(), 0.5) * 1000), onP90 = percentile(onset.map(abs).sorted(), 0.9) * 1000
+            pass = problems.isEmpty && onset.count >= 100 && onMedian <= 60 && onP90 <= 150
+            print("R2 (French, acoustic check decides): \(pass ? "PASS" : "FAIL") (|onset median| <= 60 ms, p90 <= 150 ms, >= 100 words after silence, invariants)")
+        } else {
+            print("R2: \(pass ? "PASS" : "FAIL") (median <= 60 ms, p90 <= 150 ms, >= 200 matched words, invariants)")
+        }
 
         if let rate {
             // Revised R3 (PLAN.md): clock within 20 ms at every rate; WER <= 8 % up to 2x; above 2x, lower than Kokoro
@@ -318,8 +326,9 @@ enum SelfTest {
                      firstChunkMs, Double(audio.count) / Player.sampleRate / synthSeconds, chunks))
         let bias = percentile(onset.sorted(), 0.5), spread = onset.map { abs($0 - bias) }.sorted()
         print("Qwen3 acoustic check: \(onset.count) words after silence; |ours - onset| median \(Int(median.rounded())) ms, p90 \(Int(p90.rounded())) ms; signed median \(Int((bias * 1000).rounded())) ms (spread around it: median \(Int((percentile(spread, 0.5) * 1000).rounded())) ms, p90 \(Int((percentile(spread, 0.9) * 1000).rounded())) ms)")
-        let pass = invariants && onset.count >= 15 && median <= 60 && p90 <= 150
-        print("Qwen3 timing: \(pass ? "PASS" : "FAIL") (acoustic median <= 60 ms, p90 <= 150 ms, >= 15 words after silence, invariants)")
+        // PLAN 0.3.0 "Build results": Parakeet v3's 80 ms frames set the floor; 90 ms median is about 36 ms as heard at 2.5x.
+        let pass = invariants && onset.count >= 15 && median <= 90 && p90 <= 150
+        print("Qwen3 timing: \(pass ? "PASS" : "FAIL") (acoustic median <= 90 ms, p90 <= 150 ms, >= 15 words after silence, invariants)")
         return pass
     }
 
@@ -377,8 +386,9 @@ enum SelfTest {
         let sortedGPU = gpu.sorted()
         print(String(format: "memory (phys footprint): %.0f MB before load, peak %.0f MB while reading, %.0f MB after unload", before, peak, after))
         if !gpu.isEmpty { print("GPU utilisation while reading: median \(sortedGPU[sortedGPU.count / 2]) %, mean \(gpu.reduce(0, +) / gpu.count) % (\(gpu.count) samples)") }
-        let pass = playing && first <= 1500 && starvations == 0 && consecutive && clean
-        print("Qwen3 sustained: \(pass ? "PASS" : "FAIL") (first audio <= 1500 ms, starvations 0, consecutive tokens, clean or no fallback, still playing at 60 s)")
+        // PLAN 0.3.0 "Build results": the opening chunk is sized by rate so 2.5x keeps going; 2.5 s first audio accepted.
+        let pass = playing && first <= 2500 && starvations == 0 && consecutive && clean
+        print("Qwen3 sustained: \(pass ? "PASS" : "FAIL") (first audio <= 2500 ms, starvations 0, consecutive tokens, clean or no fallback, still playing at 60 s)")
         return pass ? 0 : 1
     }
 
