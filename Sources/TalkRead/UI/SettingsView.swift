@@ -229,6 +229,7 @@ struct SettingsContent: View {
             if !data.models.isEmpty {
                 Section {
                     ForEach(data.models) { row in ModelStatusRow(row: row) { model.download(row.title) } }
+                    if data.models.contains(where: { $0.title.contains("Breeze") }) { BreezeLicence() }   // V8: the full text from the Models page
                 } header: {
                     Text("Optional")
                 } footer: {

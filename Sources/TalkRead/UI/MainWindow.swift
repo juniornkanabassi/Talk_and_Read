@@ -14,7 +14,7 @@ struct ViewData {
     var permissions: Permissions
     var voiceModel: ModelState
     var dictationModel: ModelState
-    /// Optional downloads (Qwen3, word timing, Kokoro French) for the Models and Voices pages.
+    /// Optional downloads (Qwen3, Breeze, word timing, Kokoro French) for the Models and Voices pages.
     var models: [ModelRow] = []
     var documentText: @MainActor (LibraryItem) throws -> String
     /// Snapshots only: the word shown highlighted in the reader when no live session is reading the document.
@@ -688,8 +688,8 @@ enum VoiceGroups {
     static func purpose(_ title: String) -> (symbol: String, what: String) {
         let t = title.lowercased()
         if t.contains("qwen") { return ("waveform", "More natural American and French voices") }
-        if t.contains("breeze") { return ("waveform", "Expressive English voices") }
-        if t.contains("parakeet") { return ("text.word.spacing", "Word timing for the Qwen3 voices") }
+        if t.contains("breeze") { return ("waveform", "Expressive English voices. \(BreezeLicence.note)") }
+        if t.contains("parakeet") { return ("text.word.spacing", "Word timing for the Qwen3 and Breeze voices") }
         if t.contains("french") { return ("globe.europe.africa", "Kokoro's French voice, Siwis") }
         return ("square.and.arrow.down", "Optional download")
     }
@@ -698,7 +698,8 @@ enum VoiceGroups {
         switch model {
         case .neural: "Light and instant. The default."
         case .qwen: "More natural. Uses about 4 GB of memory while it reads; if it falls behind your speed, Kokoro reads the rest."
-        case .breeze: "The most expressive. English only."
+        // Peak memory while it reads, 6.0-6.7 GB over the 0.4.0 sustained runs (5.5 GB once loaded).
+        case .breeze: "The most expressive. English only. Uses about 7 GB of memory while it reads; above about \(String(format: "%g", BreezeEngine.keepsUpTo))× Kokoro reads the rest."
         case .system: ""
         }
     }
@@ -799,6 +800,8 @@ struct VoiceSection: View {
                     Text(VoiceGroups.blurb(shown.model)).font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
+                    // Beside the download that is the consent, and whenever Breeze is shown (PLAN 0.4.0 Sol rev. 6, V8).
+                    if shown.model == .breeze { BreezeLicence().padding(.horizontal, 14).padding(.bottom, 8) }
                     download(shown.model, shown.voices)
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 4) {
                         ForEach(shown.voices) { v in
@@ -843,6 +846,42 @@ struct VoiceSection: View {
         let text = v.language == "fr" ? "Bonjour, je suis \(v.name). Voici comment je lis vos textes."
             : "Hello, I'm \(v.name). This is how I sound reading your text."
         try? model.speak(text, title: nil, caller: "ui-preview", voice: v.id)
+    }
+}
+
+/// Breeze TTS 2's weights are under BreezeBlue's research and non-commercial licence (PLAN 0.4.0 Sol rev. 6, V8): the
+/// note, and the full pinned `LICENSE` (bundled as text, never the weights) in a sheet. Shown with Breeze on the Voices
+/// page, next to its download, and on Settings ▸ Models.
+struct BreezeLicence: View {
+    static let note = "Personal, non-commercial use only (Breeze licence)."
+    @State private var showing = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(Self.note).font(.callout).foregroundStyle(.secondary)
+            Button("Read the licence") { showing = true }.buttonStyle(.link)
+        }
+        .sheet(isPresented: $showing) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Breeze TTS 2 licence").font(.headline)
+                Text("The Breeze voices may be used for personal, non-commercial purposes only. The full licence:")
+                    .font(.callout).foregroundStyle(.secondary)
+                ScrollView {
+                    Text(Self.text).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack { Spacer(); Button("Done") { showing = false }.keyboardShortcut(.defaultAction) }
+            }
+            .padding(20)
+            .frame(width: 640, height: 520)
+        }
+    }
+
+    /// The licence at the pinned model revision, from the app bundle; in a `swift build` run the source tree's copy.
+    static var text: String {
+        let url = Bundle.main.url(forResource: "Breeze-TTS-2-LICENSE", withExtension: "txt", subdirectory: "Licences")
+            ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../../Resources/Licences/Breeze-TTS-2-LICENSE.txt").standardized
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? "The licence text is missing from this copy of Talk and Read; it is the LICENSE file beside the Breeze model."
     }
 }
 

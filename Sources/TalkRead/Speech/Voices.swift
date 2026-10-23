@@ -52,7 +52,7 @@ extension SpeechEngine {
     var isSlow: Bool { kind == .qwen || kind == .breeze }
 }
 
-/// A large model the user downloads with consent (Qwen3, the Parakeet v3 aligner, the Kokoro French pack): the Models
+/// A large model the user downloads with consent (Qwen3, Breeze, the Parakeet v3 aligner, the Kokoro French pack): the Models
 /// page lists these with their sizes; nothing downloads before the user says so (PLAN 0.3.0, Sol plan review 1 #1, #6).
 @MainActor protocol DownloadableModel: AnyObject {
     var title: String { get }
@@ -66,38 +66,41 @@ final class Engines {
     let neural: SpeechEngine
     let system: SpeechEngine
     let qwen: SpeechEngine
+    let breeze: SpeechEngine
     let aligner: Aligner
-    /// The one queue the MLX engines (Qwen3, Breeze next) and their shared aligner run on (PLAN 0.4.0 Sol rev. 1).
+    /// The one queue Qwen3, Breeze and their shared aligner run on (PLAN 0.4.0 Sol rev. 1).
     let mlx: MLXQueue
-    init(neural: SpeechEngine = NeuralEngine(), system: SpeechEngine = SystemEngine(), qwen: SpeechEngine? = nil,
+    init(neural: SpeechEngine = NeuralEngine(), system: SpeechEngine = SystemEngine(), qwen: SpeechEngine? = nil, breeze: SpeechEngine? = nil,
          aligner: Aligner = Aligner(), mlx: MLXQueue = MLXQueue()) {
         self.neural = neural
         self.system = system
         self.aligner = aligner
         self.mlx = mlx
         self.qwen = qwen ?? QwenEngine(aligner: aligner, queue: mlx)
+        self.breeze = breeze ?? BreezeEngine(aligner: aligner, queue: mlx)
     }
     // Contract for 0.3.0 (V-C calls these and never the engines' properties directly).
     func engine(for v: Voice) -> SpeechEngine {
         switch v.engine {
         case .neural: neural
         case .qwen: qwen
-        case .system, .breeze: system   // Breeze is not offered until its port keeps up (PLAN 0.3.0 decision 7)
+        case .breeze: breeze
+        case .system: system
         }
     }
     /// Every engine's voices, all languages and genders; the UI filters (female only, by model, by language).
-    func allVoices() async -> [Voice] { await neural.voices() + qwen.voices() + system.voices() }
+    func allVoices() async -> [Voice] { await neural.voices() + qwen.voices() + breeze.voices() + system.voices() }
     /// Models the user may download, with sizes (Models page and onboarding).
     @MainActor func downloadables() -> [DownloadableModel] {
-        [qwen as? DownloadableModel, aligner, (neural as? NeuralEngine)?.frenchPack].compactMap { $0 }
+        [qwen as? DownloadableModel, breeze as? DownloadableModel, aligner, (neural as? NeuralEngine)?.frenchPack].compactMap { $0 }
     }
     /// Preparing, synthesising or unloading somewhere: the idle unload waits.
-    var isBusy: Bool { mlx.isBusy || neural.isBusy || qwen.isBusy || system.isBusy }
+    var isBusy: Bool { mlx.isBusy || neural.isBusy || qwen.isBusy || breeze.isBusy || system.isBusy }
     /// Calls `f` once the MLX queue is next idle (at once if it is): a model switch retries then (Sol plan review 0.4.0 #5).
     // ponytail: only the MLX queue is watched; the other engines are never busy outside test fakes.
     func whenIdle(_ f: @escaping () -> Void) { mlx.whenIdle(f) }
     /// Frees every engine's model memory (idle timer, model switch). An engine finishes its in-flight work first.
-    func unloadAll() { unloads += 1; neural.unload(); system.unload(); qwen.unload() }
+    func unloadAll() { unloads += 1; neural.unload(); system.unload(); qwen.unload(); breeze.unload() }
     /// How many times `unloadAll` ran: a read's warm fallback is cold again once this moves (Sol inspection 4 #2).
     private(set) var unloads = 0
 }
