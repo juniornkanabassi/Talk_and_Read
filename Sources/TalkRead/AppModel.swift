@@ -154,7 +154,10 @@ extension EngineKind {
     }
 
     private func freeUnchosenModels() {
-        guard modelSwitchPending, liveSession == nil, !engines.isBusy else { return }
+        guard modelSwitchPending, liveSession == nil else { return }
+        // Busy (a warm-up, a chunk or a cancelled one draining): try again the moment the MLX queue is free, not at the
+        // idle timer, which may be many minutes away with gigabytes still loaded (Sol plan review 0.4.0 #5).
+        guard !engines.isBusy else { return engines.whenIdle { Task { @MainActor [weak self] in self?.freeUnchosenModels() } } }
         modelSwitchPending = false
         engines.unloadAll()   // the dictation model stays for the idle timer
         Log.write("voice model switched: speech models unloaded")
