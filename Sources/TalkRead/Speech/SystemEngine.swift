@@ -7,31 +7,35 @@ import TalkReadCore
 final class SystemEngine: SpeechEngine {
     var kind: EngineKind { .system }
 
-    func voices() async -> [Voice] {
-        Self.englishVoices().map { v in
-            let accent = v.language == "en-GB" ? "British" : v.language == "en-US" ? "American" : v.language
-            let gender = v.gender == .female ? "Female" : v.gender == .male ? "Male" : ""
-            return Voice(id: v.identifier, name: v.name, accent: accent, gender: gender, engine: .system, installed: true)
-        }
-    }
+    func voices() async -> [Voice] { Self.ranked("en").map { Self.voice($0, language: "en") } }
 
-    /// Best first: Premium > Enhanced > default, then en-GB, en-US, other English; Apple voices before Eloquence.
-    static func englishVoices() -> [AVSpeechSynthesisVoice] {
+    /// The best installed voice of `language` ("en", "fr"): a fallback keeps the read's language, where `voices()` lists
+    /// English only (Sol inspection 4 #3).
+    static func voice(language: String) -> Voice? { ranked(language).first.map { voice($0, language: language) } }
+
+    /// Best first: Premium > Enhanced > default, then en-GB, en-US, other variants; Apple voices before Eloquence.
+    static func ranked(_ language: String) -> [AVSpeechSynthesisVoice] {
         func key(_ v: AVSpeechSynthesisVoice) -> (Int, Int, Int, String) {
             (-v.quality.rawValue, v.language == "en-GB" ? 0 : v.language == "en-US" ? 1 : 2,
              v.identifier.contains("eloquence") ? 1 : 0, v.name)
         }
         return AVSpeechSynthesisVoice.speechVoices()
-            .filter { $0.language.hasPrefix("en") && !$0.voiceTraits.contains(.isNoveltyVoice) && !$0.voiceTraits.contains(.isPersonalVoice) }
+            .filter { $0.language.hasPrefix(language) && !$0.voiceTraits.contains(.isNoveltyVoice) && !$0.voiceTraits.contains(.isPersonalVoice) }
             .sorted { key($0) < key($1) }
+    }
+
+    private static func voice(_ v: AVSpeechSynthesisVoice, language: String) -> Voice {
+        let accent = v.language == "en-GB" ? "British" : v.language == "en-US" ? "American" : v.language
+        let gender = v.gender == .female ? "Female" : v.gender == .male ? "Male" : ""
+        return Voice(id: v.identifier, name: v.name, accent: accent, gender: gender, engine: .system, installed: true, language: language)
     }
 
     func prepare(voice: String) async throws {}
 
-    /// An unknown `voice` id (e.g. "" from the neural fallback) uses the best installed English voice.
+    /// An unknown `voice` id ("" when no voice of the language is installed) uses the best installed English voice.
     func synthesize(_ text: String, voice: String) async throws -> SynthChunk {
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(identifier: voice) ?? Self.englishVoices().first
+        utterance.voice = AVSpeechSynthesisVoice(identifier: voice) ?? Self.ranked("en").first
         let job = Job(text: text)
         defer { withExtendedLifetime(job) {} }   // the synthesizer's callbacks hold the job weakly
         return try await withCheckedThrowingContinuation { job.run(utterance, $0) }

@@ -83,4 +83,19 @@ final class FormattingTests: XCTestCase {
         XCTAssertEqual(clean("footballco, ltd", v), "Footballco, ltd")
         XCTAssertEqual(clean("see footballco.com", v), "See footballco.com", "addresses are held")
     }
+
+    /// Sol inspection 4 #4: with the app's dictionary check, a real word is never "corrected" into a taught one.
+    func testNearMissesKeepDictionaryWords() {
+        let dictionary: Set = ["please", "contact", "the", "team", "email", "dembele", "joan", "nevis"]
+        func clean(_ s: String, _ vocabulary: [String: String]) -> String {
+            Cleanup.apply(s, vocabulary: vocabulary, removeFillers: true, isWord: { dictionary.contains($0.lowercased()) })
+        }
+        let v = ["contract": "contract", "Footballco": "Footballco", "Dembélé": "Dembélé", "João Neves": "João Neves"]
+        XCTAssertEqual(clean("please contact the team", v), "Please contact the team")
+        XCTAssertEqual(clean("email the footbalco team", v), "Email the Footballco team")
+        XCTAssertEqual(clean("Dembele scored", v), "Dembélé scored", "only accents differ: still the taught spelling")
+        XCTAssertEqual(clean("with Joan Nevis", v), "With Joan Nevis", "every word real: left alone")
+        XCTAssertEqual(clean("Joan Neves", v), "João Neves", "one unknown word: corrected")
+        XCTAssertEqual(clean("please contact the team", ["contact": "contract"]), "Please contract the team", "an explicit heard-as entry still applies")
+    }
 }

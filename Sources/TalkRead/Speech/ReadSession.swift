@@ -48,6 +48,10 @@ import TalkReadCore
     /// ordinary chunk-to-chunk variance trip the watchdog even at 2x; 1.0 kept up at 2x but could not grow past the
     /// opening chunk at 2.5x; 0.75 kept up at both, with no starvation.
     static let spare = 0.75
+    // ponytail: the fallback's fixed time while it is not loaded (Sol inspection 4 #2), used in place of its warm 0.2 s.
+    // Kokoro's reload after an unload measured 0.8-1.0 s on the M3 Max (23 Oct, English and French, load plus its
+    // warm-up phrase), rounded up; measure per engine if another fallback is added.
+    static let fallbackColdLoad = 1.5
 
     private let engines: Engines
     private let lexicon: [String: String]
@@ -67,6 +71,9 @@ import TalkReadCore
     // ponytail: seeded from the R2 run of 23 Oct (Kokoro .legacy, M3 Max: 6.4 s of work for about 2,000 spoken
     // characters, first chunk 0.2 s), rounded up; replaced by measurement once the fallback speaks.
     private var fallbackSecondsPerChar = 0.004
+    /// `engines.unloads` when the fallback last finished preparing: it is warm only while nothing has unloaded since.
+    private var fallbackPreparedAt: Int?
+    private var fallbackWarming: Date?
 
     /// `fallback`: the Kokoro voice of the same language the read switches to if `voice`'s engine cannot keep up (V3).
     init(text: String, capture: Capture?, voice: Voice, rate: Float, startToken: Int, engines: Engines, lexicon: [String: String], fallback: Voice? = nil) {
@@ -94,11 +101,7 @@ import TalkReadCore
 
     func start() {
         startedAt = Date()
-        if let fallback, engines.engine(for: voice).isSlow {
-            // Warm now, so a switch costs one Kokoro chunk, not a model load.
-            let engine = engines.engine(for: fallback)
-            Task { do { try await engine.prepare(voice: fallback.id) } catch { Log.write("read: fallback warm-up failed: \(error)") } }
-        }
+        warmFallback()
         restart(from: startToken)
         // Queued behind the producer, so the engine starts while the first chunk is synthesised off the main actor;
         // skipped when the read already finished (nothing speakable) or was paused (nothing would stop the engine).
@@ -115,6 +118,7 @@ import TalkReadCore
     func resume() {
         guard state == .paused else { return }
         userPaused = false
+        warmFallback()   // a long pause may have let the idle timer unload it
         if needsRestart {
             restart(from: currentToken ?? startToken)
         } else if chunkEnds.isEmpty {
@@ -264,7 +268,8 @@ import TalkReadCore
         if opening { return slowChunk(from: next, limit: Self.openingChars(rate: player.rate), fill: 10) }   // the buffer: fill it
         // Paused (nothing drains) or nothing measured yet: the largest chunk; the watchdog covers a later resume.
         guard player.isPlaying, let spc = slowSecondsPerChar else { return slowChunk(from: next, limit: Self.slowChars) }
-        let room = (bufferedSeconds - Self.spare - Self.chunkOverhead) / (spc + fallbackSecondsPerChar)   // spoken characters that fit
+        let fixed = Self.spare + fallbackFixed - 0.2   // `spare` counts the warm fallback's 0.2 s
+        let room = (bufferedSeconds - fixed - Self.chunkOverhead) / (spc + fallbackSecondsPerChar)   // spoken characters that fit
         var limit = min(Int(room), Self.slowChars)
         // ponytail: each try re-chunks the rest of the text (linear in it, about 1 ms per 10k characters); a token
         // window if 100k-character reads ever show it.
@@ -310,12 +315,11 @@ import TalkReadCore
         let id = effectiveVoice.id
         let started = Date()
         let work = Task { do { box.value = .success(try await engine.synthesize(spoken, voice: id)) } catch { box.value = .failure(error) } }
-        let fallbackTime = 0.2 + fallbackSecondsPerChar * Double(spoken.utf16.count)
         while box.value == nil {
             if gen != generation || Task.isCancelled { work.cancel(); return nil }
             // ponytail: 20 ms polling (the plan's 100 ms deadline check, five times as often); a continuation race if it
-            // ever shows in a profile.
-            if player.isPlaying, bufferedSeconds < fallbackTime + 0.3 {
+            // ever shows in a profile. The fallback's time is re-read each pass: it drops once its warm-up finishes.
+            if player.isPlaying, bufferedSeconds < fallbackFixed + fallbackSecondsPerChar * Double(spoken.utf16.count) + 0.3 {
                 work.cancel()
                 Log.write(String(format: "read: abandoned a %d-character chunk in flight, %.2f s buffered", spoken.utf16.count, bufferedSeconds))
                 useFallback(keepUpReason)
@@ -336,20 +340,45 @@ import TalkReadCore
         }
     }
 
+    /// Prepares the fallback of a slow-engine read unless it is still warm (at start, and on resume after a long pause),
+    /// so a switch costs one Kokoro chunk, not a model load.
+    private func warmFallback() {
+        guard let fallback, engines.engine(for: voice).isSlow, fallbackPreparedAt != engines.unloads, fallbackWarming == nil else { return }
+        let engine = engines.engine(for: fallback), unloads = engines.unloads
+        fallbackWarming = Date()
+        Task {
+            defer { fallbackWarming = nil }
+            do {
+                try await engine.prepare(voice: fallback.id)
+                if engines.unloads == unloads { fallbackPreparedAt = unloads }   // an unload during the load undoes it
+            } catch { Log.write("read: fallback warm-up failed: \(error)") }
+        }
+    }
+
+    /// The fallback's fixed time for a chunk: 0.2 s once prepared since the last unload (the system voice needs none),
+    /// else what is left of its load since the warm-up began (all of it when none is running).
+    // ponytail: a load slower than `fallbackColdLoad` counts as warm once that time has passed; track the warm-up's own
+    // completion if first-launch loads (8-14 s) ever coincide with a hand-over.
+    private var fallbackFixed: Double {
+        guard fallback != nil, fallbackPreparedAt != engines.unloads else { return 0.2 }
+        return max(0.2, Self.fallbackColdLoad - (fallbackWarming.map { Date().timeIntervalSince($0) } ?? 0))
+    }
+
     private var fallbackName: String { (fallback?.engine ?? .system) == .neural ? "Kokoro" : "the system voice" }
     private var keepUpReason: String { "Switched to \(fallbackName) to keep up at \(String(format: "%g", player.rate))×" }
 
-    /// The rest of the read uses the fallback (the system voice when none was given); queued audio and timings stay.
+    /// The rest of the read uses the fallback (the system voice of the read's language when none was given); queued
+    /// audio and timings stay.
     private func useFallback(_ why: String) {
-        let to = fallback ?? Voice(id: "", name: "System", accent: "", gender: "", engine: .system, installed: true, language: voice.language)
+        let to = fallback ?? systemVoice
         guard effectiveVoice != to else { return }
         effectiveVoice = to
         fallbackReason = why
         Log.write("read: \(why)")
     }
 
-    /// The current engine; a neural failure (bad audio, model error) retries the chunk once with the system voice so
-    /// reading never stops silently.
+    /// The current engine; a neural failure (bad audio, model error) retries the chunk once with the system voice of the
+    /// read's language so reading never stops silently.
     private func synthesize(_ speakable: String) async throws -> SynthChunk {
         guard speakable.contains(where: { $0.isLetter || $0.isNumber }) else {
             return SynthChunk(samples: [], sampleRate: Player.sampleRate, words: [])   // e.g. a chunk that was only a URL
@@ -358,9 +387,16 @@ import TalkReadCore
         do {
             return try await engine.synthesize(speakable, voice: effectiveVoice.id)
         } catch let error where engine.kind == .neural && !(error is CancellationError) {
-            Log.write("read: neural voice failed (\(error.localizedDescription)); retrying the chunk with the system voice")
-            return try await engines.system.synthesize(speakable, voice: "")
+            let retry = systemVoice
+            Log.write("read: neural voice failed (\(error.localizedDescription)); retrying the chunk with \(retry.name)")
+            return try await engines.system.synthesize(speakable, voice: retry.id)
         }
+    }
+
+    /// The installed system voice of the read's language (French stays French, Sol inspection 4 #3); "" (the best English
+    /// voice) only if that language has none.
+    private var systemVoice: Voice {
+        SystemEngine.voice(language: voice.language) ?? Voice(id: "", name: "System", accent: "", gender: "", engine: .system, installed: true, language: voice.language)
     }
 
     private func firstAudio() {

@@ -7,7 +7,8 @@
 // 0.3.0 (V-A): `--voice qwen.<id> [--aligner <Parakeet v3 dir>]` is the timing run on Qwen3 in its own chunk sizes, judged
 // against the acoustic onset check (English and French); `--voice qwen.<id> --long [--rate 2.5]` the 60 s sustained read
 // with first audio, starvations, memory and GPU figures (V3, V7); `--fake-slow` drives slow and fast fake engines through
-// real sessions and Players (fallback boundary, mid-chunk rate change, cancellation, unload).
+// real sessions and Players (fallback boundary, mid-chunk rate change, cancellation, unload); `--voice qwen.<id> --cancel`
+// cancels Qwen3 chunks mid-generation and restarts at once (Sol inspection 4 #1, release build).
 import AVFoundation
 import Darwin
 import FluidAudio
@@ -36,6 +37,7 @@ enum SelfTest {
             try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
             guard await helperChecks() else { return 1 }
             if args.contains("--fake-slow") { return try await fakeSlowRun(text) }
+            if voice.hasPrefix("qwen."), args.contains("--cancel") { return try await qwenCancelRun(text, voice: voice, aligner: aligner) }
             if voice.hasPrefix("qwen."), args.contains("--long") {
                 return try await qwenLongRun(text, voice: voice, rate: value("--rate").flatMap(Float.init) ?? 2.5, aligner: aligner)
             }
@@ -380,9 +382,57 @@ enum SelfTest {
         return pass ? 0 : 1
     }
 
+    /// Sol inspection 4 #1: a Qwen3 chunk cancelled while it generates stops within about a decode step, keeps the engine
+    /// busy until the dependency's generation has really ended, and never overlaps the next chunk's generation
+    /// (`QwenEngine.generations` counts the dependency's own tasks). Round 1 cancels alone; rounds 2-4 start the next
+    /// chunk the moment they cancel.
+    @MainActor private static func qwenCancelRun(_ text: String, voice: String, aligner: Aligner) async throws -> Int32 {
+        let qwen = QwenEngine(aligner: aligner)
+        guard await qwen.voices().first(where: { $0.id == voice })?.installed == true else { print("Qwen3 or the aligner is not installed"); return 1 }
+        try await qwen.prepare(voice: voice)
+        func now() -> Int { QwenEngine.generations.withLock { $0.now } }
+        var pass = true
+        func check(_ what: String, _ ok: Bool) { print("\(ok ? "ok" : "FAILED"): \(what)"); pass = pass && ok }
+        for round in 1 ... 4 {
+            QwenEngine.generations.withLock { $0.peak = $0.now }
+            let first = Task { try await qwen.synthesize(String(text.prefix(300)), voice: voice) }
+            while now() == 0 { try await Task.sleep(nanoseconds: 1_000_000) }
+            try await Task.sleep(nanoseconds: 500_000_000)   // well inside a chunk that takes seconds
+            if round == 1 {
+                // Spins off the main actor (a gap may last a millisecond): `isBusy` read before the count, so a running
+                // generation seen after an idle engine really ran while the engine said idle.
+                let watch = Task.detached { () -> (idle: Bool, ended: Date) in
+                    var idle = false
+                    while true {
+                        let busy = qwen.isBusy
+                        if QwenEngine.generations.withLock({ $0.now }) == 0 { return (idle, Date()) }
+                        if !busy { idle = true }
+                    }
+                }
+                let cancelled = Date()
+                first.cancel()
+                let (idle, ended) = await watch.value
+                check(String(format: "cancel alone: generation ended %.0f ms after the cancel; engine busy until then: %@",
+                             ended.timeIntervalSince(cancelled) * 1000, idle ? "no" : "yes"), !idle && ended.timeIntervalSince(cancelled) <= 0.3)
+            } else {
+                let cancelled = Date()
+                first.cancel()
+                let next = try await qwen.synthesize("And here is the next chunk.", voice: voice)
+                let peak = QwenEngine.generations.withLock { $0.peak }
+                check(String(format: "restart %d: at most %d generation(s) at once; next chunk %.2f s of audio, ready %.0f ms after the cancel",
+                             round - 1, peak, Double(next.samples.count) / next.sampleRate, Date().timeIntervalSince(cancelled) * 1000),
+                      peak == 1 && !next.samples.isEmpty)
+            }
+            while qwen.isBusy || now() > 0 { try await Task.sleep(nanoseconds: 10_000_000) }
+        }
+        print("Qwen3 cancel/restart: \(pass ? "PASS" : "FAIL") (never two generations at once, busy until generation ended, cancel within 300 ms)")
+        return pass ? 0 : 1
+    }
+
     /// Slow and fast fake engines through real sessions and Players at volume 0 (PLAN 0.3.0 Sol revision 10): the budget
     /// hand-over at 2.5x, the watchdog after a 1x -> 3x change in mid-chunk, a slow engine that keeps up at 2.5x, then
-    /// cancellation, busy and unload. Every finished read must have every token once, in order, and no starvation.
+    /// cancellation, busy and unload, a fallback left cold by an idle unload, French system fallbacks. Every finished read
+    /// must have every token once, in order, and no starvation.
     @MainActor private static func fakeSlowRun(_ fixture: String) async throws -> Int32 {
         var checks: [(String, Bool)] = []
         func check(_ what: String, _ ok: Bool) { checks.append((what, ok)); if !ok { print("FAILED: \(what)") } }
@@ -398,12 +448,12 @@ enum SelfTest {
             while !condition(), Date() < end { try? await Task.sleep(nanoseconds: 20_000_000) }
         }
         /// One read with fresh fakes; `during` runs while it plays. Returns the session and the slow fake.
-        func read(_ text: String, rate: Float, slowRTF: Double, timeout: Double = 40, engines given: Engines? = nil,
-                  during: (ReadSession, FakeEngine) async -> Void = { _, _ in }) async -> (ReadSession, FakeEngine, Engines) {
+        func read(_ text: String, rate: Float, slowRTF: Double, timeout: Double = 40, engines given: Engines? = nil, voice: Voice = slowVoice,
+                  fallback: Voice? = fastVoice, during: (ReadSession, FakeEngine) async -> Void = { _, _ in }) async -> (ReadSession, FakeEngine, Engines) {
             let engines = given ?? Engines(neural: FakeEngine(kind: .neural, realTime: 60), system: SystemEngine(),
                                            qwen: FakeEngine(kind: .qwen, realTime: slowRTF))
             let slow = engines.qwen as! FakeEngine
-            let s = ReadSession(text: text, capture: nil, voice: slowVoice, rate: rate, startToken: 0, engines: engines, lexicon: [:], fallback: fastVoice)
+            let s = ReadSession(text: text, capture: nil, voice: voice, rate: rate, startToken: 0, engines: engines, lexicon: [:], fallback: fallback)
             s.player.volume = 0
             s.start()
             await during(s, slow)
@@ -474,9 +524,45 @@ enum SelfTest {
         describe("4 read after unload", s, slow)
         check("4: the next read prepares (reloads) first and finishes", slow.prepares == preparesBefore + 1 && slow.unloadedSynths == 0 && whole(s))
 
+        // 5. Sol inspection 4 #2: the idle timer unloads everything during a long pause, so the Kokoro fallback is cold
+        // (a 1.5 s load here). Resuming re-warms it; when the engine then falls behind (as Qwen3 reloading would) at 2x,
+        // the watchdog's hand-over costs one warm chunk, not a load in front of an empty buffer.
+        let coldFast = FakeEngine(kind: .neural, realTime: 60, coldLoad: 1.5)
+        engines = Engines(neural: coldFast, system: SystemEngine(), qwen: FakeEngine(kind: .qwen, realTime: 6))
+        (s, slow, _) = await read(excerpt(400), rate: 1, slowRTF: 6, engines: engines) { s, slow in
+            await until(10) { coldFast.loaded && s.state == .playing && s.player.queuedUntil - s.player.currentTime >= 8 }
+            s.pause()
+            engines.unloadAll()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            slow.realTime = 0.2
+            s.resume()
+            s.setRate(2)
+        }
+        describe("5 cold fallback after an idle unload", s, slow)
+        check("5: read finished, every token once in order", whole(s))
+        check("5: resuming prepared the unloaded fallback again", coldFast.prepares == 2)
+        check("5: handed over to the fallback, contiguous", s.effectiveVoice == fastVoice && handover(s))
+        check("5: no starvation", s.player.starvations == 0)
+
+        // 6. Sol inspection 4 #3: French stays French. Without a Kokoro fallback a French slow read hands over to a French
+        // system voice, and a failing French Kokoro chunk is retried with one (never the English default, id "").
+        func french(_ id: String) -> Bool { AVSpeechSynthesisVoice(identifier: id)?.language.hasPrefix("fr") == true }
+        let frSlow = Voice(id: "fake.slow", name: "Fake slow", accent: "", gender: "Female", engine: .qwen, installed: true, language: "fr")
+        var system = FakeEngine(kind: .system, realTime: 60)
+        (s, slow, _) = await read(excerpt(450), rate: 2.5, slowRTF: 1.5, engines: Engines(neural: FakeEngine(kind: .neural, realTime: 60), system: system,
+                                  qwen: FakeEngine(kind: .qwen, realTime: 1.5)), voice: frSlow, fallback: nil)
+        describe("6 French without Kokoro", s, slow)
+        check("6: a French slow read hands over to a French system voice (\(s.effectiveVoice.name))",
+              whole(s) && french(s.effectiveVoice.id) && !system.voiceIDs.isEmpty && system.voiceIDs.allSatisfy(french))
+        system = FakeEngine(kind: .system, realTime: 60)
+        let frKokoro = Voice(id: "ff_fake", name: "Fake Siwis", accent: "", gender: "Female", engine: .neural, installed: true, language: "fr")
+        (s, _, _) = await read(excerpt(200), rate: 2.5, slowRTF: 4, engines: Engines(neural: FakeEngine(kind: .neural, realTime: 60, failing: true),
+                               system: system, qwen: FakeEngine(kind: .qwen, realTime: 4)), voice: frKokoro, fallback: nil)
+        check("6: a failing French Kokoro chunk is retried with a French system voice", whole(s) && !system.voiceIDs.isEmpty && system.voiceIDs.allSatisfy(french))
+
         let pass = checks.allSatisfy(\.1)
         print("fake-engine checks: \(checks.filter(\.1).count)/\(checks.count) passed")
-        print("V3 fake engines: \(pass ? "PASS" : "FAIL") (fallback boundary, mid-chunk rate change, keep-up, cancellation, unload; 0 starvations, no duplicated or skipped tokens)")
+        print("V3 fake engines: \(pass ? "PASS" : "FAIL") (fallback boundary, mid-chunk rate change, keep-up, cancellation, unload, cold fallback after an idle unload, French system fallback; 0 starvations, no duplicated or skipped tokens)")
         return pass ? 0 : 1
     }
 
@@ -538,6 +624,18 @@ enum SelfTest {
         check(Aligner.keptSamples(tone + tone, sampleRate: 24_000, lastMatchedEnd: 0.5) == 48_000, "stop guard: audible tail never cut")
         check(Aligner.keptSamples(tone + quiet, sampleRate: 24_000, lastMatchedEnd: 0) == 27_600, "stop guard: no matched word, silence still trimmed")
 
+        // Sol inspection 4 #4 through the real spell checker: common words stay, names and misspellings are still corrected.
+        let v = ["contract": "contract", "Footballco": "Footballco", "Nkanabassi": "Nkanabassi", "Dembélé": "Dembélé", "Vitinha": "Vitinha",
+                 "Donoghue": "Donoghue", "Lord Atkin": "Lord Atkin", "João Neves": "João Neves"]
+        for (said, want) in [("please contact the team", "Please contact the team"), ("email the footbalco team", "Email the Footballco team"),
+                             ("This is Junyung Kanabasi from Footbalko.", "This is Junyung Nkanabassi from Footballco."),
+                             ("Dembele and Vitinho scored", "Dembélé and Vitinha scored"),
+                             ("In Donahue vs. Stevenson, Lord Atkins set out", "In Donoghue vs. Stevenson, Lord Atkin set out"),
+                             ("with Joan Nevis behind them", "With João Neves behind them")] {
+            let got = await MainActor.run { Cleanup.apply(said, vocabulary: v, removeFillers: true, isWord: DictationController.isCommonWord) }
+            check(got == want, "near miss with the spell checker: \"\(said)\" gave \"\(got)\"")
+        }
+
         // Downloader (PLAN 0.3.0 decision 6): Hugging Face hosts over https only; staged, size-checked, moved.
         for (u, want) in [("https://huggingface.co/x", true), ("https://cdn-lfs.huggingface.co/x", true), ("https://cas-bridge.xethub.hf.co/x", true),
                           ("http://huggingface.co/x", false), ("https://evilhuggingface.co/x", false), ("https://huggingface.co.evil.com/x", false),
@@ -554,12 +652,26 @@ enum SelfTest {
             try await ModelDownload.fetch([("a.txt", 5), ("sub/b.bin", 1000)], from: src, into: dst) { _ in }
             check(FileManager.default.fileExists(atPath: dst.appendingPathComponent("sub/b.bin").path)
                   && !FileManager.default.fileExists(atPath: dl.appendingPathComponent("Models/.model.partial").path), "download: staged then moved")
+            // Sol inspection 4 #5: no staging folder (gigabytes for Qwen3) survives a failure or a cancel.
+            let staging = dl.appendingPathComponent("Models/.model.partial")
             do {
-                try await ModelDownload.fetch([("a.txt", 6)], from: src, into: dst) { _ in }
+                try await ModelDownload.fetch([("a.txt", 5), ("sub/b.bin", 999)], from: src, into: dst) { _ in }
                 check(false, "download: a size mismatch must fail")
             } catch {
                 check(FileManager.default.fileExists(atPath: dst.appendingPathComponent("sub/b.bin").path), "download: a failed fetch leaves the installed copy")
+                check(!FileManager.default.fileExists(atPath: staging.path), "download: a size mismatch leaves no staging folder")
             }
+            do {
+                try await ModelDownload.fetch([("a.txt", 5), ("missing.bin", 1)], from: src, into: dst) { _ in }
+                check(false, "download: a missing file must fail")
+            } catch { check(!FileManager.default.fileExists(atPath: staging.path), "download: a failed transfer leaves no staging folder") }
+            let cancelled = Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                try await ModelDownload.fetch([("a.txt", 5), ("sub/b.bin", 1000)], from: src, into: dst) { _ in }
+            }
+            let threw = (try? await cancelled.value) == nil
+            check(threw && !FileManager.default.fileExists(atPath: staging.path),
+                  "download: a cancelled download fails and leaves no staging folder")
         } catch { check(false, "download from file URLs: \(error)") }
         try? FileManager.default.removeItem(at: dl)
         return ok
@@ -642,17 +754,23 @@ private struct Recogniser {
     }
 }
 
-/// A test engine `realTime` times faster than real time (a cancellable sleep, plus 0.15 s per chunk for a slow kind),
-/// 15 characters of speech per second of silent audio, words at their exact speakable ranges. Records every call;
-/// state behind `lock`.
+/// A test engine `realTime` times faster than real time (a cancellable sleep, plus 0.15 s per chunk for a non-Kokoro
+/// kind, plus `coldLoad` when called unloaded), 15 characters of speech per second of silent audio, words at their exact
+/// speakable ranges; `failing` throws instead. Records every call; state behind `lock`.
 private final class FakeEngine: SpeechEngine, @unchecked Sendable {
     let kind: EngineKind
-    let realTime: Double
+    let coldLoad: Double, failing: Bool
     private let lock = NSLock()
-    private var _texts: [String] = [], _cancelled = 0, _prepares = 0, _unloads = 0, _inFlight = 0, _loaded = false, _unloadedSynths = 0
+    private var _texts: [String] = [], _voiceIDs: [String] = [], _cancelled = 0, _prepares = 0, _unloads = 0, _inFlight = 0, _loaded = false,
+                _unloadedSynths = 0, _realTime: Double
 
-    init(kind: EngineKind, realTime: Double) { self.kind = kind; self.realTime = realTime }
+    init(kind: EngineKind, realTime: Double, coldLoad: Double = 0, failing: Bool = false) {
+        self.kind = kind; _realTime = realTime; self.coldLoad = coldLoad; self.failing = failing
+    }
 
+    /// Settable mid-read: a lower value makes the engine fall behind from its next chunk.
+    var realTime: Double { get { lock.withLock { _realTime } } set { lock.withLock { _realTime = newValue } } }
+    var voiceIDs: [String] { lock.withLock { _voiceIDs } }
     var texts: [String] { lock.withLock { _texts } }
     var calls: Int { texts.count }
     var lastText: String { texts.last ?? "" }
@@ -665,15 +783,20 @@ private final class FakeEngine: SpeechEngine, @unchecked Sendable {
     var isBusy: Bool { lock.withLock { _inFlight > 0 } }
 
     func voices() async -> [Voice] { [] }
-    func prepare(voice: String) async throws { lock.withLock { _prepares += 1; _loaded = true } }
+    func prepare(voice: String) async throws {
+        if lock.withLock({ _prepares += 1; return !_loaded }) { try await Task.sleep(nanoseconds: UInt64(coldLoad * 1e9)) }
+        lock.withLock { _loaded = true }
+    }
     func unload() { lock.withLock { _unloads += 1; _loaded = false } }
 
     func synthesize(_ text: String, voice: String) async throws -> SynthChunk {
-        lock.withLock { _texts.append(text); _inFlight += 1; if !_loaded { _unloadedSynths += 1 } }
+        let cold = lock.withLock { _texts.append(text); _voiceIDs.append(voice); _inFlight += 1; if !_loaded { _unloadedSynths += 1 }; return !_loaded }
         defer { lock.withLock { _inFlight -= 1 } }
+        if failing { throw SpeechError.badAudio }
         let seconds = Double(text.utf16.count) / 15
-        let work = (kind == .neural ? 0 : 0.15) + seconds / realTime   // a slow engine's fixed cost per chunk, as Qwen3's
+        let work = (cold ? coldLoad : 0) + (kind == .neural ? 0 : 0.15) + seconds / realTime   // a slow engine's fixed cost per chunk, as Qwen3's
         do { try await Task.sleep(nanoseconds: UInt64(work * 1e9)) } catch { lock.withLock { _cancelled += 1 }; throw error }
+        if cold { lock.withLock { _loaded = true } }
         let tokens = TextKit.tokenize(text)
         let words = tokens.enumerated().map { i, t in
             SpokenWord(text: t.text, start: seconds * Double(i) / Double(tokens.count), end: seconds * Double(i + 1) / Double(tokens.count), range: t.range)

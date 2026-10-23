@@ -6,8 +6,9 @@ public enum Cleanup {
     /// Order: spoken web addresses, fillers, spoken punctuation, spacing around punctuation, numbers, lists,
     /// vocabulary, vocabulary near misses, capitalisation, double spaces, trim. URLs, email addresses and vocabulary
     /// replacements are swapped for placeholders while the other rules run, so nothing inside them is altered (a
-    /// vocabulary entry like "iOS" is not capitalised at the start of a sentence).
-    public static func apply(_ raw: String, vocabulary: [String: String], removeFillers: Bool) -> String {
+    /// vocabulary entry like "iOS" is not capitalised at the start of a sentence). `isWord` (the app's spell checker) keeps
+    /// real words out of near-miss correction; explicit vocabulary entries always apply.
+    public static func apply(_ raw: String, vocabulary: [String: String], removeFillers: Bool, isWord: (String) -> Bool = { _ in false }) -> String {
         var protected: [String] = []
         func hold(_ text: String) -> String {
             protected.append(text)
@@ -31,7 +32,7 @@ public enum Cleanup {
         text = lists(text)
 
         text = replaceVocabulary(in: text, vocabulary: vocabulary, hold: hold)
-        text = correctTerms(in: text, terms: terms(vocabulary), hold: hold)
+        text = correctTerms(in: text, terms: terms(vocabulary), isWord: isWord, hold: hold)
         text = capitalised(text)
 
         text = text.replacingOccurrences(of: "[ \\t]{2,}", with: " ", options: .regularExpression)

@@ -111,10 +111,9 @@ extension Cleanup {
     /// "Nkanabassi", "Dembele" → "Dembélé". Letters are compared with case and accents ignored, over windows of one word
     /// fewer to one more than the term; a window within a quarter of the term's letters is replaced, closest first.
     /// Terms under five letters only match exactly, and a window that is a shorter piece of the term ("football" in
-    /// "Footballco") is left alone.
-    /// ponytail: no dictionary check, so a real word within a quarter of a long vocabulary word is replaced; pass an
-    /// isWord check from the app (NSSpellChecker) if that ever bites.
-    static func correctTerms(in text: String, terms: [String], hold: (String) -> String) -> String {
+    /// "Footballco") is left alone, as is one whose every word `isWord` knows unless only case or accents differ:
+    /// "contact" is meant even when "contract" is taught (Sol inspection 4 #4).
+    static func correctTerms(in text: String, terms: [String], isWord: (String) -> Bool, hold: (String) -> String) -> String {
         guard !terms.isEmpty, let regex = try? NSRegularExpression(pattern: "[\\p{L}\\p{N}][\\p{L}\\p{N}'’-]*") else { return text }
         let ns = text as NSString
         let words = regex.matches(in: text, range: NSRange(location: 0, length: ns.length)).map(\.range)
@@ -133,7 +132,9 @@ extension Cleanup {
                     let key = folded(piece)
                     if key.count < target.count, String(target).contains(String(key)) { continue }
                     let d = AutoLearn.distance(key, target)
-                    if d <= target.count / 4 { found.append((range, term, d)) }
+                    if d <= target.count / 4, d == 0 || !words[start..<start + width].allSatisfy({ isWord(ns.substring(with: $0)) }) {
+                        found.append((range, term, d))
+                    }
                 }
             }
         }

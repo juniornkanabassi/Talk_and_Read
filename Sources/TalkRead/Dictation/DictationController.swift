@@ -261,9 +261,17 @@ enum DictationError: LocalizedError, Equatable {
 
     private func clean(_ raw: String) async -> String {
         let settings = Settings.load()
-        var text = Cleanup.apply(raw, vocabulary: vocabulary(), removeFillers: settings.removeFillers)
+        var text = Cleanup.apply(raw, vocabulary: vocabulary(), removeFillers: settings.removeFillers, isWord: Self.isCommonWord)
         if britishSpelling { text = BritishSpelling.apply(text) }
         return settings.polishWithAppleIntelligence ? await Polish.polish(text) : text
+    }
+
+    /// In the British or American dictionary in lower case, so names ("Donahue", "Nevis") are not common words: near-miss
+    /// vocabulary correction leaves common words alone (Sol inspection 4 #4).
+    static func isCommonWord(_ word: String) -> Bool {
+        ["en_GB", "en_US"].contains {
+            NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0, language: $0, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
+        }
     }
 
     private func vocabulary() -> [String: String] {
