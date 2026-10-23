@@ -27,10 +27,11 @@ struct Command {
 
 let commands: [Command] = [
     Command(name: "status", summary: "Report reading, dictation, model and permission state.", example: "status"),
-    Command(name: "voices", summary: "List the available voices and whether each is installed.", example: "voices"),
-    Command(name: "speak", summary: "Read text aloud. Use - to read the text from standard input.", example: "speak \"Hello there\" --voice bf_emma --speed 1.2",
+    Command(name: "voices", summary: "List the voices with their model (Kokoro, Qwen3), language (en, fr), gender and whether each is installed, and the current English and French voices.", example: "voices"),
+    Command(name: "speak", summary: "Read text aloud: French text with the French voice, anything else with the English voice. Use - to read the text from standard input.",
+            example: "speak \"Hello there\" --voice bf_emma --speed 1.2",
             params: [Param(name: "text", kind: .string, help: "Text to read.", required: true, positional: true, variadic: true),
-                     Param(name: "voice", kind: .string, help: "Voice id, for example af_heart or bf_emma."),
+                     Param(name: "voice", kind: .string, help: "Voice id for this read only, for example af_heart, qwen.us_warm or ff_siwis; overrides the language choice."),
                      Param(name: "speed", kind: .number, help: "Speed from 0.5 to 3.0.")], forceable: true),
     Command(name: "read-selection", summary: "Read the text currently selected in the frontmost app.", example: "read-selection", forceable: true),
     Command(name: "read-file", summary: "Read a document (PDF, TXT, MD, RTF, DOCX, HTML, EPUB) aloud.", example: "read-file ~/Documents/notes.pdf",
@@ -42,8 +43,9 @@ let commands: [Command] = [
             params: [Param(name: "sentences", kind: .integer, help: "Sentences to skip; default 1.", positional: true, defaultValue: "1")], forceable: true),
     Command(name: "speed", summary: "Set the reading speed, 0.5 to 3.0.", example: "speed 1.5",
             params: [Param(name: "value", kind: .number, help: "Speed from 0.5 to 3.0.", required: true, positional: true)], forceable: true),
-    Command(name: "voice", summary: "Switch the reading voice.", example: "voice bf_emma",
-            params: [Param(name: "id", kind: .string, help: "Voice id from `talkread voices`.", required: true, positional: true)], forceable: true),
+    Command(name: "voice", summary: "Choose the reading voice from the next read on. A French voice (ff_siwis, qwen.fr_warm) becomes the French voice; any other the English voice.",
+            example: "voice qwen.us_warm",
+            params: [Param(name: "id", kind: .string, help: "Voice id from `talkread voices`, for example af_heart, bf_emma, qwen.us_warm, ff_siwis or qwen.fr_warm.", required: true, positional: true)], forceable: true),
     Command(name: "dictate-start", summary: "Start dictating from the microphone.", example: "dictate-start", forceable: true),
     Command(name: "dictate-stop", summary: "Stop dictating and insert the text where the cursor is.", example: "dictate-stop", forceable: true),
     Command(name: "dictation-last", summary: "Print the most recent dictation.", example: "dictation-last"),
@@ -54,11 +56,11 @@ let commands: [Command] = [
                      Param(name: "show", kind: .string, help: "1 brings the main window forward; default 0 (no focus change).", choices: ["0", "1"]),
                      Param(name: "read", kind: .string, help: "1 also starts reading it aloud; default 0.", choices: ["0", "1"])], forceable: true),
     Command(name: "settings-get", summary: "Read one setting, or all of them.", example: "settings-get speed",
-            params: [Param(name: "key", kind: .string, help: "Setting name, for example speed, voiceID or readShortcut. Shortcuts come back as JSON (keyCode, modifiers, display).", positional: true)]),
+            params: [Param(name: "key", kind: .string, help: "Setting name, for example speed, voiceID, frenchVoiceID, fallbackVoiceID or readShortcut. Shortcuts come back as JSON (keyCode, modifiers, display).", positional: true)]),
     Command(name: "settings-set", summary: "Change a setting.", example: "settings-set speed 1.25",
-            params: [Param(name: "key", kind: .string, help: "Setting name. Shortcuts (the ...Shortcut keys) change in the Settings window only.", required: true, positional: true),
+            params: [Param(name: "key", kind: .string, help: "Setting name. voiceID takes an English voice, frenchVoiceID a French one, fallbackVoiceID an English Kokoro voice (used when a slower model falls behind). Shortcuts (the ...Shortcut keys) change in the Settings window only.", required: true, positional: true),
                      Param(name: "value", kind: .string, help: "New value.", required: true, positional: true)], forceable: true),
-    Command(name: "models", summary: "Show speech model status, or download the models (about 1 GB).", example: "models download",
+    Command(name: "models", summary: "Show speech model status, including the optional Qwen3, word timing and French downloads, or download the Kokoro voice and dictation models (about 1 GB). The optional ones download only from the Models page, after a click.", example: "models download",
             params: [Param(name: "action", kind: .string, help: "status or download; default status.", positional: true,
                            choices: ["status", "download"], defaultValue: "status")])
 ]
@@ -100,11 +102,13 @@ func render(_ response: ControlResponse, command: String) {
     let data = (response.data ?? [:]).filter { $0.key != "replayed" }
     if let text = data["text"]?.stringValue { print(text); return }
     if command == "voices", let voices = data["voices"]?.arrayValue {
+        let english = data["english"]?.stringValue, french = data["french"]?.stringValue
         for v in voices {
             guard let o = v.objectValue, let id = o["id"]?.stringValue else { continue }
-            let rest = ["name", "accent", "gender", "engine"].compactMap { o[$0]?.stringValue }
+            let rest = ["name", "accent", "gender", "model", "language"].compactMap { o[$0]?.stringValue }
             let installed = o["installed"]?.boolValue == false ? " (not installed)" : ""
-            print(([id] + rest).joined(separator: "  ") + installed)
+            let current = id == english ? "  <- English voice" : id == french ? "  <- French voice" : ""
+            print(([id] + rest).joined(separator: "  ") + installed + current)
         }
         return
     }

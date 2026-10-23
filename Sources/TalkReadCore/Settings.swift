@@ -33,7 +33,12 @@ public struct Settings: Codable, Equatable, Sendable {
     public var skipBackwardShortcut = Shortcut(keyCode: 13, modifiers: Shortcut.option, display: "⌥W")
     public var skipForwardShortcut = Shortcut(keyCode: 14, modifiers: Shortcut.option, display: "⌥E")
     public var dictationHoldKey = HoldKey.rightOption
+    /// The English voice (and any text not detected as French). Ids carry the model: `af_heart` (Kokoro), `qwen.us_warm` (Qwen3).
     public var voiceID = "af_heart"
+    /// The voice for text detected as French (PLAN 0.3.0 decision 2).
+    public var frenchVoiceID = "ff_siwis"
+    /// The English Kokoro voice a read switches to when a slower model falls behind (V3); French uses `ff_siwis`.
+    public var fallbackVoiceID = "af_heart"
     public var speed: Float = 2.5                  // 0.5...3.0, step 0.05; Junior's Speechify speed
     public var highlightHex = "#FFD21F"
     public var tintEnabled = true
@@ -64,7 +69,7 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.pasteLastShortcut, &pasteLastShortcut); get(.dictationHoldKey, &dictationHoldKey)
         get(.increaseSpeedShortcut, &increaseSpeedShortcut); get(.decreaseSpeedShortcut, &decreaseSpeedShortcut)
         get(.skipBackwardShortcut, &skipBackwardShortcut); get(.skipForwardShortcut, &skipForwardShortcut)
-        get(.voiceID, &voiceID); get(.speed, &speed); get(.highlightHex, &highlightHex)
+        get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.highlightHex, &highlightHex)
         get(.tintEnabled, &tintEnabled); get(.opacity, &opacity); get(.showMiniPlayer, &showMiniPlayer)
         get(.miniPlayerAutoHideSeconds, &miniPlayerAutoHideSeconds); get(.miniPlayerOrigin, &miniPlayerOrigin)
         get(.subtitlesExpanded, &subtitlesExpanded); get(.useOCRFallback, &useOCRFallback)
@@ -83,7 +88,10 @@ public struct Settings: Codable, Equatable, Sendable {
         s.miniPlayerAutoHideSeconds = miniPlayerAutoHideSeconds.isFinite ? min(60, max(0, miniPlayerAutoHideSeconds)) : 3
         s.unloadAfterMinutes = min(240, max(1, unloadAfterMinutes))
         s.historyLimit = min(5000, max(10, historyLimit))
-        if voiceID.trimmingCharacters(in: .whitespaces).isEmpty { s.voiceID = "af_heart" }
+        let d = Settings()
+        if voiceID.trimmingCharacters(in: .whitespaces).isEmpty { s.voiceID = d.voiceID }
+        if frenchVoiceID.trimmingCharacters(in: .whitespaces).isEmpty { s.frenchVoiceID = d.frenchVoiceID }
+        if fallbackVoiceID.trimmingCharacters(in: .whitespaces).isEmpty { s.fallbackVoiceID = d.fallbackVoiceID }
         if highlightHex.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) == nil { s.highlightHex = "#FFD21F" }
         return s
     }
@@ -141,6 +149,8 @@ public struct Settings: Codable, Equatable, Sendable {
             }
             dictationHoldKey = v
         case "voiceID": voiceID = raw
+        case "frenchVoiceID": frenchVoiceID = raw
+        case "fallbackVoiceID": fallbackVoiceID = raw
         case "speed": speed = Float(try number())
         case "highlightHex":
             guard raw.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) != nil else {

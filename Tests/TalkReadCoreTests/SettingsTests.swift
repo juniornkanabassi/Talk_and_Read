@@ -13,6 +13,8 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(s.readShortcut, Settings.Shortcut(keyCode: 0, modifiers: 1 << 18, display: "⌃A"))
         XCTAssertEqual(s.dictationHoldKey, .rightOption)
         XCTAssertEqual(s.voiceID, "af_heart")
+        XCTAssertEqual(s.frenchVoiceID, "ff_siwis")
+        XCTAssertEqual(s.fallbackVoiceID, "af_heart")
         XCTAssertEqual(s.speed, 2.5)
         XCTAssertEqual(s.highlightHex, "#FFD21F")
         XCTAssertEqual(s.opacity, 0.85)
@@ -48,6 +50,25 @@ final class SettingsTests: XCTestCase {
         var expected = Settings(); expected.voiceID = "bf_emma"; expected.historyLimit = 50
         XCTAssertEqual(s, expected)
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "a readable file is not renamed")
+    }
+
+    func testVoiceIDsFor030() throws {
+        // A 0.2 file (no French or fallback voice, a Qwen3 English voice) gets the defaults for the new keys.
+        try Data(#"{"voiceID":"qwen.us_warm","speed":2.5}"#.utf8).write(to: file)
+        var s = Settings.load(from: file)
+        XCTAssertEqual([s.voiceID, s.frenchVoiceID, s.fallbackVoiceID], ["qwen.us_warm", "ff_siwis", "af_heart"])
+        // Wrongly typed or blank values fall back too.
+        try Data(#"{"frenchVoiceID":7,"fallbackVoiceID":"  "}"#.utf8).write(to: file)
+        s = Settings.load(from: file)
+        XCTAssertEqual([s.frenchVoiceID, s.fallbackVoiceID], ["ff_siwis", "af_heart"])
+        try s.set("frenchVoiceID", to: "qwen.fr_warm")
+        try s.set("fallbackVoiceID", to: "bf_emma")
+        XCTAssertEqual([s.frenchVoiceID, s.fallbackVoiceID], ["qwen.fr_warm", "bf_emma"])
+        try s.save(to: file)
+        XCTAssertEqual(Settings.load(from: file), s)
+        try s.set("frenchVoiceID", to: " ")
+        XCTAssertEqual(s.frenchVoiceID, "ff_siwis", "blank means the default")
+        XCTAssertEqual(Settings().json()["frenchVoiceID"], .string("ff_siwis"))
     }
 
     func testCorruptFileIsRenamedAndDefaultsReturned() throws {
@@ -118,7 +139,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃A"))
         XCTAssertEqual(json["skipForwardShortcut"]?.objectValue, ["keyCode": .number(14), "modifiers": .number(524_288), "display": .string("⌥E")])
         XCTAssertNil(json["miniPlayerOrigin"])
-        XCTAssertEqual(Settings.keys.count, 26)
+        XCTAssertEqual(Settings.keys.count, 28)
         XCTAssertEqual(Set(Settings.chords.map(\.key)).count, 9)
         XCTAssertTrue(Settings.chords.allSatisfy { Settings.keys.contains($0.key) }, "every chord is a settings key")
         XCTAssertTrue(Settings.keys.contains("miniPlayerOrigin"))

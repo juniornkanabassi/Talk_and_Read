@@ -75,12 +75,16 @@ import TalkReadCore
                           AnyView(OnboardingContent(model: model, data: data, onFinish: {}, step: step))))
         }
         let voices = data.voices
-        func player(_ line: KaraokeLine?, _ state: ReadSession.State?, _ status: String, note: String? = nil, expanded: Bool = false) -> AnyView {
+        func player(_ line: KaraokeLine?, _ state: ReadSession.State?, _ status: String, note: String? = nil, expanded: Bool = false,
+                    voiceName: String = "Emma", notice: String? = nil) -> AnyView {
             AnyView(MiniPlayerView(model: model, voices: voices, line: line, state: state, status: status, note: note,
-                                   expanded: .constant(expanded), close: {}).padding(24))
+                                   voiceName: voiceName, notice: notice, expanded: .constant(expanded), close: {}).padding(24))
         }
         shots += [
             ("mini-player", CGSize(width: 488, height: 144), false, player(line, .playing, "")),
+            // V3: the read fell back to Kokoro; the player names the voice speaking and says why.
+            ("mini-player-fallback", CGSize(width: 488, height: 144 + MiniPlayerView.noticeHeight), false,
+             player(line, .playing, "", voiceName: "Heart", notice: "Qwen3 could not keep up at 2.50×, so Kokoro is reading the rest.")),
             ("mini-player-subtitles", CGSize(width: 488, height: 244), false, player(line, .playing, "", expanded: true)),
             ("mini-player-clipboard", CGSize(width: 488, height: 144), false, player(line, .paused, "", note: "Reading clipboard")),
             ("mini-player-preparing", CGSize(width: 488, height: 144), false, player(nil, .preparing, "Preparing voice… 34 %")),
@@ -116,12 +120,36 @@ import TalkReadCore
                 if let key = focus.active { focus.end(key) }
             }
         }
+        // The Voices page (V1, V2, V5) at full height, English and French sections: Kokoro chosen, Qwen3 chosen, and Qwen3
+        // chosen but not downloaded (its size and a Download button; another voice reads meanwhile).
+        var notDownloaded = data
+        notDownloaded.voices = data.voices.map { v in var v = v; if v.engine == .qwen { v.installed = false }; return v }
+        notDownloaded.models = sampleModels(qwen: false)
+        let voicePages: [(String, String, String, ViewData)] = [
+            ("voices-kokoro", "af_heart", "ff_siwis", data),
+            ("voices-qwen", "qwen.us_warm", "qwen.fr_warm", data),
+            ("voices-qwen-not-downloaded", "qwen.us_calm", "ff_siwis", notDownloaded),
+        ]
+        for (name, english, french, pageData) in voicePages {
+            model.settings.voiceID = english
+            model.settings.frenchVoiceID = french
+            for dark in [false, true] {
+                let url = output.appendingPathComponent("\(name)-\(dark ? "dark" : "light").png")
+                let page = AnyView(VoicesPane(model: model, data: pageData))
+                if render(page, size: CGSize(width: 820, height: 1060), titled: true, dark: dark, to: url) { written += 1 } else { failures += 1; print("FAIL render \(url.lastPathComponent)") }
+            }
+        }
+        model.settings.voiceID = "bf_emma"
+        model.settings.frenchVoiceID = TalkReadCore.Settings().frenchVoiceID
         print("rendered \(written) PNGs to \(output.path)")
 
         failures += checks(tokens: tokens, line: line)
 
+        let menuBar = MenuBarMenu(model: model, openMain: {}, openSettings: {}, openOnboarding: {})
         print("\nMenu bar menu (stub model state):")
-        for row in MenuBarMenu(model: model, openMain: {}, openSettings: {}, openOnboarding: {}).dump() { print("  " + row) }
+        for row in menuBar.dump() { print("  " + row) }
+        print("\nVoice submenu (sample voices, English af_heart, French ff_siwis):")
+        for row in menuBar.dump(menuBar.voiceMenu(data.voices, english: "af_heart", french: "ff_siwis")) { print("  " + row) }
         print(failures == 0 ? "PASS ui self-test" : "FAIL ui self-test: \(failures) failing")
         return failures == 0 ? 0 : 1
     }
@@ -234,24 +262,89 @@ import TalkReadCore
         let ticked = items.filter(\.on).map(\.value)
         check(items.map(\.value) == [1, 1.5, 2, 2.5, 3] && ticked == [2.5], "speed button menu",
               items.map { $0.on ? "[\($0.title)]" : $0.title }.joined(separator: " "))
+
+        // 0.3.0 pickers (V1, V2, V5): female model voices only, by model, American first; French separately.
+        let voices = sampleVoices
+        let en = VoiceGroups.byModel(voices, language: "en"), fr = VoiceGroups.byModel(voices, language: "fr")
+        let offered = en.flatMap(\.voices)
+        let kokoro = en.first?.voices ?? []
+        let noMale = !offered.contains { $0.id.hasPrefix("am_") || $0.id.hasPrefix("bm_") || $0.engine == .system }
+        check(en.map(\.model) == [.neural, .qwen] && noMale && offered.allSatisfy { $0.gender == "Female" && $0.language == "en" }
+              && kokoro.count == 15 && kokoro.first.map(VoiceGroups.isBritish) == false && kokoro.last.map(VoiceGroups.isBritish) == true,
+              "English picker: female, by model", en.map { "\($0.model.modelName) \($0.voices.count)" }.joined(separator: ", ")
+                + ", first \(kokoro.first?.id ?? "-"), no male or system voice: \(noMale)")
+        check(fr.map { "\($0.model.modelName):\($0.voices.map(\.id).joined())" } == ["Kokoro:ff_siwis", "Qwen3:qwen.fr_warm"],
+              "French picker", fr.map { "\($0.model.modelName): \($0.voices.map(\.id).joined(separator: " "))" }.joined(separator: ", "))
+        let starts = [VoiceGroups.startVoice(kokoro, kokoro: "bf_emma"), VoiceGroups.startVoice(en.last?.voices ?? [], kokoro: "af_heart"),
+                      VoiceGroups.startVoice(fr.first?.voices ?? [], kokoro: "ff_siwis")]
+        check(starts == ["bf_emma", "qwen.us_warm", "ff_siwis"], "picking a model starts on", starts.map { $0 ?? "nil" }.joined(separator: ", "))
+
+        // Recovery (PLAN 0.3.0 rev. 8): a voice that cannot play yet → same-language Kokoro → that language's system voice.
+        let noQwen = voices.map { v in var v = v; if v.engine == .qwen { v.installed = false }; return v }
+        let noKokoro = voices.map { v in var v = v; if v.engine == .neural { v.installed = false }; return v }
+        let got = [AppModel.playable("qwen.us_warm", language: "en", englishKokoro: "af_heart", in: voices),
+                   AppModel.playable("qwen.us_warm", language: "en", englishKokoro: "bf_emma", in: noQwen),
+                   AppModel.playable("qwen.fr_warm", language: "fr", englishKokoro: "af_heart", in: noQwen),
+                   AppModel.playable("ff_siwis", language: "fr", englishKokoro: "af_heart", in: noKokoro),
+                   AppModel.playable("af_heart", language: "en", englishKokoro: "af_heart", in: noKokoro)]
+        check(got.prefix(3).map(\.id) == ["qwen.us_warm", "bf_emma", "ff_siwis"] && got[3].engine == .system && got[3].language == "fr"
+              && got[4].engine == .system && got[4].language == "en",
+              "voice recovery", got.map { "\($0.name) (\($0.engine.modelName), \($0.language))" }.joined(separator: " | "))
+
+        // Downloads a model needs, as one row with what is left to fetch.
+        let qwenRows = sampleModels(qwen: false).filter { VoiceGroups.needs(.qwen, language: "en", title: $0.title) }
+        let needs = [VoiceGroups.needs(.neural, language: "en", title: "Kokoro French voice"), VoiceGroups.needs(.neural, language: "fr", title: "Kokoro French voice"),
+                     VoiceGroups.needs(.qwen, language: "fr", title: "Parakeet v3 word timing"), VoiceGroups.needs(.neural, language: "fr", title: "Qwen3-TTS 1.7B")]
+        let during = ModelStatusRow.combined([ModelRow(title: "Qwen3-TTS 1.7B", megabytes: 3_100, state: .downloading(progress: 0.5))] + qwenRows.dropFirst())
+        let halfway = { if case .downloading(let p) = during { abs(p - 0.5 * 3_100 / 3_576) < 0.001 } else { false } }()
+        check(qwenRows.count == 2 && needs == [false, true, true, false] && ModelStatusRow.combined(qwenRows) == .missing(megabytes: 3_576)
+              && Theme.size(3_576) == "3.6 GB" && halfway,
+              "model downloads", "Qwen3 needs \(qwenRows.map(\.title).joined(separator: " + ")) = \(Theme.size(ModelStatusRow.megabytes(qwenRows))); half of Qwen3 → \(during)")
+
+        // Menu bar Voice submenu: grouped by model, female only, ticks on the English and the French voice.
+        let bar = MenuBarMenu(model: AppModel.shared, openMain: {}, openSettings: {}, openOnboarding: {})
+        let lines = bar.dump(bar.voiceMenu(voices, english: "af_heart", french: "ff_siwis"))
+        let headers = lines.filter { $0.hasPrefix("[") }, ticks = lines.filter { $0.hasPrefix("✓ ") }
+        let others = lines.filter { l in ["George", "Michael", "Serena", "Ava"].contains { l.contains($0) } }
+        check(headers == ["[Kokoro]", "[Qwen3]", "[French]"] && ticks == ["✓ Heart", "✓ Siwis (Kokoro)"] && others.isEmpty && lines.last == "More voices…",
+              "voice submenu", "\(headers.joined(separator: " ")), ticked \(ticks.joined(separator: " / ")), \(lines.count) lines, male/system \(others.count)")
+
+        check(MiniPlayerView.height(expanded: false, notice: true) == 118 && MiniPlayerView.height(expanded: true) == 196,
+              "mini player grows for the notice", "96 → \(Int(MiniPlayerView.height(expanded: false, notice: true))) pt")
+        print("info Language.detect(French sample) = \(Language.detect("Bonjour, je vous lis ce texte en français pour vérifier la langue.")) (V-B implements it; the main stub says en)")
         return failures
     }
 
     // MARK: Sample data (invented)
 
-    static func sample() -> ViewData {
-        let now = Date()
-        let voices = [
-            Voice(id: "bf_emma", name: "Emma", accent: "British", gender: "Female", engine: .neural, installed: true),
-            Voice(id: "bf_isabella", name: "Isabella", accent: "British", gender: "Female", engine: .neural, installed: true),
-            Voice(id: "bm_george", name: "George", accent: "British", gender: "Male", engine: .neural, installed: true),
-            Voice(id: "bm_lewis", name: "Lewis", accent: "British", gender: "Male", engine: .neural, installed: true),
-            Voice(id: "af_heart", name: "Heart", accent: "American", gender: "Female", engine: .neural, installed: true),
-            Voice(id: "af_bella", name: "Bella", accent: "American", gender: "Female", engine: .neural, installed: true),
-            Voice(id: "am_michael", name: "Michael", accent: "American", gender: "Male", engine: .neural, installed: true),
+    /// What the engines list once V-A and V-B are in (plain values; the real Qwen3 names come from its engine): every
+    /// Kokoro English voice of both genders in Kokoro's order (British first), French Siwis, the Qwen3 voices, two system voices.
+    static let sampleVoices: [Voice] = {
+        func kokoro(_ id: String) -> Voice {
+            Voice(id: id, name: String(id.dropFirst(3)).capitalized, accent: id.hasPrefix("b") ? "British" : "American",
+                  gender: id.dropFirst().hasPrefix("f") ? "Female" : "Male", engine: .neural, installed: true)
+        }
+        return ["bf_alice", "bf_emma", "bf_isabella", "bf_lily", "bm_george", "bm_lewis", "af_alloy", "af_aoede", "af_bella", "af_heart",
+                "af_jessica", "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky", "am_adam", "am_michael"].map(kokoro) + [
+            Voice(id: "ff_siwis", name: "Siwis", accent: "French", gender: "Female", engine: .neural, installed: true, language: "fr"),
+            Voice(id: "qwen.us_warm", name: "Warm", accent: "American", gender: "Female", engine: .qwen, installed: true),
+            Voice(id: "qwen.us_calm", name: "Calm", accent: "American", gender: "Female", engine: .qwen, installed: true),
+            Voice(id: "qwen.fr_warm", name: "Warm", accent: "French", gender: "Female", engine: .qwen, installed: true, language: "fr"),
             Voice(id: "com.apple.voice.premium.en-GB.Serena", name: "Serena (Premium)", accent: "British", gender: "Female", engine: .system, installed: true),
             Voice(id: "com.apple.voice.enhanced.en-US.Ava", name: "Ava (Enhanced)", accent: "American", gender: "Female", engine: .system, installed: true),
         ]
+    }()
+
+    /// `Engines.downloadables()` as V-A plans them (sizes approximate).
+    static func sampleModels(qwen installed: Bool) -> [ModelRow] {
+        [ModelRow(title: "Qwen3-TTS 1.7B", megabytes: 3_100, state: installed ? .ready : .missing(megabytes: 3_100)),
+         ModelRow(title: "Parakeet v3 word timing", megabytes: 476, state: installed ? .ready : .missing(megabytes: 476)),
+         ModelRow(title: "Kokoro French voice", megabytes: 100, state: .ready)]
+    }
+
+    static func sample() -> ViewData {
+        let now = Date()
+        let voices = sampleVoices
         func item(_ title: String, _ kind: String, _ file: String, _ days: Double, _ position: Int) -> LibraryItem {
             LibraryItem(id: UUID(), title: title, kind: kind, fileName: file, added: now.addingTimeInterval(-days * 86_400), position: position)
         }
@@ -276,7 +369,7 @@ import TalkReadCore
         let pdfURL = Paths.documents.appendingPathComponent("sample.pdf")
         return ViewData(voices: voices, library: library, recentReads: reads, dictations: dictations,
                         permissions: Permissions(accessibility: true, microphone: false, screenRecording: false),
-                        voiceModel: .downloading(progress: 0.34), dictationModel: .missing(megabytes: 570),
+                        voiceModel: .downloading(progress: 0.34), dictationModel: .missing(megabytes: 570), models: sampleModels(qwen: true),
                         documentText: { $0.kind == "pdf" ? ((try? Importer.load(pdfURL))?.text ?? "") : sampleText },
                         previewToken: 9)
     }

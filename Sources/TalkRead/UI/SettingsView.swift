@@ -22,11 +22,12 @@ struct SettingsView: View {
 
 struct SettingsContent: View {
     enum Tab: String, CaseIterable {
-        case general, shortcuts, highlight, dictation, pronunciations, permissions, models, about
+        case general, voices, shortcuts, highlight, dictation, pronunciations, permissions, models, about
         var title: String { rawValue.capitalized }
         var symbol: String {
             switch self {
             case .general: "gearshape"
+            case .voices: "person.wave.2"
             case .shortcuts: "keyboard"
             case .highlight: "highlighter"
             case .dictation: "mic"
@@ -73,6 +74,7 @@ struct SettingsContent: View {
     @ViewBuilder private var page: some View {
         switch tab {
         case .general: general
+        case .voices: voices
         case .shortcuts: ShortcutsPage(model: model)
         case .highlight: highlight
         case .dictation: dictation
@@ -101,6 +103,23 @@ struct SettingsContent: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: Voices
+
+    private var voices: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Voices").font(.title2.weight(.bold))
+                    Text("Choose a model, then one of its voices. French text gets its own voice.").foregroundStyle(.secondary)
+                }
+                VoicePickers(model: model, data: data)
+            }
+            .frame(maxWidth: 620)
+            .padding(24)
+            .frame(maxWidth: .infinity)
+        }
     }
 
     // MARK: Highlight
@@ -187,6 +206,15 @@ struct SettingsContent: View {
                 ModelStatusRow(kind: .dictation, state: data.dictationModel) { model.downloadModels() }
             } footer: {
                 Text("Downloaded once from Hugging Face, then everything runs offline on this Mac.").foregroundStyle(.secondary)
+            }
+            if !data.models.isEmpty {
+                Section {
+                    ForEach(data.models) { row in ModelStatusRow(row: row) { model.download(row.title) } }
+                } header: {
+                    Text("Optional")
+                } footer: {
+                    Text("Only for the voices that need them. Nothing downloads until you click.").foregroundStyle(.secondary)
+                }
             }
             Section {
                 Picker("Free memory when unused for", selection: $model.settings.unloadAfterMinutes) {
