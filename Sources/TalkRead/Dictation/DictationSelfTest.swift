@@ -12,7 +12,9 @@ import WebKit
         if ProcessInfo.processInfo.environment["TALKREAD_HOME"] == nil {
             setenv("TALKREAD_HOME", "/private/tmp/talkread-selftest-home", 1)
         }
+        if CommandLine.arguments.contains("--bench") { return await DictationBench.run(dir: URL(fileURLWithPath: dir)) }
         var ok = checkHotkeys()
+        ok = checkTextRules() && ok
         if Paths.dataRoot.path.hasPrefix("/private/tmp") {
             ok = await checkOwnership(fixture: URL(fileURLWithPath: dir)) && ok
             ok = await checkDrain(fixture: URL(fileURLWithPath: dir)) && ok
@@ -92,6 +94,18 @@ import WebKit
         print("hotkeys: \(cases.count) mappings \(ok ? "ok" : "FAILED"); event tap \(running ? "created" : "NOT created (Accessibility?)"), "
               + (active ? "active (swallows matched shortcuts)" : "NOT an active tap"))
         return ok && running && active
+    }
+
+    // MARK: Terminal text and British spelling (V-F)
+
+    private static func checkTextRules() -> Bool {
+        let flat = Inserter.oneLine("Hi Jon,\nThanks.\n\n1. Trim the intro.\n2. Send it")
+        let british = BritishSpelling.apply("The neighbor's color, center and organizer; email kestrelco.com or Kestrelco. Realize it.")
+        let ok = flat == "Hi Jon, Thanks. 1. Trim the intro. 2. Send it" && !flat.contains("\n")
+            && british == "The neighbour's colour, centre and organiser; email kestrelco.com or Kestrelco. Realise it."
+            && Inserter.terminalApps.isSuperset(of: ["com.apple.Terminal", "com.googlecode.iterm2"])
+        print("text: terminal paste one line \"\(flat)\"; British \"\(british)\" \(ok ? "ok" : "FAIL")")
+        return ok
     }
 
     // MARK: Ownership (PLAN decision 19) with a fake recorder and recogniser
@@ -513,12 +527,14 @@ import WebKit
         for clip in clips {
             guard let reference = try? String(contentsOf: clip.deletingPathExtension().appendingPathExtension("txt"), encoding: .utf8),
                   let samples = try? Transcriber.samples(of: clip) else { print("\(clip.lastPathComponent)\tunreadable"); return false }
-            let ref = normalised(reference)
+            // Written-form neutral (V-F): "the 14th of November at 3 pm" and "14 November at 3pm", "250 pounds" and
+            // "£250" are the same words; formatting is scored by the hard set's key terms instead.
+            let ref = DictationBench.lenient(reference)
             do {
                 let fileText = try await controller.transcribe(file: clip, caller: "selftest")
                 let (liveRaw, ms) = try await live(samples, transcriber)
                 let liveText = Cleanup.apply(liveRaw, vocabulary: [:], removeFillers: true)
-                let fe = editDistance(ref, normalised(fileText)), le = editDistance(ref, normalised(liveText))
+                let fe = editDistance(ref, DictationBench.lenient(fileText)), le = editDistance(ref, DictationBench.lenient(liveText))
                 fileErrors += fe; liveErrors += le; words += ref.count
                 latencies.append(ms)
                 print(String(format: "%@\t%.1f\t%.1f%%\t%.1f%%\t%.0f\t%@", clip.deletingPathExtension().lastPathComponent,
@@ -541,7 +557,7 @@ import WebKit
 
     /// The live path: the clip re-sampled to a typical 48 kHz stereo input format, through the Recorder's converter in
     /// 100 ms buffers at real-time pace into a streaming run. Returns the text and ms from the last sample to the result.
-    private static func live(_ samples: [Float], _ transcriber: Transcriber) async throws -> (String, Double) {
+    static func live(_ samples: [Float], _ transcriber: DictationASR) async throws -> (String, Double) {
         let hardware = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 2, interleaved: false)!
         let source = Transcriber.buffer(samples[...])
         guard let up = AVAudioConverter(from: StreamConverter.format, to: hardware),
