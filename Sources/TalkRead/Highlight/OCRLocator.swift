@@ -128,20 +128,7 @@ import Vision
     // MARK: - Window
 
     /// The pid's on-screen window whose bounds match the AX window frame (both top-left global coordinates).
-    private func findWindowID() -> CGWindowID? {
-        let info = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
-        let candidates = info.filter { ($0[kCGWindowOwnerPID as String] as? pid_t) == pid && ($0[kCGWindowLayer as String] as? Int) == 0 }
-        let target = axWindow.flatMap(axFrame)
-        func bounds(_ entry: [String: Any]) -> CGRect {
-            entry[kCGWindowBounds as String].flatMap { CGRect(dictionaryRepresentation: $0 as! CFDictionary) } ?? .zero
-        }
-        let best = target.map { t in candidates.min { a, b in Self.distance(bounds(a), t) < Self.distance(bounds(b), t) } } ?? candidates.first
-        return (best?[kCGWindowNumber as String] as? NSNumber).map { CGWindowID($0.uint32Value) }
-    }
-
-    private static func distance(_ a: CGRect, _ b: CGRect) -> CGFloat {
-        abs(a.minX - b.minX) + abs(a.minY - b.minY) + abs(a.width - b.width) + abs(a.height - b.height)
-    }
+    private func findWindowID() -> CGWindowID? { WindowPin.windowID(pid: pid, axFrame: axWindow.flatMap(axFrame)) }
 
     /// The window's current frame in Cocoa coordinates (one CGWindowList lookup, no AX round trip).
     private func currentWindowFrame() -> CGRect? {
