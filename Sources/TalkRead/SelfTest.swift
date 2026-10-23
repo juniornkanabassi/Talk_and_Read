@@ -18,6 +18,7 @@ import Darwin
 import FluidAudio
 import Foundation
 import MLX
+import ObjCExceptionCatch
 import os
 import TalkReadCore
 
@@ -310,7 +311,7 @@ enum SelfTest {
         broken.player.failNextStart = true
         broken.start()
         for _ in 0 ..< 50 where broken.state == .preparing { try await Task.sleep(nanoseconds: 100_000_000) }
-        checks["output that will not start fails the read"] = { if case .failed = broken.state { return broken.firstAudioMs == nil } else { return false } }()
+        checks["output that will not start fails the read"] = { if case .failed = broken.state { return broken.firstAudioMs == nil && !broken.player.isPlaying } else { return false } }()
         broken.stop()
         let first = session.firstAudioMs ?? .max
         let pass = session.player.starvations == 0 && first < 1000 && checks.values.allSatisfy { $0 }
@@ -878,6 +879,10 @@ enum SelfTest {
         check(timed.count == 8 && zip(timed, c).allSatisfy { abs($0.start - $1.start) < 1e-9 && abs($0.end - $1.end) < 1e-9 }, "compound timings \(timed)")
         let q = NeuralEngine.pair(["a", "b"], [(0, 1), (1, 2), (2, 3), (3, 4)], counts: nil, offset: -0.5, duration: 4)
         check(q.map(\.text) == ["a", "b"] && q[0].start == 0 && q[1].end == 3.5, "pair proportional \(q)")
+
+        // An Objective-C exception (AVFAudio's "player did not see an IO cycle") comes back as an error with its reason.
+        let caught = TRCatchException { NSException(name: .genericException, reason: "probe reason", userInfo: nil).raise() }
+        check(caught?.localizedDescription == "probe reason" && TRCatchException({}) == nil, "exception catch: \(String(describing: caught))")
 
         // Stop guard (PLAN 0.3.0 decision 9): 1 s of tone at 24 kHz, then silence.
         let tone = (0 ..< 24_000).map { Float(0.3 * sin(Double($0) * 0.1)) }

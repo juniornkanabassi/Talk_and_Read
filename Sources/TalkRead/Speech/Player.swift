@@ -6,6 +6,7 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import ObjCExceptionCatch
 import TalkReadCore
 
 @MainActor final class Player {
@@ -28,7 +29,7 @@ import TalkReadCore
     /// Output device changed (headphones unplugged, sample rate change), playing or paused: everything queued was
     /// dropped; restart from the clock.
     var onInterrupted: (() -> Void)?
-    /// Self-test only: the next `play()` fails as an output device that will not start does.
+    /// Self-test only: the next `play()` fails as an output device that never cycles does (the node raises).
     var failNextStart = false
     var volume: Float {
         get { engine.mainMixerNode.outputVolume }
@@ -166,13 +167,22 @@ import TalkReadCore
     func play() {
         engineStop?.cancel()
         do {
-            if failNextStart { failNextStart = false; throw SpeechError.render("simulated output failure") }
             if !engine.isRunning { try engine.start() }
         } catch {
             Log.write("player: audio engine did not start: \(error.localizedDescription)")
             return
         }
-        node.play()
+        // The node raises, not throws, when the output device never cycles ("player did not see an IO cycle", after
+        // blocking up to ~9 s: heavy load, Low Power Mode, another app holding the device; three crashes on 23 Oct).
+        // Caught, it is the same failed start as an engine that will not start: the reader fails the read.
+        if let error = TRCatchException({
+            if failNextStart { failNextStart = false; NSException(name: .genericException, reason: "simulated: player did not see an IO cycle").raise() }
+            node.play()
+        }) {
+            Log.write("player: output did not start: \(error.localizedDescription)")
+            if !manual { engine.stop() }
+            return
+        }
         isPlaying = true
     }
 
