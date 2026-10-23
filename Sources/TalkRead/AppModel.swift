@@ -1,5 +1,6 @@
 // @MainActor observable app state; the UI binds only to these members, the control handler routes through them. Owned by WP7.
 import AppKit
+import AVFoundation
 import Combine
 import Foundation
 import TalkReadCore
@@ -34,6 +35,28 @@ struct Permissions: Equatable {
 
 enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress: Double), ready, failed(String) }
 
+/// One of `Engines.downloadables()` as the UI shows it (Models page, the Voices page's download row).
+struct ModelRow: Identifiable, Equatable {
+    let title: String
+    let megabytes: Int
+    let state: ModelState
+    var id: String { title }
+}
+
+extension EngineKind {
+    /// The model's name in pickers and `talkread voices`.
+    var modelName: String {
+        switch self {
+        case .neural: "Kokoro"
+        case .qwen: "Qwen3"
+        case .breeze: "Breeze"
+        case .system: "System"
+        }
+    }
+    /// Qwen3 and Breeze: gigabytes while loaded, so they load only while chosen and fall back to Kokoro when slow.
+    var isLarge: Bool { self == .qwen || self == .breeze }
+}
+
 @MainActor final class AppModel: ObservableObject {
     static let shared = AppModel()
 
@@ -46,6 +69,8 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     @Published private(set) var permissions = Permissions.current()
     @Published private(set) var voiceModel: ModelState = .missing(megabytes: AppModel.voiceMegabytes)
     @Published private(set) var dictationModel: ModelState = .missing(megabytes: AppModel.dictationMegabytes)
+    /// Additive (0.3.0): every `engines.downloadables()` entry (Qwen3, Parakeet v3, the Kokoro French pack) with its state.
+    @Published private(set) var models: [ModelRow] = []
 
     /// Additive (not in ESSENTIALS): true while the shortcut recorder is listening, so the global hotkeys stand down.
     @Published var hotkeysPaused = false
@@ -55,9 +80,13 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     /// PLAN decision 16: who owns the current read. Reserved synchronously when a read is requested, held through
     /// preparing, playing and paused, released at finished, failed or stopped.
     var owner: (caller: String, sessionID: UUID)?
-    /// What the status command reports about the current read.
-    private(set) var sessionInfo = (voice: "", source: "", rate: Float(1), item: UUID?.none)
+    /// What the status command reports about the current read (the voice is the session's `effectiveVoice`).
+    private(set) var sessionInfo = (source: "", rate: Float(1), item: UUID?.none)
     private(set) var downloadTask: Task<Void, Never>?
+    /// Optional downloads in flight or failed, by title; the rest show installed or missing.
+    private var downloadStates: [String: ModelState] = [:]
+    /// The user left Qwen3 or Breeze while something was reading: free it when the read ends (PLAN 0.3.0 rev. 5, V7).
+    private var modelSwitchPending = false
 
     private var highlighter: Highlighter?
     private var sessionWatch: AnyCancellable?
@@ -99,13 +128,28 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
             guard !Task.isCancelled else { return }
             self?.saveSettings()
         }
-        guard let s = liveSession else { return }
-        if settings.speed != old.speed { sessionInfo.rate = settings.speed; s.setRate(settings.speed) }
-        if settings.voiceID != old.voiceID {
-            let v = voice(for: settings.voiceID)
-            sessionInfo.voice = v.id
-            s.setVoice(v)
+        if settings.voiceID != old.voiceID || settings.frenchVoiceID != old.frenchVoiceID { voiceChoiceChanged(from: old) }
+        // A new voice applies to the next read (V1, PLAN 0.3.0 rev. 4); speed is instant.
+        if settings.speed != old.speed, let s = liveSession { sessionInfo.rate = settings.speed; s.setRate(settings.speed) }
+    }
+
+    /// Leaving Qwen3 or Breeze frees it once nothing reads; otherwise the new choice is loaded ahead of its first read.
+    private func voiceChoiceChanged(from old: Settings) {
+        func large(_ s: Settings) -> Set<EngineKind> {
+            Set([s.voiceID, s.frenchVoiceID].compactMap { id in voices.first { $0.id == id }?.engine }.filter(\.isLarge))
         }
+        if !large(old).isSubset(of: large(settings)) { modelSwitchPending = true }
+        guard liveSession == nil else { return }
+        if modelSwitchPending { return freeUnchosenModels() }
+        // ponytail: no warm-up right after an unload (the unload and a prepare race inside the engine); the next read loads it.
+        warm(settings.voiceID != old.voiceID ? voice(for: settings.voiceID) : voice(for: settings.frenchVoiceID, language: "fr"))
+    }
+
+    private func freeUnchosenModels() {
+        guard modelSwitchPending, liveSession == nil, !engines.isBusy else { return }
+        modelSwitchPending = false
+        engines.unloadAll()   // the dictation model stays for the idle timer
+        Log.write("voice model switched: speech models unloaded")
     }
 
     /// Writes the settings now (skipping the 300 ms debounce); also called at quit.
@@ -121,30 +165,98 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         refreshModelStates()
     }
 
-    /// Loads the neural voice in the background when it is installed, so the first read starts quickly (a cold load
-    /// takes 8–14 s); the idle timer unloads it again.
+    /// At launch: loads the English voice in the background when it is Kokoro and installed, so the first read starts
+    /// quickly (a cold load takes 8–14 s); the idle timer unloads it again.
+    // ponytail: Qwen3 is not loaded at login (4–5 GB); it loads when picked or at its first read.
     func warmUp() {
         Player.warmOutput()
         let v = voice(for: settings.voiceID)
-        guard v.engine == .neural else { return }
+        if v.engine == .neural { warm(v) }
+    }
+
+    /// Loads a chosen voice ahead of its first read (PLAN 0.3.0 decision 3); the idle timer frees it again.
+    private func warm(_ v: Voice) {
+        guard v.installed, v.engine != .system else { return }
         modelsWarm = true
         updateActivity()
+        let engine = engines.engine(for: v)
         Task {
-            do { try await engines.neural.prepare(voice: v.id) } catch { Log.write("voice warm-up failed: \(error)") }
+            do { try await engine.prepare(voice: v.id) } catch { Log.write("voice warm-up failed: \(error)") }
         }
     }
 
-    /// The requested voice when it can play now; otherwise the best system voice (no neural model yet).
-    func voice(for id: String) -> Voice {
-        if let v = voices.first(where: { $0.id == id }), v.engine == .system || voiceModel == .ready { return v }
-        return voices.first { $0.engine == .system }
+    /// The voice that can read `id` now (PLAN 0.3.0 rev. 8): itself once installed, else the same-language Kokoro voice,
+    /// else that language's system voice. `language` is used only when `id` is not a listed voice.
+    func voice(for id: String, language: String = "en") -> Voice {
+        Self.playable(id, language: language, englishKokoro: settings.fallbackVoiceID, in: voices)
+    }
+
+    nonisolated static func playable(_ id: String, language: String, englishKokoro: String, in voices: [Voice]) -> Voice {
+        let wanted = voices.first { $0.id == id }
+        if let wanted, wanted.installed { return wanted }
+        let lang = wanted?.language ?? language
+        let kokoro = lang == "fr" ? "ff_siwis" : englishKokoro
+        if let k = voices.first(where: { $0.id == kokoro && $0.installed }) { return k }
+        return voices.first { $0.engine == .system && $0.language == lang }
+            ?? systemVoice(lang)
+            ?? voices.first { $0.engine == .system }
             ?? Voice(id: "", name: "System", accent: "", gender: "", engine: .system, installed: true)
     }
 
+    /// The best installed Apple voice for a language the system engine does not list (it lists English only).
+    // ponytail: here rather than in SystemEngine (V-A/V-B own Speech/); move it there if another caller needs it.
+    nonisolated static func systemVoice(_ language: String) -> Voice? {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix(language) && !$0.voiceTraits.contains(.isNoveltyVoice) && !$0.voiceTraits.contains(.isPersonalVoice) }
+            .max { $0.quality.rawValue < $1.quality.rawValue }
+            .map { Voice(id: $0.identifier, name: $0.name, accent: $0.language, gender: $0.gender == .female ? "Female" : $0.gender == .male ? "Male" : "",
+                         engine: .system, installed: true, language: language) }
+    }
+
+    /// The Kokoro voice a read in `language` switches to if its model falls behind (V3); nil when not installed.
+    private func kokoroFallback(_ language: String) -> Voice? {
+        let id = language == "fr" ? "ff_siwis" : settings.fallbackVoiceID
+        return voices.first { $0.id == id && $0.installed }
+    }
+
     func refreshModelStates() {
+        let rows = engines.downloadables().map { d in
+            ModelRow(title: d.title, megabytes: d.modelMegabytes,
+                     state: downloadStates[d.title] ?? (d.isModelInstalled ? .ready : .missing(megabytes: d.modelMegabytes)))
+        }
+        if rows != models { models = rows }
         guard downloadTask == nil else { return }
         voiceModel = NeuralEngine.modelInstalled() ? .ready : .missing(megabytes: Self.voiceMegabytes)
         dictationModel = Transcriber.isDownloaded ? .ready : .missing(megabytes: Self.dictationMegabytes)
+    }
+
+    /// Downloads one of `engines.downloadables()` (Qwen3, Parakeet v3, the Kokoro French pack). Only from the user's
+    /// click on the Models or Voices page (PLAN 0.3.0 rev. 6): nothing calls this on its own.
+    func download(_ title: String) {
+        guard let d = engines.downloadables().first(where: { $0.title == title }), !d.isModelInstalled else { return }
+        if case .downloading = downloadStates[title] { return }
+        downloadStates[title] = .downloading(progress: 0)
+        refreshModelStates()
+        updateActivity()
+        Task { [weak self] in
+            do {
+                try await d.downloadModel { p in Task { @MainActor in self?.downloadProgress(title, p) } }
+                self?.downloadStates[title] = nil
+            } catch {
+                self?.downloadStates[title] = .failed(error.localizedDescription)
+                Log.write("\(title) download failed: \(error)")
+            }
+            guard let self else { return }
+            updateActivity()
+            await loadVoices()   // installed flags and rows
+        }
+    }
+
+    /// Whole percents only, so a chatty downloader does not redraw every window per packet.
+    private func downloadProgress(_ title: String, _ p: Double) {
+        guard case .downloading(let old) = downloadStates[title], Int(p * 100) != Int(old * 100) else { return }
+        downloadStates[title] = .downloading(progress: min(0.99, max(0, p)))
+        refreshModelStates()
     }
 
     func downloadModels() {
@@ -152,8 +264,9 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         downloadTask = Task { [weak self] in
             guard let self else { return }
             if voiceModel != .ready {
-                let id = voices.first { $0.id == self.settings.voiceID && $0.engine == .neural }?.id ?? "af_heart"
-                await download(\.voiceModel, pollDir: Self.voiceModelDir) { _ in try await self.engines.neural.prepare(voice: id) }
+                let id = voices.first { $0.id == self.settings.voiceID && $0.engine == .neural && $0.language == "en" }?.id ?? settings.fallbackVoiceID
+                let kokoro = engines.engine(for: Voice(id: id, name: "", accent: "", gender: "", engine: .neural, installed: false))
+                await download(\.voiceModel, pollDir: Self.voiceModelDir) { _ in try await kokoro.prepare(voice: id) }
             }
             if dictationModel != .ready, !Task.isCancelled {
                 await download(\.dictationModel, pollDir: nil) { report in try await self.dictation.asr.load(progress: report) }
@@ -296,12 +409,13 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     @discardableResult
     func startSession(_ text: String, capture: Capture?, id: UUID, startToken: Int = 0, voice: Voice? = nil,
                       rate: Float? = nil, source: String? = nil, item: UUID? = nil) -> ReadSession {
-        let v = voice ?? self.voice(for: settings.voiceID)
+        // One language per read (PLAN 0.3.0 rev. 8): French text reads with the French voice; an explicit voice wins.
+        let v = voice ?? (Language.detect(text) == "fr" ? self.voice(for: settings.frenchVoiceID, language: "fr") : self.voice(for: settings.voiceID))
         let r = rate ?? settings.speed
         let s = ReadSession(text: text, capture: capture, voice: v, rate: r, startToken: startToken, engines: engines,
-                            lexicon: Self.loadJSON(Paths.pronunciations) ?? [:])
+                            lexicon: Self.loadJSON(Paths.pronunciations) ?? [:], fallback: v.engine.isLarge ? kokoroFallback(v.language) : nil)
         session = s
-        sessionInfo = (v.id, source ?? capture.map { "\($0.source)" } ?? "provided", r, item)
+        sessionInfo = (source ?? capture.map { "\($0.source)" } ?? "provided", r, item)
         modelsWarm = true
         sessionWatch = s.$state.sink { [weak self] state in self?.sessionStateChanged(state, id: id) }
         s.start()
@@ -366,9 +480,18 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
         settings = next.validated()
     }
 
+    /// The picker, the menus and `talkread voice`: a French voice becomes the French voice, any other the English one;
+    /// an English Kokoro voice is also the one a slower model falls back to. Applies from the next read (V1).
     func setVoice(_ id: String) {
-        owner?.caller = "user"
-        settings.voiceID = id
+        let v = voices.first { $0.id == id }
+        var next = settings
+        if v?.language == "fr" {
+            next.frenchVoiceID = id
+        } else {
+            next.voiceID = id
+            if v?.engine == .neural { next.fallbackVoiceID = id }
+        }
+        settings = next
     }
 
     /// Additive: the Dictation pane's delete. The history belongs to DictationController (WP5).
@@ -406,10 +529,12 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
 
     // MARK: Activity token and idle unload
 
-    /// Reading, dictating (recording, transcribing a file, typing) or downloading models.
-    private var busy: Bool { readState == .preparing || readState == .playing || dictating || downloadTask != nil }
-    /// Nothing that uses the models, not even a paused read.
-    private var idle: Bool { !busy && readState != .paused }
+    /// Reading, dictating (recording, transcribing a file, typing) or downloading models. A paused read is not busy: its
+    /// models unload after the idle time too, and resuming loads them again (PLAN 0.3.0 rev. 5).
+    private var busy: Bool {
+        readState == .preparing || readState == .playing || dictating || downloadTask != nil
+            || downloadStates.values.contains { if case .downloading = $0 { true } else { false } }
+    }
 
     /// Holds a `.userInitiatedAllowingIdleSystemSleep` activity only while busy, and unloads the speech models after
     /// `unloadAfterMinutes` idle. Every busy source calls this when it starts and ends (Sol #16).
@@ -420,11 +545,14 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
             ProcessInfo.processInfo.endActivity(a)
             activity = nil
         }
-        if dictating || downloadTask != nil { modelsWarm = true }
-        if !idle {
+        if busy {
+            modelsWarm = true   // also a read resumed after an unload
             unloadTask?.cancel()
             unloadTask = nil
-        } else if modelsWarm, unloadTask == nil {
+            return
+        }
+        freeUnchosenModels()
+        if modelsWarm, unloadTask == nil {
             let delay = unloadDelay ?? .seconds(Double(settings.unloadAfterMinutes) * 60)
             unloadTask = Task { [weak self] in
                 while true {
@@ -432,9 +560,8 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
                     guard !Task.isCancelled, let self else { return }
                     // Busy without telling us, or the recogniser refused (still loading or draining, Sol #24): wait
                     // another period rather than give up.
-                    guard idle, dictation.unloadModel() else { continue }
-                    engines.neural.unload()
-                    engines.system.unload()
+                    guard !busy, !engines.isBusy, dictation.unloadModel() else { continue }
+                    engines.unloadAll()
                     modelsWarm = false
                     unloadTask = nil
                     Log.write("speech models unloaded after \(delay) idle")

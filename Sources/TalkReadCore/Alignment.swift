@@ -11,12 +11,15 @@ public enum Alignment {
     /// word for several single-letter tokens ("fbi" for F, B, I).
     // ponytail: each row only looks at the source words from 10 behind to 50 ahead of the previous row's best column (O(n*60)
     // not O(n*m)); a gap of more than 50 words between the two texts loses the alignment past it. Callers pass one chunk.
-    /// `language`: "en" or "fr" (V-B makes the number and date rules language-aware; English unchanged).
+    /// `language`: "en" or "fr". French reads number words the French way ("quatre vingt dix neuf" = 99, "quatre virgule
+    /// deux" = 4,2, "deuxième" = 2e, "cinquante pour cent" = 50 %), and splits words at apostrophes as well as hyphens
+    /// ("l'homme" matches "l" "homme" and "l'homme"). English is unchanged.
     public static func assign(spoken: [String], source: [String], language: String = "en") -> [Int?] {
         var result = [Int?](repeating: nil, count: spoken.count)
-        let sp = parts(spoken), tp = parts(source)
+        let french = language == "fr"
+        let sp = parts(spoken, french: french), tp = parts(source, french: french)
         guard !sp.isEmpty, !tp.isEmpty else { return result }
-        let map = Aligner(sp: sp, tp: tp).align()
+        let map = Aligner(sp: sp, tp: tp, french: french).align()
         for (q, target) in map.enumerated() {
             if let target, result[sp[q].owner] == nil { result[sp[q].owner] = tp[target].owner }
         }
@@ -29,11 +32,15 @@ public enum Alignment {
 
     private static let hyphens: Set<Character> = ["-", "‐", "‑", "–", "—"]
 
-    /// Words split at hyphens, each part remembering the word it came from.
-    private static func parts(_ words: [String]) -> [Part] {
+    private static let apostrophes: Set<Character> = ["'", "’"]
+
+    /// Words split at hyphens (French: and apostrophes), each part remembering the word it came from.
+    private static func parts(_ words: [String], french: Bool) -> [Part] {
         var out: [Part] = []
         for (i, w) in words.enumerated() {
-            for piece in w.split(whereSeparator: hyphens.contains) { out.append(Part(raw: String(piece), norm: norm(String(piece)), owner: i)) }
+            for piece in w.split(whereSeparator: { hyphens.contains($0) || (french && apostrophes.contains($0)) }) {
+                out.append(Part(raw: String(piece), norm: norm(String(piece)), owner: i))
+            }
         }
         return out
     }
@@ -62,6 +69,7 @@ public enum Alignment {
     private static let scales: [String: Int] = ["thousand": 1_000, "million": 1_000_000, "billion": 1_000_000_000, "trillion": 1_000_000_000_000]
     private static let irregularOrdinals = ["first": "one", "second": "two", "third": "three", "fifth": "five", "eighth": "eight", "ninth": "nine", "twelfth": "twelve"]
     private static let unitWords: Set<String> = ["pounds", "pound", "dollars", "dollar", "euros", "euro", "pence", "penny", "cents", "cent", "percent", "degrees", "degree"]
+    private static let frenchUnitWords: Set<String> = ["euros", "euro", "dollars", "dollar", "livres", "livre", "centimes", "centime", "degres", "degre"]
 
     private static func isCardinal(_ w: String) -> Bool { units[w] != nil || tens[w] != nil || w == "hundred" || scales[w] != nil }
 
@@ -142,9 +150,12 @@ public enum Alignment {
     }
 
     /// "£45", "21st", "2.5", "1,000", "3x" -> canonical digits, and whether it carries a times sign.
-    private static func numeric(_ raw: String) -> (canon: String, times: Bool)? {
+    /// French: "," is the decimal point, spaces group thousands, ordinals end er/re/e/ème/nd/nde ("1er", "4,2", "12 345").
+    private static func numeric(_ raw: String, french: Bool = false) -> (canon: String, times: Bool)? {
         guard raw.utf8.contains(where: { $0 >= 0x30 && $0 <= 0x39 }) else { return nil }
-        let t = Array(raw.trimmingCharacters(in: edgeCharacters).replacingOccurrences(of: ",", with: "").unicodeScalars)
+        let plain = french ? raw.replacingOccurrences(of: ",", with: ".").filter { !" \u{A0}\u{202F}".contains($0) }
+                           : raw.replacingOccurrences(of: ",", with: "")
+        let t = Array(plain.trimmingCharacters(in: edgeCharacters).unicodeScalars)
         var i = 0
         while i < t.count, t[i].properties.numericType == .decimal, t[i].isASCII { i += 1 }
         guard i > 0 else { return nil }
@@ -152,8 +163,8 @@ public enum Alignment {
             i += 1
             while i < t.count, t[i].isASCII, t[i].properties.numericType == .decimal { i += 1 }
         }
-        let suffix = String(String.UnicodeScalarView(t[i...])).lowercased()
-        guard ["", "st", "nd", "rd", "th", "x"].contains(suffix) else { return nil }
+        let suffix = String(String.UnicodeScalarView(t[i...])).folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+        guard (french ? ["", "er", "re", "ere", "e", "eme", "nd", "nde", "x"] : ["", "st", "nd", "rd", "th", "x"]).contains(suffix) else { return nil }
         return (String(String.UnicodeScalarView(t[..<i])), suffix == "x")
     }
 
@@ -169,17 +180,25 @@ public enum Alignment {
         let special: [Bool]                          // source: anything beyond a plain word (digits, initialism, letter)
         let isX: [Bool], isTimes: [Bool]
         let spokenLength: [Int]
+        let isUnit: [Bool]                           // spoken: "pounds", "percent", "euros" ... right after a number
+        let isPourCent: [Bool]                       // spoken (French): the "cent" of "pour cent"
+        let readingsOf: (ArraySlice<String>) -> [String]
 
-        init(sp: [Part], tp: [Part]) {
+        init(sp: [Part], tp: [Part], french: Bool) {
             self.sp = sp; self.tp = tp
+            if french { readingsOf = { FrenchNumbers.readings($0) } } else { readingsOf = { Alignment.readings($0) } }
+            isUnit = sp.map { (french ? frenchUnitWords : unitWords).contains($0.norm) }
+            isPourCent = sp.indices.map { french && $0 > 0 && sp[$0].norm == "cent" && sp[$0 - 1].norm == "pour" }
             var ids: [String: Int] = [:]
             func id(_ s: String) -> Int { s.isEmpty ? -1 : (ids[s] ?? { ids[s] = ids.count; return ids.count - 1 }()) }
             sid = sp.map { id($0.norm) }
             tid = tp.map { id($0.norm) }
             var run = [Int](repeating: 0, count: sp.count + 1)
-            for i in stride(from: sp.count - 1, through: 0, by: -1) where isNumberWord(sp[i].norm) { run[i] = run[i + 1] + 1 }
+            for i in stride(from: sp.count - 1, through: 0, by: -1) where french ? FrenchNumbers.isNumberWord(sp[i].norm) : Alignment.isNumberWord(sp[i].norm) {
+                run[i] = run[i + 1] + 1
+            }
             self.run = run
-            let nums = tp.map { numeric($0.raw) }
+            let nums = tp.map { numeric($0.raw, french: french) }
             let inits: [[Int]?] = tp.map { part in
                 guard part.raw.utf8.count <= 12, part.raw.first?.isUppercase == true else { return nil }
                 let letters = part.raw.trimmingCharacters(in: CharacterSet.punctuationCharacters)
@@ -190,7 +209,7 @@ public enum Alignment {
             tnum = nums; tinit = inits; single = singles
             special = tp.indices.map { nums[$0] != nil || inits[$0] != nil || singles[$0] }
             isX = tp.map { $0.norm == "x" }
-            isTimes = sp.map { $0.norm == "times" || $0.norm == "by" }
+            isTimes = sp.map { french ? $0.norm == "fois" || $0.norm == "par" : $0.norm == "times" || $0.norm == "by" }
             spokenLength = sp.map { $0.norm.count }
         }
 
@@ -212,7 +231,7 @@ public enum Alignment {
             var memo: [Int: [String]] = [:]
             func spokenReadings(_ si: Int, _ k: Int) -> [String] {
                 if let r = memo[si * 16 + k] { return r }
-                let r = readings(sp[si..<si + k].map(\.norm)[...])
+                let r = readingsOf(sp[si..<si + k].map(\.norm)[...])
                 memo[si * 16 + k] = r
                 return r
             }
@@ -247,8 +266,11 @@ public enum Alignment {
                                     let si = i - total
                                     if !num.times, run[si] >= total, spokenReadings(si, total).contains(num.canon) { offer(si, j - 1, 10 * total, total, 1) }
                                     // the number plus one unit word after it ("forty five pounds", "fifty percent", "five times")
-                                    if total > 1, run[si] >= total - 1, num.times ? isTimes[i - 1] || sp[i - 1].norm == "x" : unitWords.contains(sp[i - 1].norm),
+                                    if total > 1, run[si] >= total - 1, num.times ? isTimes[i - 1] || sp[i - 1].norm == "x" : isUnit[i - 1],
                                        spokenReadings(si, total - 1).contains(num.canon) { offer(si, j - 1, 10 * (total - 1) + 9, total, 1) }
+                                    // French "cinquante pour cent"
+                                    if total > 2, !num.times, isPourCent[i - 1], run[si] >= total - 2,
+                                       spokenReadings(si, total - 2).contains(num.canon) { offer(si, j - 1, 10 * (total - 2) + 9, total, 1) }
                                 }
                             }
                             if let letters = tinit[j - 1], i >= letters.count, (0..<letters.count).allSatisfy({ sid[i - letters.count + $0] == letters[$0] }) {

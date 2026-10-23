@@ -15,6 +15,9 @@ import TalkReadCore
     private weak var model: AppModel?
     private var sessionWatch: AnyCancellable?
     private var stateWatch: AnyCancellable?
+    private var noticeWatch: AnyCancellable?
+    /// The read fell back to Kokoro (V3): the panel grows by one line for the notice.
+    private var hasNotice = false
     private var hideTask: Task<Void, Never>?
     private var sentenceCache: (id: ObjectIdentifier, ranges: [Range<Int>])?
 
@@ -47,6 +50,8 @@ import TalkReadCore
     /// A short status with no read behind it; hides after the usual delay.
     func flash(_ text: String) {
         message = text
+        hasNotice = false   // a message replaces the read's face, notice included
+        resize()
         show()
         hideLater()
     }
@@ -57,10 +62,10 @@ import TalkReadCore
         hide()
     }
 
-    /// Height follows the subtitles setting; the bottom edge stays put.
+    /// Height follows the subtitles setting and the fallback notice; the bottom edge stays put.
     func resize() {
         guard let panel, let model else { return }
-        panel.setContentSize(NSSize(width: MiniPlayerView.width, height: MiniPlayerView.height(expanded: model.settings.subtitlesExpanded)))
+        panel.setContentSize(NSSize(width: MiniPlayerView.width, height: MiniPlayerView.height(expanded: model.settings.subtitlesExpanded, notice: hasNotice)))
     }
 
     /// Sentence ranges of the current session, worked out once per session.
@@ -79,6 +84,11 @@ import TalkReadCore
             default: self?.hideTask?.cancel()
             }
         }
+        hasNotice = false
+        noticeWatch = session?.$fallbackReason.map { $0 != nil }.removeDuplicates().sink { [weak self] on in
+            self?.hasNotice = on
+            self?.resize()
+        }
         if session != nil, model?.settings.showMiniPlayer == true { show() }
     }
 
@@ -93,7 +103,7 @@ import TalkReadCore
     }
 
     private func makePanel(_ model: AppModel) -> MiniPanel {
-        let size = NSSize(width: MiniPlayerView.width, height: MiniPlayerView.height(expanded: model.settings.subtitlesExpanded))
+        let size = NSSize(width: MiniPlayerView.width, height: MiniPlayerView.height(expanded: model.settings.subtitlesExpanded, notice: hasNotice))
         let panel = MiniPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.contentView = NSHostingView(rootView: MiniPlayerLive(model: model, player: self))
         panel.isFloatingPanel = true
@@ -148,7 +158,8 @@ private struct MiniPlayerLive: View {
             MiniPlayerSession(model: model, player: player, session: session)
         } else {
             MiniPlayerView(model: model, voices: model.voices, line: nil, state: nil, status: player.message ?? "Ready",
-                           note: nil, expanded: expanded, close: player.close)
+                           note: nil, voiceName: VoiceGroups.name(model.settings.voiceID, in: model.voices), notice: nil,
+                           expanded: expanded, close: player.close)
         }
     }
 
@@ -164,6 +175,7 @@ private struct MiniPlayerSession: View {
         let line = ReadingText.karaoke(text: session.text, tokens: session.tokens, sentences: player.sentences(for: session), token: session.currentToken)
         MiniPlayerView(model: model, voices: model.voices, line: session.state == .finished ? nil : line, state: session.state,
                        status: status, note: session.capture?.source == .clipboard ? "Reading clipboard" : nil,
+                       voiceName: session.effectiveVoice.name, notice: session.fallbackReason,
                        expanded: MiniPlayerView.expandedBinding(model, player), close: player.close)
     }
 
@@ -182,7 +194,8 @@ private struct MiniPlayerSession: View {
 /// The player's face. Pure: the live wrappers above or the snapshot fill it in.
 struct MiniPlayerView: View {
     static let width: CGFloat = 440
-    static func height(expanded: Bool) -> CGFloat { expanded ? 196 : 96 }
+    static func height(expanded: Bool, notice: Bool = false) -> CGFloat { (expanded ? 196 : 96) + (notice ? noticeHeight : 0) }
+    static let noticeHeight: CGFloat = 22
 
     @ObservedObject var model: AppModel
     let voices: [Voice]
@@ -192,6 +205,10 @@ struct MiniPlayerView: View {
     let status: String
     /// Small note beside the controls ("Reading clipboard").
     let note: String?
+    /// The voice speaking now (the session's effective voice, so a fallback shows), on the voice menu.
+    let voiceName: String
+    /// `ReadSession.fallbackReason`: one line above the words while the read uses the Kokoro fallback (V3).
+    let notice: String?
     @Binding var expanded: Bool
     let close: () -> Void
 
@@ -203,6 +220,16 @@ struct MiniPlayerView: View {
 
     var body: some View {
         VStack(spacing: 6) {
+            if let notice {
+                Label { Text(notice).lineLimit(1).truncationMode(.tail) } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.accent)
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                .frame(height: Self.noticeHeight - 6)
+                .padding(.horizontal, 22)
+                .help(notice)
+                .accessibilityElement(children: .combine)
+            }
             Group {
                 if let line {
                     if expanded { Subtitles(line: line) } else { KaraokeStrip(line: line) }
@@ -215,7 +242,7 @@ struct MiniPlayerView: View {
             controls
         }
         .padding(.top, 10).padding(.bottom, 8)
-        .frame(width: Self.width, height: Self.height(expanded: expanded))
+        .frame(width: Self.width, height: Self.height(expanded: expanded, notice: notice != nil))
         .panelSurface(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Player")
@@ -230,8 +257,8 @@ struct MiniPlayerView: View {
             Spacer(minLength: 6)
             SpeedControl(speed: Double(model.settings.speed)) { model.setSpeed(Float($0)) }
                 .frame(width: 56, height: 24)
-            VoiceMenu(voices: voices, current: model.settings.voiceID) { model.setVoice($0) }
-                .labelStyle(.iconOnly)
+            VoiceMenu(voices: voices, english: model.settings.voiceID, french: model.settings.frenchVoiceID, title: voiceName) { model.setVoice($0) }
+                .help("Reading with \(voiceName). A new choice applies to the next read.")
             SymbolButton(symbol: expanded ? "chevron.down" : "chevron.up", label: expanded ? "Hide subtitles" : "Show subtitles", size: 12) { expanded.toggle() }
             SymbolButton(symbol: "xmark", label: "Close", size: 12, action: close)
         }
