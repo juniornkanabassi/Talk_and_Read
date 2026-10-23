@@ -24,8 +24,6 @@ struct Capture {
 enum TextCapture {
     /// The gate the copy and clipboard steps use; the self-test swaps in a private pasteboard.
     static var gate = PasteboardGate.shared
-    /// pids already woken with AXEnhancedUserInterface / AXManualAccessibility this launch.
-    private static var wokenPIDs = Set<pid_t>()
     private static let maxCaretText = 200_000
 
     @MainActor static func captureSelection() async -> Capture? {
@@ -39,8 +37,15 @@ enum TextCapture {
     }
 
     @MainActor static func capture(pid: pid_t) async -> Capture? {
+        let result = await read(pid: pid)
+        // No Highlighter runs for a capture without geometry, so nothing would end the read later: undo the wake now.
+        if result?.hasGeometry != true { AXWake.restore(pid) }
+        return result
+    }
+
+    @MainActor private static func read(pid: pid_t) async -> Capture? {
         let appElement = AXUIElementCreateApplication(pid)
-        wake(appElement, pid: pid)
+        await AXWake.wake(appElement, pid: pid)
         let focused = axElement(appElement, kAXFocusedUIElementAttribute)
         let focusedWindow = axElement(appElement, kAXFocusedWindowAttribute)
         let window = focusedWindow ?? focused.flatMap { axElement($0, kAXWindowAttribute) }
@@ -175,14 +180,6 @@ enum TextCapture {
     }
 
     // MARK: - Helpers
-
-    /// Chromium and Electron build their AX tree only for assistive clients that ask (ReadAlong 0.1).
-    private static func wake(_ appElement: AXUIElement, pid: pid_t) {
-        guard !wokenPIDs.contains(pid) else { return }
-        wokenPIDs.insert(pid)
-        _ = AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-        _ = AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-    }
 
     static func isSecure(_ element: AXUIElement) -> Bool {
         (axAttribute(element, kAXRoleAttribute) as? String) == "AXSecureTextField"

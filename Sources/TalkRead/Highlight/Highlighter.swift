@@ -53,6 +53,7 @@ import TalkReadCore
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
         activationObserver = nil
         overlay.hide()
+        if let pid = session.capture?.pid { AXWake.restore(pid) }   // the read ended: the app is no longer "woken" (E8)
         locator = nil
         sentenceCache = nil
     }

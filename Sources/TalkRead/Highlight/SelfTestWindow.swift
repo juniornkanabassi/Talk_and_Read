@@ -1,4 +1,4 @@
-// `TalkRead --selftest-window` (R4, R5, R6, R7, R7c, R7d, R12). Headless first: PasteboardGate, the coordinate flip,
+// `TalkRead --selftest-window` (R4, R5, R6, R7, R7c, R7d, R12, E8). Headless first: PasteboardGate, the coordinate flip,
 // screenshot OCR and the OCR selection-colour anchor on rendered bitmaps. Then, on the Prompter XL screen only, one test
 // window (NSTextView, WKWebView, PDFView, rendered-text NSImageView) shown without activating the app or becoming key.
 // Each pane is read by a child process of this binary through the real TextCapture and Locator: AX calls into one's own
@@ -90,6 +90,7 @@ enum SelfTestWindow {
         let probe = CGRect(x: 100, y: 50, width: 200, height: 20)
         record("Coordinate flip", Locator.convert(topLeftScreenRect: Locator.convert(topLeftScreenRect: probe)) == probe, "AX/CG top-left <-> Cocoa is its own inverse")
         pageBaseCheck()
+        await wakeCheck("E8 wake, app with no text", bare: true)   // before any window exists in this host
         await screenshotTextCheck()
         await ocrHighlightCheck()
         if let screen = NSScreen.screens.first(where: { $0.localizedName.contains("Prompter") }) {
@@ -658,6 +659,7 @@ enum SelfTestWindow {
                    && (caret?["selectionStart"] as? Int) == textSecond.location,
                "source=\(caret?["source"] as? String ?? "nil") selectionStart=\(caret?["selectionStart"] as? Int ?? -1) (caret at \(textSecond.location)), \(TextKit.tokenize(caret?["text"] as? String ?? "").count) words to the end")
 
+        await wakeCheck("E8 wake, app with native text", bare: false)
         await overlayCheck(screen: screen, word: textTruth[0], sentence: textTruth)
         record("Test window never key", !window.isKeyWindow && !window.isMainWindow, "shown with orderFrontRegardless on \(screen.localizedName)")
     }
@@ -683,6 +685,19 @@ enum SelfTestWindow {
         if !pass { FileHandle.standardError.write(Data("  client: element=\(out["element"] ?? "-") nodeMap=\(out["nodeMap"] ?? "-") ocr=\(out["ocr"] ?? "-") rects=\(rects.prefix(3)) truth=\(truth.prefix(3))\n".utf8)) }
         record(name, pass, "source=\(out["source"] as? String ?? "?") path=\(paths) \(ok)/\(truth.count) boxed on the selected copy\(tolerance.map { " (centre within \(Int($0)) pt)" } ?? " (centre inside glyph rect)"), \(onFirst) on the other copy\(text == expected ? "" : "; captured text was \"\(text ?? "nil")\"")")
         return out
+    }
+
+    /// E8, read from a child process through AX. `bare`: this host has no window, so it exposes no text and must be woken
+    /// (ledger set, AXEnhancedUserInterface on) and put back by `restore`. Otherwise the test window exposes text and the
+    /// app must never be woken. Either way a real `TextCapture.capture` leaves the attribute as it found it.
+    private func wakeCheck(_ name: String, bare: Bool) async {
+        guard let out = await client("wake") else { record(name, false, "client produced no output"); return }
+        func flag(_ key: String) -> Bool { out[key] as? Bool ?? false }
+        let before = flag("before")
+        let expected = bare ? (out["windows"] as? Int == 0 && flag("woken") && flag("during") && !before)
+                            : (out["windows"] as? Int ?? 0 > 0 && !flag("woken") && flag("during") == before)
+        let pass = expected && flag("restored") == before && flag("afterCapture") == before && !flag("leftWoken")
+        record(name, pass, "windows \(out["windows"] ?? "?"): before \(before), woken \(flag("woken")), during \(flag("during")), after restore \(flag("restored")), after capture \(flag("afterCapture")), ledger left \(flag("leftWoken"))")
     }
 
     private func client(_ pane: String) async -> [String: Any]? {
@@ -849,6 +864,19 @@ enum SelfTestClient {
                 queue += (axAttribute(element, kAXChildrenAttribute) as? [AXUIElement]) ?? []
             }
             return 1
+        }
+        if pane == "wake" {   // E8: AXEnhancedUserInterface on the host, seen from outside, around wake / restore / capture
+            let app = AXUIElementCreateApplication(host)
+            func enhanced() -> Any { (axAttribute(app, "AXEnhancedUserInterface") as? Bool).map { $0 } ?? false }
+            out["windows"] = (axAttribute(app, kAXWindowsAttribute) as? [AXUIElement])?.count ?? 0
+            out["before"] = enhanced()
+            await AXWake.wake(app, pid: host)
+            (out["woken"], out["during"]) = (AXWake.isWoken(host), enhanced())
+            AXWake.restore(host)
+            out["restored"] = enhanced()
+            _ = await TextCapture.capture(pid: host)
+            (out["afterCapture"], out["leftWoken"]) = (enhanced(), AXWake.isWoken(host))
+            return 0
         }
         guard let capture = await TextCapture.capture(pid: host) else {
             out["error"] = "no capture"
