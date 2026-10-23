@@ -688,7 +688,7 @@ enum VoiceGroups {
     static func purpose(_ title: String) -> (symbol: String, what: String) {
         let t = title.lowercased()
         if t.contains("qwen") { return ("waveform", "More natural American and French voices") }
-        if t.contains("breeze") { return ("waveform", "Expressive English voices. \(BreezeLicence.note)") }
+        if t.contains("breeze") { return ("waveform", "Expressive English voices") }   // its licence row follows it
         if t.contains("parakeet") { return ("text.word.spacing", "Word timing for the Qwen3 and Breeze voices") }
         if t.contains("french") { return ("globe.europe.africa", "Kokoro's French voice, Siwis") }
         return ("square.and.arrow.down", "Optional download")
