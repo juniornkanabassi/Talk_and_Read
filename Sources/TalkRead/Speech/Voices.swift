@@ -67,11 +67,15 @@ final class Engines {
     let system: SpeechEngine
     let qwen: SpeechEngine
     let aligner: Aligner
-    init(neural: SpeechEngine = NeuralEngine(), system: SpeechEngine = SystemEngine(), qwen: SpeechEngine? = nil, aligner: Aligner = Aligner()) {
+    /// The one queue the MLX engines (Qwen3, Breeze next) and their shared aligner run on (PLAN 0.4.0 Sol rev. 1).
+    let mlx: MLXQueue
+    init(neural: SpeechEngine = NeuralEngine(), system: SpeechEngine = SystemEngine(), qwen: SpeechEngine? = nil,
+         aligner: Aligner = Aligner(), mlx: MLXQueue = MLXQueue()) {
         self.neural = neural
         self.system = system
         self.aligner = aligner
-        self.qwen = qwen ?? QwenEngine(aligner: aligner)
+        self.mlx = mlx
+        self.qwen = qwen ?? QwenEngine(aligner: aligner, queue: mlx)
     }
     // Contract for 0.3.0 (V-C calls these and never the engines' properties directly).
     func engine(for v: Voice) -> SpeechEngine {
@@ -88,8 +92,11 @@ final class Engines {
         [qwen as? DownloadableModel, aligner, (neural as? NeuralEngine)?.frenchPack].compactMap { $0 }
     }
     /// Preparing, synthesising or unloading somewhere: the idle unload waits.
-    var isBusy: Bool { neural.isBusy || qwen.isBusy || system.isBusy }
-    /// Frees every engine's model memory (idle timer, quit). An engine finishes its in-flight work first.
+    var isBusy: Bool { mlx.isBusy || neural.isBusy || qwen.isBusy || system.isBusy }
+    /// Calls `f` once the MLX queue is next idle (at once if it is): a model switch retries then (Sol plan review 0.4.0 #5).
+    // ponytail: only the MLX queue is watched; the other engines are never busy outside test fakes.
+    func whenIdle(_ f: @escaping () -> Void) { mlx.whenIdle(f) }
+    /// Frees every engine's model memory (idle timer, model switch). An engine finishes its in-flight work first.
     func unloadAll() { unloads += 1; neural.unload(); system.unload(); qwen.unload() }
     /// How many times `unloadAll` ran: a read's warm fallback is cold again once this moves (Sol inspection 4 #2).
     private(set) var unloads = 0

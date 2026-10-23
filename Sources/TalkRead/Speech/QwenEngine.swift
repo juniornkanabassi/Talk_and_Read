@@ -1,16 +1,16 @@
 // Qwen3-TTS 1.7B Base, 8-bit MLX, through mlx-audio-swift (PLAN 0.3.0 decision 3). Each voice clones one bundled
 // reference clip plus its exact transcript, so a read keeps one voice from its first chunk to its last (V2). Chunks come
 // back whole (no streaming contract), with words from the Parakeet v3 aligner and the stop guard applied.
-// One serial queue runs prepare, synthesise and unload in order (decision 5): MLX state is never touched concurrently, an
-// unload waits for the chunk in flight, and `isBusy` counts queued and running work.
+// Prepare, synthesise and unload run in order on the MLX queue it shares with Breeze (decision 5, PLAN 0.4.0 Sol rev. 1):
+// MLX state is never touched concurrently, an unload waits for the chunk in flight, and `isBusy` counts queued and
+// running work of either engine.
 import Foundation
 import MLX
 import MLXAudioCore
 import MLXAudioTTS
-import os
 import TalkReadCore
 
-final class QwenEngine: SpeechEngine, @unchecked Sendable {   // mutable state is only touched inside `serial`
+final class QwenEngine: SpeechEngine, @unchecked Sendable {   // mutable state is only touched inside `queue`
     var kind: EngineKind { .qwen }
 
     struct Reference { let id, name, accent, language, transcript: String }
@@ -42,15 +42,13 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {   // mutable state i
     static let streamingInterval = 2.0
 
     let aligner: Aligner
-    private let lock = NSLock()
-    private var tail: Task<Void, Never>?
-    private var queued = 0
+    let queue: MLXQueue
     private var model: Qwen3TTSModel?
     private var conditionings: [String: Qwen3TTSModel.Qwen3TTSReferenceConditioning] = [:]
 
-    init(aligner: Aligner) { self.aligner = aligner }
+    init(aligner: Aligner, queue: MLXQueue) { self.aligner = aligner; self.queue = queue }
 
-    var isBusy: Bool { lock.withLock { queued > 0 } }
+    var isBusy: Bool { queue.isBusy }
 
     static func modelInstalled() -> Bool {
         files.allSatisfy { f in
@@ -68,11 +66,11 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {   // mutable state i
     /// Loads the model, the voice's conditioning and the aligner, and renders one short phrase so the first chunk of a
     /// read does not pay for kernel compilation.
     func prepare(voice: String) async throws {
-        try await serial { _ = try await self.loaded(voice) }
+        try await queue.run { _ = try await self.loaded(voice) }
     }
 
     func synthesize(_ text: String, voice: String) async throws -> SynthChunk {
-        try await serial {
+        try await queue.run {
             let (model, conditioning, language) = try await self.loaded(voice)
             let started = Date()
             let samples = try await Self.render(model, text, conditioning)
@@ -84,14 +82,15 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {   // mutable state i
         }
     }
 
-    /// Releases the weights, every voice's conditioning, the aligner and MLX's cache, after any work in flight.
+    /// Releases the weights, every voice's conditioning, the aligner and MLX's cache, after any work in flight; queued
+    /// before this returns, so `isBusy` is true at once (Sol plan review 0.4.0 #5).
     func unload() {
-        Task { try? await serial {
+        queue.enqueue {
             self.model = nil
             self.conditionings = [:]
             await self.aligner.unload()
             Memory.clearCache()
-        } }
+        }
     }
 
     // MARK: - Inside the queue
@@ -133,49 +132,14 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {   // mutable state i
         return (model, conditioning, ref.language)
     }
 
-    /// Streams the chunk and returns only once the dependency's generation has ended (Sol inspection 4 #1). `generateStream`
-    /// generates in a task of its own, which ending the stream (our cancellation) cancels but nothing joins; that task
-    /// inherits `probe` and releases it when it ends, so waiting for the probe's release joins it, whatever our
-    /// cancellation (were the dependency to start it detached, `--cancel` would fail). Streaming in 2 s decode steps, not
-    /// the awaitable non-streaming `generate`: that decodes the reference clip with every chunk, about 2 GB more at peak
-    /// (7.4 against 5.3-5.5 GB at 2.5x, 23 Oct).
+    /// Streams the chunk through the queue's join-on-cancel collection (Sol inspection 4 #1). Streaming in 2 s decode
+    /// steps, not the awaitable non-streaming `generate`: that decodes the reference clip with every chunk, about 2 GB
+    /// more at peak (7.4 against 5.3-5.5 GB at 2.5x, 23 Oct).
     private static func render(_ model: Qwen3TTSModel, _ text: String, _ conditioning: Qwen3TTSModel.Qwen3TTSReferenceConditioning) async throws -> [Float] {
-        let (released, release) = AsyncStream<Void>.makeStream()
-        let joined = Task { for await _ in released {} }   // created outside the binding, and not cancelled with us
-        let samples: [Float]
-        do {
-            samples = try await $probe.withValue(Probe(release)) {
-                var samples: [Float] = []
-                for try await event in model.generateStream(text: text, conditioning: conditioning, generationParameters: model.defaultGenerationParameters,
-                                                            streamingInterval: streamingInterval) {
-                    if case .audio(let a) = event { samples += a.asArray(Float.self) }
-                }
-                return samples
-            }
-        } catch {
-            await joined.value
-            throw error
-        }
-        await joined.value
-        try Task.checkCancellation()   // a cancelled stream just ends: its partial chunk is no result
-        guard !samples.isEmpty, samples.allSatisfy(\.isFinite) else { throw SpeechError.badAudio }
-        return samples
-    }
-
-    /// Qwen3 generations still running and the most at once since the last reset (the cancel/restart self-test): every
-    /// task the dependency starts inside `render` inherits `probe` and holds it until that task ends.
-    static let generations = OSAllocatedUnfairLock(initialState: (now: 0, peak: 0))
-    @TaskLocal private static var probe: Probe?
-    private final class Probe: Sendable {
-        let release: AsyncStream<Void>.Continuation
-        init(_ release: AsyncStream<Void>.Continuation) {
-            self.release = release
-            QwenEngine.generations.withLock { $0.now += 1; $0.peak = max($0.peak, $0.now) }
-        }
-        deinit {
-            QwenEngine.generations.withLock { $0.now -= 1 }
-            release.finish()
-        }
+        try await MLXQueue.collect {
+            model.generateStream(text: text, conditioning: conditioning, generationParameters: model.defaultGenerationParameters,
+                                 streamingInterval: streamingInterval)
+        }.samples
     }
 
     /// The bundled clip; in a `swift build` run (no app bundle) the source tree's copy.
@@ -183,24 +147,6 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {   // mutable state i
         if let url = Bundle.main.url(forResource: id, withExtension: "wav", subdirectory: "Voices") { return url }
         let dev = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../../Resources/Voices/\(id).wav").standardized
         return FileManager.default.fileExists(atPath: dev.path) ? dev : nil
-    }
-
-    /// Runs `op` after every earlier call has finished. Cancelling the caller cancels `op` (generation checks for it
-    /// every frame), so an abandoned chunk frees the GPU within a frame or two.
-    private func serial<T>(_ op: @escaping () async throws -> T) async throws -> T {
-        let task: Task<T, Error> = lock.withLock {
-            let previous = tail
-            queued += 1
-            let t = Task.detached(priority: .userInitiated) { [self] () async throws -> T in
-                defer { lock.withLock { queued -= 1 } }
-                await previous?.value
-                try Task.checkCancellation()
-                return try await op()
-            }
-            tail = Task.detached { _ = try? await t.value }
-            return t
-        }
-        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 }
 

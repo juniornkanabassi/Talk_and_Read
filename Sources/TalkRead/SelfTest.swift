@@ -60,7 +60,7 @@ enum SelfTest {
                           : TextKit.chunks(text, tokens: tokens)
         // A Kokoro voice id (English, or French ff_*) runs the neural engine, qwen.* Qwen3, anything else (an
         // AVSpeechSynthesisVoice identifier) the system one.
-        let engine: SpeechEngine = qwen ? QwenEngine(aligner: aligner)
+        let engine: SpeechEngine = qwen ? QwenEngine(aligner: aligner, queue: MLXQueue())
             : KokoroAneConstants.englishVoices.contains(voice) || voice.hasPrefix("ff_") ? NeuralEngine() as SpeechEngine : SystemEngine()
         var clock = Date()
         try await engine.prepare(voice: voice)
@@ -394,17 +394,17 @@ enum SelfTest {
 
     /// Sol inspection 4 #1: a Qwen3 chunk cancelled while it generates stops within about a decode step, keeps the engine
     /// busy until the dependency's generation has really ended, and never overlaps the next chunk's generation
-    /// (`QwenEngine.generations` counts the dependency's own tasks). Round 1 cancels alone; rounds 2-4 start the next
+    /// (`MLXQueue.generations` counts the dependency's own tasks). Round 1 cancels alone; rounds 2-4 start the next
     /// chunk the moment they cancel.
     @MainActor private static func qwenCancelRun(_ text: String, voice: String, aligner: Aligner) async throws -> Int32 {
-        let qwen = QwenEngine(aligner: aligner)
+        let qwen = QwenEngine(aligner: aligner, queue: MLXQueue())
         guard await qwen.voices().first(where: { $0.id == voice })?.installed == true else { print("Qwen3 or the aligner is not installed"); return 1 }
         try await qwen.prepare(voice: voice)
-        func now() -> Int { QwenEngine.generations.withLock { $0.now } }
+        func now() -> Int { MLXQueue.generations.withLock { $0.now } }
         var pass = true
         func check(_ what: String, _ ok: Bool) { print("\(ok ? "ok" : "FAILED"): \(what)"); pass = pass && ok }
         for round in 1 ... 4 {
-            QwenEngine.generations.withLock { $0.peak = $0.now }
+            MLXQueue.generations.withLock { $0.peak = $0.now }
             let first = Task { try await qwen.synthesize(String(text.prefix(300)), voice: voice) }
             while now() == 0 { try await Task.sleep(nanoseconds: 1_000_000) }
             try await Task.sleep(nanoseconds: 500_000_000)   // well inside a chunk that takes seconds
@@ -415,7 +415,7 @@ enum SelfTest {
                     var idle = false
                     while true {
                         let busy = qwen.isBusy
-                        if QwenEngine.generations.withLock({ $0.now }) == 0 { return (idle, Date()) }
+                        if MLXQueue.generations.withLock({ $0.now }) == 0 { return (idle, Date()) }
                         if !busy { idle = true }
                     }
                 }
@@ -428,7 +428,7 @@ enum SelfTest {
                 let cancelled = Date()
                 first.cancel()
                 let next = try await qwen.synthesize("And here is the next chunk.", voice: voice)
-                let peak = QwenEngine.generations.withLock { $0.peak }
+                let peak = MLXQueue.generations.withLock { $0.peak }
                 check(String(format: "restart %d: at most %d generation(s) at once; next chunk %.2f s of audio, ready %.0f ms after the cancel",
                              round - 1, peak, Double(next.samples.count) / next.sampleRate, Date().timeIntervalSince(cancelled) * 1000),
                       peak == 1 && !next.samples.isEmpty)
