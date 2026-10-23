@@ -25,14 +25,16 @@ public struct Speakable: Sendable {
     /// Lexicon (whole word, case-insensitive, longest key first); URLs and emails spoken as host words ("example dot com",
     /// the path is dropped); markdown noise dropped; `&` `%` `°C` `~5` spoken; emoji dropped; whitespace collapsed to one
     /// space; a newline becomes ". " when the line ends without punctuation, so list items get a pause.
-    /// `language`: "en" or "fr"; French text gets French spoken forms (V-B), English is unchanged.
+    /// `language`: "en" or "fr". French text also gets French spoken forms: numbers ("4,2 millions", years), dates
+    /// ("14 novembre", "1er", "14/11/2027"), times ("11h20"), `%` ("pour cent"), `°C` ("degrés Celsius"), `€ $ £`, `&` ("et"),
+    /// "point" and "arobase" in addresses. English is unchanged (the engine's own normaliser reads English digits).
     public static func make(_ source: String, range: Range<Int>, lexicon: [String: String], language: String = "en") -> Speakable {
         let ns = source as NSString
         let lo = min(max(range.lowerBound, 0), ns.length)
         let hi = min(max(range.upperBound, lo), ns.length)
         // ponytail: scanned as a slice so regex cost is per chunk, not per document; callers pass chunk-sized ranges.
         let slice = ns.substring(with: NSRange(location: lo, length: hi - lo))
-        var maker = Maker(slice, lexicon: lexicon)
+        var maker = Maker(slice, lexicon: lexicon, french: language == "fr")
         maker.scan(0, maker.u.count, lineStart: true)
         return maker.finish(base: lo)
     }
@@ -69,16 +71,26 @@ private enum Rx {
     static let email = make("[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+")
     static let url = make("https?://[^\\s<>\"]+", .caseInsensitive)
     static let www = make("www\\.[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+(?:[/?#][^\\s<>\"]*)?", .caseInsensitive)
+    // French. Digit groups: "12 345" (space, no-break or narrow no-break), "1.000.000" (two or more dot groups); "," or "." then digits is a decimal.
+    // ponytail: a plain space groups too, so a list "100 200 300" reads as one number; French text writes thousands that way.
+    static let frNumber = make("((?:[0-9]{1,3}(?:[\\u00A0\\u202F ][0-9]{3})+(?![0-9])|[0-9]{1,3}(?:\\.[0-9]{3}){2,}(?![0-9])|[0-9]+))(?:[,.]([0-9]+))?")
+    static let frDate = make("([0-9]{1,2})/([0-9]{1,2})/([0-9]{4})(?![0-9])")
+    static let frTime = make("([0-9]{1,2})(?:h([0-9]{2})?|:([0-9]{2}))(?![\\p{L}\\p{N}])")
+    static let frOrdinal = make("(er|re|ère|e|ème|eme|nd|nde)(?![\\p{L}\\p{N}])")
+    static let frMonth = make("[\\u00A0 ]+(?:" + FrenchNumbers.months.joined(separator: "|") + ")(?![\\p{L}])", .caseInsensitive)
+    static let frCurrency = make("[\\u00A0\\u202F ]?([€$£])")
 }
 
 private struct Maker {
     let slice: String
     let u: [UInt16]
+    let french: Bool
     let lexicon: [(NSRegularExpression, String)]
     var units: [UInt16] = [], lows: [Int] = [], highs: [Int] = []
 
-    init(_ slice: String, lexicon: [String: String]) {
+    init(_ slice: String, lexicon: [String: String], french: Bool) {
         self.slice = slice
+        self.french = french
         u = Array(slice.utf16)
         // Longest key first, so "New York City" beats "New York". Spaces in a key match any whitespace run.
         self.lexicon = lexicon.keys.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -118,12 +130,12 @@ private struct Maker {
         return v >= 0x2190 && (s.properties.isEmojiPresentation || s.properties.isEmoji)
     }
 
-    /// Spoken labels of a host or address: "." -> " dot ", "@" -> " at ".
+    /// Spoken labels of a host or address: "." -> " dot ", "@" -> " at " (French " point ", " arobase ").
     mutating func emitLabels(_ a: Int, _ b: Int) {
         var label = a
         for q in a..<b where u[q] == 0x2E || u[q] == 0x40 {
             copy(label, q)
-            put(u[q] == 0x2E ? " dot " : " at ", q..<q + 1)
+            put(u[q] == 0x2E ? (french ? " point " : " dot ") : (french ? " arobase " : " at "), q..<q + 1)
             label = q + 1
         }
         copy(label, b)
@@ -161,6 +173,7 @@ private struct Maker {
                 }
                 if let m = match(Rx.email, p, to) { emitLabels(p, p + m.range.length); p += m.range.length; continue }
                 if let m = match(Rx.url, p, to) ?? match(Rx.www, p, to) { p += emitAddress(p, m.range.length); continue }
+                if french, Maker.isDigit(c) || c == 0x20AC || c == 0x24 || c == 0xA3, let used = frenchNumber(p, to) { p += used; continue }
             }
             let next: UInt16 = p + 1 < to ? u[p + 1] : 0
             switch c {
@@ -175,17 +188,18 @@ private struct Maker {
                 }
             case 0x2A where next == 0x2A, 0x5F where next == 0x5F: p += 2; continue   // ** and __
             case 0x60, 0x2022: p += 1; continue                                         // backtick, bullet
-            case 0x26: put(" and ", p..<p + 1); p += 1; continue
-            case 0x25 where p > 0 && Maker.isDigit(u[p - 1]): put(" percent", p..<p + 1); p += 1; continue
+            case 0x26: put(french ? " et " : " and ", p..<p + 1); p += 1; continue
+            case 0x25 where follows(digitBefore: p): put(french ? " pour cent" : " percent", p..<p + 1); p += 1; continue
             case 0xB0:
+                let degrees = french ? "degrés" : "degrees"
                 if next == 0x43 || next == 0x46, p + 2 >= to || !Maker.isWord(u[p + 2]) {
-                    put(next == 0x43 ? " degrees Celsius" : " degrees Fahrenheit", p..<p + 2); p += 2
-                } else { put(" degrees", p..<p + 1); p += 1 }
+                    put(" \(degrees) " + (next == 0x43 ? "Celsius" : "Fahrenheit"), p..<p + 2); p += 2
+                } else { put(" \(degrees)", p..<p + 1); p += 1 }
                 continue
             case 0x7E:
                 var q = p + 1
                 while q < to, u[q] == 0x20 { q += 1 }
-                if q < to, Maker.isDigit(u[q]) || u[q] == 0xA3 || u[q] == 0x24 || u[q] == 0x20AC { put("about ", p..<p + 1); p += 1; continue }
+                if q < to, Maker.isDigit(u[q]) || u[q] == 0xA3 || u[q] == 0x24 || u[q] == 0x20AC { put(french ? "environ " : "about ", p..<p + 1); p += 1; continue }
             default: break
             }
             var value = UInt32(c), size = 1
@@ -233,5 +247,67 @@ private struct Maker {
             else { covered.append(r) }
         }
         return Speakable(text: String(decoding: out, as: UTF16.self), lows: lo, highs: hi, covered: covered)
+    }
+
+    // MARK: French
+
+    /// `%` right after a digit; French typography puts a (no-break) space in between.
+    func follows(digitBefore p: Int) -> Bool {
+        var q = p - 1
+        if french { while q >= 0, u[q] == 0x20 || u[q] == 0xA0 || u[q] == 0x202F { q -= 1 } }
+        return q >= 0 && Maker.isDigit(u[q])
+    }
+
+    /// French spoken form of the date, time, number or amount that starts at p (a digit, or a currency sign before one).
+    /// Returns how much source it used, or nil to leave the text to the normal scan.
+    mutating func frenchNumber(_ p: Int, _ to: Int) -> Int? {
+        func group(_ m: NSTextCheckingResult, _ i: Int) -> String? {
+            let r = m.range(at: i)
+            return r.location == NSNotFound ? nil : String(decoding: u[r.location..<r.location + r.length], as: UTF16.self)
+        }
+        typealias F = FrenchNumbers
+        if let m = match(Rx.frDate, p, to), let d = Int(group(m, 1)!), let month = Int(group(m, 2)!), (1...31).contains(d), (1...12).contains(month) {
+            put(((d == 1 ? ["premier"] : F.cardinal(d)) + [F.months[month - 1]] + F.cardinal(Int(group(m, 3)!)!)).joined(separator: " "), p..<p + m.range.length)
+            return m.range.length
+        }
+        if let m = match(Rx.frTime, p, to), let h = Int(group(m, 1)!), h < 24, let minutes = Int(group(m, 2) ?? group(m, 3) ?? "0"), minutes < 60 {
+            let hours = h <= 1 ? [h == 1 ? "une" : "zéro", "heure"] : F.cardinal(h) + ["heures"]
+            put((hours + (minutes > 0 ? F.cardinal(minutes) : [])).joined(separator: " "), p..<p + m.range.length)
+            return m.range.length
+        }
+        var start = p, sign: UInt16?   // a currency sign in front: "€45", "$ 4,5"
+        if !Maker.isDigit(u[p]) {
+            var q = p + 1
+            while q < to, u[q] == 0x20 || u[q] == 0xA0 { q += 1 }
+            guard q < to, Maker.isDigit(u[q]) else { return nil }
+            sign = u[p]; start = q
+        }
+        guard let m = match(Rx.frNumber, start, to), let whole = group(m, 1) else { return nil }
+        let digits = whole.filter { $0.isASCII && $0.isNumber }
+        guard digits.count <= 12 else { return nil }   // beyond a thousand billion the engine's own normaliser takes over
+        let fraction = group(m, 2)
+        var end = start + m.range.length
+        let n = fraction == nil ? Int(digits) : nil
+        var words = digits.count > 1 && digits.hasPrefix("0") ? F.digits(digits) : F.cardinal(Int(digits)!)
+        if let f = fraction {
+            let zeros = f.prefix { $0 == "0" }, rest = f.dropFirst(zeros.count)
+            words += ["virgule"] + Array(repeating: "zéro", count: zeros.count) + (rest.isEmpty ? [] : rest.count <= 9 ? F.cardinal(Int(rest)!) : F.digits(String(rest)))
+        }
+        if sign == nil, let n, let o = match(Rx.frOrdinal, end, to) {
+            let suffix = group(o, 1)!
+            words = F.ordinal(n, feminine: suffix == "re" || suffix == "ère" || suffix == "nde")
+            end += o.range.length
+        } else if sign == nil, n == 1, match(Rx.frMonth, end, to) != nil {
+            words = ["premier"]
+        } else if sign == nil, let c = match(Rx.frCurrency, end, to) {
+            sign = u[end + c.range.length - 1]; end += c.range.length
+        }
+        if let sign {
+            let noun = sign == 0x20AC ? "euro" : sign == 0x24 ? "dollar" : "livre"
+            words.append(n == 1 ? noun : noun + "s")
+        }
+        let glued = end < to && Maker.isWord(u[end])   // "5km" -> "cinq km"
+        put(words.joined(separator: " ") + (glued ? " " : ""), p..<end)
+        return end - p
     }
 }

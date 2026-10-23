@@ -10,7 +10,15 @@ import TalkReadCore
 
 final class NeuralEngine: SpeechEngine {
     var kind: EngineKind { .neural }
-    private let loader = KokoroLoader()
+    private let loader = KokoroLoader(variant: .english, voice: KokoroAneConstants.defaultVoice)
+    /// The French manager (own G2P: French dictionary and CharsiuG2P); created on the first French voice, released by `unload()`.
+    private let frenchLoader = KokoroLoader(variant: .french, voice: NeuralEngine.frenchVoice)
+    static let frenchVoice = "ff_siwis"
+    /// Voice ids that speak French: `ff_` is Kokoro's French female prefix.
+    static func isFrench(_ voice: String) -> Bool { voice.hasPrefix("ff_") }
+
+    /// The French voice's extra files (about 100 MB), downloaded with the user's consent on the Models page.
+    @MainActor lazy var frenchPack: DownloadableModel = FrenchPack()
 
     /// Kokoro vocab ids (vocab.json, identical for the ANE and ANE-v3 English checkpoints): BOS/EOS = 0, space = 16.
     static let boundaryIds: Set<Int32> = [0, 16]
@@ -27,11 +35,26 @@ final class NeuralEngine: SpeechEngine {
         let installed = Self.modelInstalled()
         // English packs only for 1.0; other prefixes (e/f/h/i/j/p/z) are other languages.
         let kinds = ["bf": ("British", "Female"), "bm": ("British", "Male"), "af": ("American", "Female"), "am": ("American", "Male")]
-        return KokoroAneConstants.englishVoices.compactMap { id -> Voice? in
+        let english = KokoroAneConstants.englishVoices.compactMap { id -> Voice? in
             guard let (accent, gender) = kinds[String(id.prefix(2))] else { return nil }
-            return Voice(id: id, name: String(id.dropFirst(3)).capitalized, accent: accent, gender: gender, engine: .neural, installed: installed)
+            return Voice(id: id, name: String(id.dropFirst(3)).capitalized, accent: accent, gender: gender, engine: .neural, installed: installed, language: "en")
         }
         .sorted { ($0.accent == "British" ? 0 : 1, $0.name) < ($1.accent == "British" ? 0 : 1, $1.name) }
+        // The one French pack Kokoro has; it needs the French files on top of the English chain (`frenchPack`).
+        return english + [Voice(id: Self.frenchVoice, name: "Siwis", accent: "French", gender: "Female", engine: .neural,
+                                installed: Self.frenchPackInstalled(), language: "fr")]
+    }
+
+    /// The French extras are on disk: the French dictionary, the CharsiuG2P pair and the `ff_siwis` pack (about 100 MB),
+    /// on top of the English chain, which French shares.
+    static func frenchPackInstalled() -> Bool {
+        guard modelInstalled(), let root = try? TtsCacheDirectory.ensure().appendingPathComponent("Models") else { return false }
+        let kokoro = root.appendingPathComponent("kokoro")
+        let files = ["coremldata.bin", "model.mil", "metadata.json", "weights/weight.bin", "analytics/coremldata.bin"]
+        let paths = [kokoro.appendingPathComponent(KokoroAneConstants.frenchLexiconCacheFile),
+                     root.appendingPathComponent("kokoro-82m-coreml/ANE/\(frenchVoice).bin")]
+            + ["MultilingualG2PEncoder.mlmodelc", "MultilingualG2PDecoder.mlmodelc"].flatMap { b in files.map { kokoro.appendingPathComponent("\(b)/\($0)") } }
+        return paths.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     /// The seven compiled stages and the vocab of the legacy English chain are on disk (about 80 MB).
@@ -44,13 +67,14 @@ final class NeuralEngine: SpeechEngine {
     /// Loads the model (downloading it on first use) and the voice, then synthesises one word: the first prediction
     /// after a load is about a second slower, and that must not land on the reader's first chunk.
     func prepare(voice: String) async throws {
-        let manager = try await loader.manager()
+        let french = Self.isFrench(voice)
+        let manager = try await (french ? frenchLoader : loader).manager()
         try await manager.initialize(preloadVoices: [voice])
-        _ = try await manager.synthesizeDetailed(text: "Ready.", voice: voice, speed: 1)
+        _ = try await manager.synthesizeDetailed(text: french ? "Prêt." : "Ready.", voice: voice, speed: 1)
     }
 
     func synthesize(_ text: String, voice: String) async throws -> SynthChunk {
-        let manager = try await loader.manager()
+        let manager = try await (Self.isFrench(voice) ? frenchLoader : loader).manager()
         let result = try await manager.synthesizeDetailed(text: text, voice: voice, speed: 1)
         guard !result.samples.isEmpty, result.samples.allSatisfy(\.isFinite) else { throw SpeechError.badAudio }
         let rate = Double(result.sampleRate)
@@ -76,6 +100,7 @@ final class NeuralEngine: SpeechEngine {
 
     func unload() {
         Task { await loader.drop() }
+        Task { await frenchLoader.drop() }
     }
 
     // MARK: - Pure helpers (checked by `--selftest-tts`)
@@ -149,13 +174,43 @@ final class NeuralEngine: SpeechEngine {
     }
 }
 
+/// The French extras of Kokoro (dictionary, G2P model, `ff_siwis` pack), fetched by FluidAudio's own downloader.
+@MainActor private final class FrenchPack: DownloadableModel {
+    let title = "French voice (Kokoro)"
+    let modelMegabytes = 100
+    var isModelInstalled: Bool { NeuralEngine.frenchPackInstalled() }
+
+    func downloadModel(progress: @escaping @Sendable (Double) -> Void) async throws {
+        // Weights by size; the shared English chain (about 80 MB) only counts when this Mac has none yet.
+        let chain = NeuralEngine.modelInstalled() ? 0.0 : 0.45
+        let total = chain + 0.55
+        var done = 0.0
+        func stage(_ weight: Double, _ run: (@escaping ProgressHandler) async throws -> Void) async throws {
+            let start = done
+            try await run { p in progress((start + weight * p.fractionCompleted) / total) }
+            done += weight
+            progress(done / total)
+        }
+        var repo = URL(fileURLWithPath: "/")
+        try await stage(chain) { repo = try await KokoroAneResourceDownloader.ensureModels(variant: .french, progressHandler: $0) }
+        try await stage(0.1) { _ in _ = try await KokoroAneResourceDownloader.ensureLexiconCache(KokoroAneConstants.frenchLexiconCacheFile) }
+        try await stage(0.4) { try await KokoroAneResourceDownloader.ensureMultilingualG2PAssets(progressHandler: $0) }
+        try await stage(0.05) { _ in _ = try await KokoroAneResourceDownloader.ensureVoicePack(NeuralEngine.frenchVoice, repoDirectory: repo, variant: .french) }
+    }
+}
+
 /// Lazily creates and initialises one Kokoro manager; concurrent callers await the same load.
 private actor KokoroLoader {
     private var task: Task<KokoroAneManager, Error>?
+    private let variant: KokoroAneVariant
+    private let voice: String
+
+    init(variant: KokoroAneVariant, voice: String) { self.variant = variant; self.voice = voice }
 
     func manager() async throws -> KokoroAneManager {
+        let (variant, voice) = (self.variant, self.voice)
         let task = self.task ?? Task {
-            let m = KokoroAneManager(variant: .english, defaultVoice: KokoroAneConstants.defaultVoice, version: .legacy)
+            let m = KokoroAneManager(variant: variant, defaultVoice: voice, version: .legacy)
             try await m.initialize()
             return m
         }
