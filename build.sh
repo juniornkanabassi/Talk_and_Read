@@ -19,6 +19,10 @@ BUILD_ARGS=(--package-path "$ROOT" --configuration release --scratch-path "$BUIL
             --cache-path "$BUILD_ROOT/Cache" --config-path "$BUILD_ROOT/Config" --security-path "$BUILD_ROOT/Security")
 swift build "${BUILD_ARGS[@]}"
 BIN_DIR=$(swift build "${BUILD_ARGS[@]}" --show-bin-path)
+# MLX's GPU kernels: SwiftPM compiles them only when the Metal Toolchain is installed (`xcodebuild -downloadComponent
+# MetalToolchain`); without them Qwen3 fails at its first GPU call, so refuse to package.
+METALLIB="mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+[[ -s "$BIN_DIR/$METALLIB" ]] || { print -u2 "No $METALLIB in the build: install the Metal Toolchain"; exit 1; }
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources/mcp"
 cp "$BIN_DIR/TalkRead" "$APP/Contents/MacOS/TalkRead"
 cp "$BIN_DIR/TalkReadCLI" "$APP/Contents/Helpers/talkread"
@@ -28,6 +32,9 @@ cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/Resources/MenuBarIcon.png" "$ROOT/Resources/MenuBarIcon@2x.png" "$APP/Contents/Resources/"
 # SwiftPM resource bundles (FluidAudio ships some) must travel with the app.
 for bundle in "$BIN_DIR"/*.bundle(N); do /usr/bin/ditto "$bundle" "$APP/Contents/Resources/${bundle:t}"; done
+[[ -s "$APP/Contents/Resources/$METALLIB" ]] || { print -u2 "$METALLIB did not reach the app bundle"; exit 1; }
+# Qwen3 reference clips, one per voice (Resources/Voices/<voice id>.wav).
+/usr/bin/ditto "$ROOT/Resources/Voices" "$APP/Contents/Resources/Voices"
 # The Developer ID certificate is installed twice; the SHA-1 picks one explicitly. Ad hoc is the fallback and loses TCC grants on rebuild.
 SIGN_ID="-"
 DEV_ID_SHA="AD9C29D9DAA8406609281158C2F4DF1B23260AD2"
