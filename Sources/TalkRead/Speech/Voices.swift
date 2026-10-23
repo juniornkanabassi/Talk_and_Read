@@ -44,8 +44,10 @@ protocol SpeechEngine: AnyObject {
     func unload()
 }
 
-/// An engine backed by a large downloaded model (Qwen3, Breeze): the UI shows its size and asks before downloading.
-protocol ModelBackedEngine: SpeechEngine {
+/// A large model the user downloads with consent (Qwen3, the Parakeet v3 aligner, the Kokoro French pack): the Models
+/// page lists these with their sizes; nothing downloads before the user says so (PLAN 0.3.0, Sol plan review 1 #1, #6).
+@MainActor protocol DownloadableModel: AnyObject {
+    var title: String { get }
     var modelMegabytes: Int { get }
     var isModelInstalled: Bool { get }
     func downloadModel(progress: @escaping @Sendable (Double) -> Void) async throws
@@ -59,4 +61,10 @@ final class Engines {
     func engine(for v: Voice) -> SpeechEngine { v.engine == .neural ? neural : system }
     /// Every engine's voices, all languages and genders; the UI filters (female only, by model, by language).
     func allVoices() async -> [Voice] { await neural.voices() + system.voices() }
+    /// Models the user may download, with sizes (Models page and onboarding).
+    @MainActor func downloadables() -> [DownloadableModel] { [] }
+    /// Preparing, synthesising or unloading somewhere: the idle unload waits.
+    var isBusy: Bool { false }
+    /// Frees every engine's model memory (idle timer, quit). An engine finishes its in-flight work first.
+    func unloadAll() { neural.unload(); system.unload() }
 }

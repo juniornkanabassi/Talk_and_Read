@@ -11,7 +11,8 @@ public enum Alignment {
     /// word for several single-letter tokens ("fbi" for F, B, I).
     // ponytail: each row only looks at the source words from 10 behind to 50 ahead of the previous row's best column (O(n*60)
     // not O(n*m)); a gap of more than 50 words between the two texts loses the alignment past it. Callers pass one chunk.
-    public static func assign(spoken: [String], source: [String]) -> [Int?] {
+    /// `language`: "en" or "fr" (V-B makes the number and date rules language-aware; English unchanged).
+    public static func assign(spoken: [String], source: [String], language: String = "en") -> [Int?] {
         var result = [Int?](repeating: nil, count: spoken.count)
         let sp = parts(spoken), tp = parts(source)
         guard !sp.isEmpty, !tp.isEmpty else { return result }

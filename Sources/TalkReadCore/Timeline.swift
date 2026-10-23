@@ -30,7 +30,7 @@ public enum Timeline {
     /// Tokens with no spoken word share the gap to their timed neighbours by length; tokens Speakable removed (URL parts,
     /// markdown, emoji), and unmatched tokens with no gap to share, get zero-length sentinels (start == end) that are never
     /// highlighted: `index(at:in:)` skips them, so the previous word stays lit.
-    public static func timings(chunkTokens: [Token], chunkTokenOffset: Int, speakable: Speakable, spoken: [SpokenWord], offset: Double, chunkDuration: Double) -> [WordTiming] {
+    public static func timings(chunkTokens: [Token], chunkTokenOffset: Int, speakable: Speakable, spoken: [SpokenWord], offset: Double, chunkDuration: Double, language: String = "en") -> [WordTiming] {
         let n = chunkTokens.count
         guard n > 0 else { return [] }
         let duration = max(0, chunkDuration.isFinite ? chunkDuration : 0)
@@ -39,7 +39,7 @@ public enum Timeline {
 
         // 1. Which spoken words does each source token carry?
         let words = TextKit.tokenize(speakable.text)
-        let assigned = spoken.contains { $0.range == nil } ? Alignment.assign(spoken: spoken.map(\.text), source: words.map(\.text)) : []
+        let assigned = spoken.contains { $0.range == nil } ? Alignment.assign(spoken: spoken.map(\.text), source: words.map(\.text), language: language) : []
         var owners = [[Int]](repeating: [], count: n)
         for (j, word) in spoken.enumerated() {
             let range: Range<Int>

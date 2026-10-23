@@ -15,6 +15,10 @@ import TalkReadCore
     var firstAudioMs: Int?
     let player = Player()
     private(set) var voice: Voice
+    /// The voice actually speaking now: `voice`, or the Kokoro fallback once the engine fell behind (V3). The UI shows it.
+    @Published private(set) var effectiveVoice: Voice
+    /// Why the read switched to the fallback voice, shown in the player until the read ends; nil otherwise.
+    @Published private(set) var fallbackReason: String?
     /// Media-time timings of every chunk queued since the last (re)start, in order.
     private(set) var timings: [TalkReadCore.WordTiming] = []
 
@@ -36,6 +40,7 @@ import TalkReadCore
         self.tokens = TextKit.tokenize(text)
         self.capture = capture
         self.voice = voice
+        self.effectiveVoice = voice
         self.engines = engines
         self.lexicon = lexicon
         self.startToken = startToken

@@ -25,7 +25,8 @@ public struct Speakable: Sendable {
     /// Lexicon (whole word, case-insensitive, longest key first); URLs and emails spoken as host words ("example dot com",
     /// the path is dropped); markdown noise dropped; `&` `%` `°C` `~5` spoken; emoji dropped; whitespace collapsed to one
     /// space; a newline becomes ". " when the line ends without punctuation, so list items get a pause.
-    public static func make(_ source: String, range: Range<Int>, lexicon: [String: String]) -> Speakable {
+    /// `language`: "en" or "fr"; French text gets French spoken forms (V-B), English is unchanged.
+    public static func make(_ source: String, range: Range<Int>, lexicon: [String: String], language: String = "en") -> Speakable {
         let ns = source as NSString
         let lo = min(max(range.lowerBound, 0), ns.length)
         let hi = min(max(range.upperBound, lo), ns.length)
