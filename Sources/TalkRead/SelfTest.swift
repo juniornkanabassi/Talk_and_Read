@@ -9,11 +9,16 @@
 // with first audio, starvations, memory and GPU figures (V3, V7); `--fake-slow` drives slow and fast fake engines through
 // real sessions and Players (fallback boundary, mid-chunk rate change, cancellation, unload); `--voice qwen.<id> --cancel`
 // cancels Qwen3 chunks mid-generation and restarts at once (Sol inspection 4 #1, release build).
+// 0.4.0 (B-A): the same runs take `--voice breeze.<id>` (Breeze TTS 2), the sustained run also hears the queued audio
+// back and holds Breeze to its promised outcome per rate, `--cancel` cancels at every phase of a chunk (PLAN 0.4.0 Sol
+// rev. 4, 8); `--switch` switches Qwen3 -> Breeze -> Qwen3 mid-chunk on the one MLX queue, leaves Breeze during warm-up,
+// synthesis and cancellation through AppModel, and pauses through an idle unload (Sol rev. 1, 5).
 import AVFoundation
 import Darwin
 import FluidAudio
 import Foundation
 import MLX
+import os
 import TalkReadCore
 
 enum SelfTest {
@@ -33,13 +38,15 @@ enum SelfTest {
         }
         let voice = value("--voice") ?? Settings().voiceID
         let aligner = Aligner(directory: value("--aligner").map { URL(fileURLWithPath: $0, isDirectory: true) })
+        let mlx = voice.hasPrefix("qwen.") || voice.hasPrefix("breeze.")
         do {
             try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
             guard await helperChecks() else { return 1 }
             if args.contains("--fake-slow") { return try await fakeSlowRun(text) }
-            if voice.hasPrefix("qwen."), args.contains("--cancel") { return try await qwenCancelRun(text, voice: voice, aligner: aligner) }
-            if voice.hasPrefix("qwen."), args.contains("--long") {
-                return try await qwenLongRun(text, voice: voice, rate: value("--rate").flatMap(Float.init) ?? 2.5, aligner: aligner)
+            if mlx, args.contains("--cancel") { return try await mlxCancelRun(text, voice: voice, aligner: aligner) }
+            if args.contains("--switch") { return try await mlxSwitchRun(text, aligner: aligner) }
+            if mlx, args.contains("--long") {
+                return try await mlxLongRun(text, voice: voice, rate: value("--rate").flatMap(Float.init) ?? 2.5, aligner: aligner)
             }
             if args.contains("--long") { return try await longRun(text, voice: voice) }
             return try await timingRun(text, voice: voice, rate: value("--rate").flatMap(Float.init), aligner: aligner)
@@ -53,15 +60,15 @@ enum SelfTest {
 
     @MainActor private static func timingRun(_ text: String, voice: String, rate: Float?, aligner: Aligner) async throws -> Int32 {
         let tokens = TextKit.tokenize(text)
-        let qwen = voice.hasPrefix("qwen.")
-        let language = QwenEngine.references.first { $0.id == voice }?.language ?? (voice.hasPrefix("ff_") ? "fr" : "en")
-        // Qwen3 reads in the session's bounded chunks: the opening chunk at 1x, then at most 160 characters.
-        let chunks = qwen ? TextKit.chunks(text, tokens: tokens, firstMax: ReadSession.openingChars(rate: 1), max: ReadSession.slowChars)
-                          : TextKit.chunks(text, tokens: tokens)
-        // A Kokoro voice id (English, or French ff_*) runs the neural engine, qwen.* Qwen3, anything else (an
-        // AVSpeechSynthesisVoice identifier) the system one.
-        let engine: SpeechEngine = qwen ? QwenEngine(aligner: aligner, queue: MLXQueue())
-            : KokoroAneConstants.englishVoices.contains(voice) || voice.hasPrefix("ff_") ? NeuralEngine() as SpeechEngine : SystemEngine()
+        let slow = mlxEngine(voice, aligner)
+        let language = (QwenEngine.references + BreezeEngine.references).first { $0.id == voice }?.language ?? (voice.hasPrefix("ff_") ? "fr" : "en")
+        // Qwen3 and Breeze read in the session's bounded chunks: the opening chunk at 1x, then at most 160 characters.
+        let chunks = slow != nil ? TextKit.chunks(text, tokens: tokens, firstMax: ReadSession.openingChars(rate: 1, kind: slow?.kind ?? .qwen), max: ReadSession.slowChars)
+                                 : TextKit.chunks(text, tokens: tokens)
+        // A Kokoro voice id (English, or French ff_*) runs the neural engine, qwen.* Qwen3, breeze.* Breeze, anything else
+        // (an AVSpeechSynthesisVoice identifier) the system one.
+        let engine: SpeechEngine = slow
+            ?? (KokoroAneConstants.englishVoices.contains(voice) || voice.hasPrefix("ff_") ? NeuralEngine() as SpeechEngine : SystemEngine())
         var clock = Date()
         try await engine.prepare(voice: voice)
         print("model load + voice \(voice): \(ms(since: clock)) ms")
@@ -134,10 +141,11 @@ enum SelfTest {
         print("WER (ASR vs spoken text, 1x): \(pct(wer1))")
         print("first-chunk synthesis: \(firstChunkMs) ms; RTF \(String(format: "%.3f", synthSeconds / audioSeconds)) (\(fmt(synthSeconds)) s for \(fmt(audioSeconds)) s of audio, \(chunks.count) chunks)")
         print("invariants: \(problems.isEmpty ? "ok" : problems.prefix(10).joined(separator: "; "))")
-        if qwen {
-            print("(Qwen3's words come from Parakeet v3, so the recogniser comparison above is not independent; the acoustic check decides)")
-            return qwenVerdict(audio, timings: timings, firstChunkMs: firstChunkMs, synthSeconds: synthSeconds,
-                               chunks: chunks.count, invariants: problems.isEmpty) ? 0 : 1
+        if let slow {
+            let name = slow.kind == .breeze ? "Breeze" : "Qwen3"
+            print("(\(name)'s words come from Parakeet v3, so the recogniser comparison above is not independent; the acoustic check decides)")
+            return mlxVerdict(name, audio, timings: timings, firstChunkMs: firstChunkMs, synthSeconds: synthSeconds,
+                              chunks: chunks.count, wer: wer1, invariants: problems.isEmpty) ? 0 : 1
         }
         var pass = problems.isEmpty && signed.count >= 200 && median <= 60 && p90 <= 150
         if language == "fr" {
@@ -316,38 +324,56 @@ enum SelfTest {
 
     // MARK: - 0.3.0 engines (V-A)
 
-    /// Qwen3 timing judged by the acoustic onset check, which is independent of Parakeet: median |ours - onset| <= 90 ms (PLAN 0.3.0 build results)
-    /// and p90 <= 150 ms over at least 15 words that follow a silence, plus the invariants.
-    private static func qwenVerdict(_ audio: [Float], timings: [TalkReadCore.WordTiming], firstChunkMs: Int, synthSeconds: Double, chunks: Int, invariants: Bool) -> Bool {
+    /// Qwen3 and Breeze: the MLX engines, each on a queue of its own here (the app shares one through `Engines`).
+    private static func mlxEngine(_ voice: String, _ aligner: Aligner) -> SpeechEngine? {
+        if voice.hasPrefix("qwen.") { return QwenEngine(aligner: aligner, queue: MLXQueue()) }
+        if voice.hasPrefix("breeze.") { return BreezeEngine(aligner: aligner, queue: MLXQueue()) }
+        return nil
+    }
+
+    /// Qwen3 or Breeze timing judged by the acoustic onset check, which is independent of Parakeet: median |ours - onset|
+    /// <= 90 ms (PLAN 0.3.0 build results) and p90 <= 150 ms over at least 15 words that follow a silence, the invariants,
+    /// and for Breeze (PLAN 0.4.0 Sol rev. 8) intelligibility: recogniser WER at 1x <= 8 %, R3's bar. Qwen3 keeps its
+    /// 0.3.0 verdict; its WER is printed (French through Parakeet v3 has no bar).
+    private static func mlxVerdict(_ name: String, _ audio: [Float], timings: [TalkReadCore.WordTiming], firstChunkMs: Int, synthSeconds: Double,
+                                   chunks: Int, wer: Double, invariants: Bool) -> Bool {
         let onset = onsetErrors(audio, starts: timings.filter { $0.end > $0.start }.map(\.start))
         let absErr = onset.map(abs).sorted()
         let median = percentile(absErr, 0.5) * 1000, p90 = percentile(absErr, 0.9) * 1000
-        print(String(format: "Qwen3: first chunk %d ms; %.2fx real time including alignment (%d chunks)",
-                     firstChunkMs, Double(audio.count) / Player.sampleRate / synthSeconds, chunks))
+        print(String(format: "%@: first chunk %d ms; %.2fx real time including alignment (%d chunks)",
+                     name, firstChunkMs, Double(audio.count) / Player.sampleRate / synthSeconds, chunks))
         let bias = percentile(onset.sorted(), 0.5), spread = onset.map { abs($0 - bias) }.sorted()
-        print("Qwen3 acoustic check: \(onset.count) words after silence; |ours - onset| median \(Int(median.rounded())) ms, p90 \(Int(p90.rounded())) ms; signed median \(Int((bias * 1000).rounded())) ms (spread around it: median \(Int((percentile(spread, 0.5) * 1000).rounded())) ms, p90 \(Int((percentile(spread, 0.9) * 1000).rounded())) ms)")
+        print("\(name) acoustic check: \(onset.count) words after silence; |ours - onset| median \(Int(median.rounded())) ms, p90 \(Int(p90.rounded())) ms; signed median \(Int((bias * 1000).rounded())) ms (spread around it: median \(Int((percentile(spread, 0.5) * 1000).rounded())) ms, p90 \(Int((percentile(spread, 0.9) * 1000).rounded())) ms)")
         // PLAN 0.3.0 "Build results": Parakeet v3's 80 ms frames set the floor; 90 ms median is about 36 ms as heard at 2.5x.
-        let pass = invariants && onset.count >= 15 && median <= 90 && p90 <= 150
-        print("Qwen3 timing: \(pass ? "PASS" : "FAIL") (acoustic median <= 90 ms, p90 <= 150 ms, >= 15 words after silence, invariants)")
+        let breeze = name == "Breeze"
+        let pass = invariants && onset.count >= 15 && median <= 90 && p90 <= 150 && (!breeze || wer <= 0.08)
+        print("\(name) timing: \(pass ? "PASS" : "FAIL") (acoustic median <= 90 ms, p90 <= 150 ms, >= 15 words after silence, \(breeze ? "WER <= 8 %, " : "")invariants)")
         return pass
     }
 
-    /// A sustained Qwen3 read through a real session and Player at volume 0 (V3, V7): the model is loaded first, as on
-    /// selection; then 60 s at `rate` with the Kokoro fallback warm. Passes with first audio <= 2.5 s (PLAN 0.3.0 build results), no starvation, no
-    /// duplicated or skipped token, whether Qwen3 kept up or handed over cleanly; memory before, while and after.
-    @MainActor private static func qwenLongRun(_ fixture: String, voice: String, rate: Float, aligner: Aligner) async throws -> Int32 {
+    /// A sustained Qwen3 or Breeze read through a real session and Player at volume 0 (V3, V7): the model is loaded
+    /// first, as on selection; then 60 s at `rate` with the Kokoro fallback warm. Passes with no starvation, no duplicated
+    /// or skipped token, a clean hand-over if any, the queued audio heard back (`queuedSpeech`), first audio <= 2.5 s
+    /// (Qwen3 at every rate, PLAN 0.3.0 build results; Breeze at 2.5x and above, recorded below, PLAN 0.4.0 proof), and
+    /// (PLAN 0.4.0 Sol rev. 8) the outcome the rate promises: Breeze reads up to `BreezeEngine.keepsUpTo` with no
+    /// fallback (the 2x of the plan was not reached, so the measured speed is promised), above it it may hand over;
+    /// Qwen3 keeps its 0.3.0 rule (either).
+    @MainActor private static func mlxLongRun(_ fixture: String, voice: String, rate: Float, aligner: Aligner) async throws -> Int32 {
         var text = fixture
         while text.utf16.count < 20_000 { text += "\n\n" + fixture }
-        let engines = Engines(aligner: aligner)
-        guard let v = await engines.qwen.voices().first(where: { $0.id == voice }), v.installed else {
-            print("Qwen3 or the aligner is not installed (model folder \(QwenEngine.folder.path), aligner \(aligner.directory.path))")
+        let breeze = voice.hasPrefix("breeze."), name = breeze ? "Breeze" : "Qwen3"
+        let queue = MLXQueue(), log = ChunkLog()
+        let slow = LoggingEngine(breeze ? BreezeEngine(aligner: aligner, queue: queue) : QwenEngine(aligner: aligner, queue: queue) as SpeechEngine, log)
+        let engines = Engines(neural: LoggingEngine(NeuralEngine(), log), qwen: breeze ? nil : slow, breeze: breeze ? slow : nil, aligner: aligner, mlx: queue)
+        guard let v = await slow.voices().first(where: { $0.id == voice }), v.installed else {
+            print("\(name) or the aligner is not installed (model folder \((breeze ? BreezeEngine.folder : QwenEngine.folder).path), aligner \(aligner.directory.path))")
             return 1
         }
         let before = footprint()
         var clock = Date()
-        try await engines.qwen.prepare(voice: voice)
-        print(String(format: "Qwen3 load + voice + warm-up: %d ms; footprint %.0f MB before, %.0f MB loaded (MLX active %.0f MB, cache %.0f MB)",
-                     ms(since: clock), before, footprint(), Double(Memory.activeMemory) / 1e6, Double(Memory.cacheMemory) / 1e6))
+        try await slow.prepare(voice: voice)
+        print(String(format: "%@ load + voice + warm-up: %d ms; footprint %.0f MB before, %.0f MB loaded (MLX active %.0f MB, cache %.0f MB)",
+                     name, ms(since: clock), before, footprint(), Double(Memory.activeMemory) / 1e6, Double(Memory.cacheMemory) / 1e6))
         let fallbackID = v.language == "fr" ? "ff_siwis" : "af_heart"
         let fallback = Voice(id: fallbackID, name: fallbackID, accent: "", gender: "Female", engine: .neural, installed: true, language: v.language)
         // As the app does at launch: the first audio engine start in a process costs ~0.3 s (measured 1.65 s first audio
@@ -358,19 +384,21 @@ enum SelfTest {
         session.player.volume = 0
         clock = Date()
         session.start()
-        var peak = 0.0, gpu: [Int] = [], switched: Int?, log: [String] = []
+        var peak = 0.0, gpu: [Int] = [], switched: Int?, log5: [String] = [], starved: [Int] = []
         for second in 1 ... 60 {
             try await Task.sleep(nanoseconds: 1_000_000_000)
             peak = max(peak, footprint())
             if let u = await Task.detached(operation: { gpuUtilisation() }).value { gpu.append(u) }
             if switched == nil, session.fallbackReason != nil { switched = second }
-            if second % 5 == 0 { log.append("\(second)s:\(session.currentToken.map(String.init) ?? "-")") }
+            if session.player.starvations > starved.count { starved.append(second) }
+            if second % 5 == 0 { log5.append("\(second)s:\(session.currentToken.map(String.init) ?? "-")") }
         }
         let playing = session.state == .playing
         let tokens = session.timings.map(\.token)
         let consecutive = tokens == Array(0 ..< tokens.count)
-        let byQwen = session.made.filter { $0.voice == voice }, byFallback = session.made.filter { $0.voice != voice }
-        let clean = session.made.map(\.voice).drop { $0 == voice }.allSatisfy { $0 == fallbackID }
+        let made = session.made
+        let byModel = made.filter { $0.voice == voice }, byFallback = made.filter { $0.voice != voice }
+        let clean = made.map(\.voice).drop { $0 == voice }.allSatisfy { $0 == fallbackID }
         session.stop()
         engines.unloadAll()
         while engines.isBusy { try await Task.sleep(nanoseconds: 100_000_000) }
@@ -378,64 +406,270 @@ enum SelfTest {
         let after = footprint()
         let first = session.firstAudioMs ?? .max
         let starvations = session.player.starvations
-        print("sustained read at \(rate)x: \(text.utf16.count) characters, \(session.made.count) chunks queued in 60 s (\(byQwen.count) Qwen3, \(byFallback.count) fallback)")
-        print("Qwen3 chunk sizes (tokens): \(byQwen.map { "\($0.tokens.count)" }.joined(separator: " "))")
-        print("token every 5 s: \(log.joined(separator: " "))")
-        print("fallback: \(session.fallbackReason.map { "\"\($0)\" after \(switched ?? 0) s" } ?? "none, Qwen3 kept up")")
-        print("first audio \(first) ms; starvations \(starvations); tokens queued \(tokens.count), consecutive from 0: \(consecutive); clean hand-over: \(clean)")
+        print("sustained read at \(rate)x: \(text.utf16.count) characters, \(made.count) chunks queued in 60 s (\(byModel.count) \(name), \(byFallback.count) fallback)")
+        print("\(name) chunk sizes (tokens): \(byModel.map { "\($0.tokens.count)" }.joined(separator: " "))")
+        print("token every 5 s: \(log5.joined(separator: " "))")
+        print("fallback: \(session.fallbackReason.map { "\"\($0)\" after \(switched ?? 0) s, at token \(byFallback.first?.tokens.lowerBound ?? -1)" } ?? "none, \(name) kept up")")
+        print("first audio \(first) ms; starvations \(starvations)\(starved.isEmpty ? "" : " (by \(starved.map { "\($0) s" }.joined(separator: ", ")))"); tokens queued \(tokens.count), consecutive from 0: \(consecutive); clean hand-over: \(clean)")
         let sortedGPU = gpu.sorted()
         print(String(format: "memory (phys footprint): %.0f MB before load, peak %.0f MB while reading, %.0f MB after unload", before, peak, after))
         if !gpu.isEmpty { print("GPU utilisation while reading: median \(sortedGPU[sortedGPU.count / 2]) %, mean \(gpu.reduce(0, +) / gpu.count) % (\(gpu.count) samples)") }
-        // PLAN 0.3.0 "Build results": the opening chunk is sized by rate so 2.5x keeps going; 2.5 s first audio accepted.
-        let pass = playing && first <= 2500 && starvations == 0 && consecutive && clean
-        print("Qwen3 sustained: \(pass ? "PASS" : "FAIL") (first audio <= 2500 ms, starvations 0, consecutive tokens, clean or no fallback, still playing at 60 s)")
+        // How fast the model really rendered during this run: other apps on the GPU (a video playing) slow Breeze a lot.
+        let own = log.entries.filter { $0.voice == voice && !$0.samples.isEmpty }
+        print(String(format: "%@ rendered %.2fx real time over its %d chunks, alignment included (a quiet M3 Max: Breeze about 2.2x)", name,
+                     own.reduce(0) { $0 + Double($1.samples.count) / $1.sampleRate } / max(own.reduce(0) { $0 + $1.work }, 0.001), own.count))
+        let heard = try await queuedSpeech(made: made, log: log, language: v.language, aligner: aligner)
+        let promised = !breeze || rate > BreezeEngine.keepsUpTo || switched == nil
+        let quick = breeze && rate < 2.5 || first <= 2500
+        let pass = playing && quick && starvations == 0 && consecutive && clean && promised && heard
+        print("\(name) sustained: \(pass ? "PASS" : "FAIL") (\(breeze && rate < 2.5 ? "first audio recorded" : "first audio <= 2500 ms"), starvations 0, consecutive tokens, "
+              + "\(breeze && rate <= BreezeEngine.keepsUpTo ? "no fallback at \(rate)x" : "clean or no fallback"), queued speech heard back, still playing at 60 s)")
         return pass ? 0 : 1
     }
 
-    /// Sol inspection 4 #1: a Qwen3 chunk cancelled while it generates stops within about a decode step, keeps the engine
-    /// busy until the dependency's generation has really ended, and never overlaps the next chunk's generation
-    /// (`MLXQueue.generations` counts the dependency's own tasks). Round 1 cancels alone; rounds 2-4 start the next
-    /// chunk the moment they cancel.
-    @MainActor private static func qwenCancelRun(_ text: String, voice: String, aligner: Aligner) async throws -> Int32 {
-        let qwen = QwenEngine(aligner: aligner, queue: MLXQueue())
-        guard await qwen.voices().first(where: { $0.id == voice })?.installed == true else { print("Qwen3 or the aligner is not installed"); return 1 }
-        try await qwen.prepare(voice: voice)
+    /// Sol rev. 8: the chunks a session queued, each as its engine returned it (what the Player got), transcribed one by
+    /// one and compared with what each was asked to say: WER <= 8 % (R3's bar) and no run of 4 or more words missing or
+    /// added, which a sentence dropped or said twice inside the audio would leave. With the caller's check that the
+    /// queued chunks cover the tokens once, in order, that is the text read once (a chunk queued twice or skipped at a
+    /// hand-over fails there).
+    @MainActor private static func queuedSpeech(made: [(tokens: Range<Int>, voice: String)], log: ChunkLog, language: String, aligner: Aligner) async throws -> Bool {
+        let entries = Array(log.entries.prefix(made.count))   // a chunk finished after the read stopped was never queued
+        guard entries.map(\.voice) == made.map(\.voice), made.first?.tokens.lowerBound == 0, let end = made.last?.tokens.upperBound else {
+            print("queued speech: the recorded chunks do not match the queued ones (\(entries.count) recorded, \(made.count) queued): FAILED")
+            return false
+        }
+        let asr = try await Recogniser.load(v3: language == "fr" ? aligner.directory : nil)
+        var heard: [String] = []
+        for e in entries where !e.samples.isEmpty {
+            let samples = e.sampleRate == Player.sampleRate ? e.samples : try AudioConverter(sampleRate: Player.sampleRate).resample(e.samples, from: e.sampleRate)
+            for piece in pauses(samples) { heard.append(try await asr.transcribe(piece, language: language).text) }
+        }
+        let d = wordDiff(reference: entries.map(\.text).joined(separator: " "), hypothesis: heard.joined(separator: " "), language: language)
+        let ok = d.wer <= 0.08 && d.missing < 4 && d.extra < 4
+        print("queued speech heard back (\(entries.count) chunks, tokens 0..<\(end)): WER \(pct(d.wer)); longest run of words missing \(d.missing), added \(d.extra) (\(d.worst)): \(ok ? "ok" : "FAILED")")
+        return ok
+    }
+
+    /// Pieces of at most 12 s, each over-long one cut at the quietest 10 ms of its middle third (a pause between words),
+    /// so the recogniser's own 15 s windows never seam inside a chunk (a seam dropped a whole sentence, 23 Oct).
+    private static func pauses(_ x: [Float]) -> [[Float]] {
+        guard Double(x.count) / Player.sampleRate > 12 else { return [x] }
+        let hop = Int(Player.sampleRate / 100)
+        func energy(_ i: Int) -> Float { x[i * hop ..< (i + 1) * hop].reduce(0) { $0 + $1 * $1 } }
+        let cut = (x.count / 3 / hop ..< 2 * x.count / 3 / hop).min { energy($0) < energy($1) }! * hop
+        return pauses(Array(x[..<cut])) + pauses(Array(x[cut...]))
+    }
+
+    /// Sol inspection 4 #1 and Sol plan review 0.4.0 #4: a Qwen3 or Breeze chunk cancelled anywhere (from the moment its
+    /// generation starts: Breeze's reference encoding, then prefill, then decoding; and while it is being aligned) gives
+    /// no result, keeps the queue busy until the dependency's generation has really ended, and never overlaps the next
+    /// chunk's generation (`MLXQueue.generations`); so does a cancelled cold load. Reports the worst cancel-to-free drain
+    /// and how much a warm Kokoro chunk slows when it runs during a drain (the watchdog starts the fallback at once).
+    @MainActor private static func mlxCancelRun(_ text: String, voice: String, aligner: Aligner) async throws -> Int32 {
+        guard let engine = mlxEngine(voice, aligner), await engine.voices().first(where: { $0.id == voice })?.installed == true else {
+            print("\(voice): the model or the aligner is not installed"); return 1
+        }
+        let name = engine.kind == .breeze ? "Breeze" : "Qwen3"
         func now() -> Int { MLXQueue.generations.withLock { $0.now } }
         var pass = true
         func check(_ what: String, _ ok: Bool) { print("\(ok ? "ok" : "FAILED"): \(what)"); pass = pass && ok }
-        for round in 1 ... 4 {
+        func cancelled<T>(_ t: Task<T, Error>) async -> Bool { do { _ = try await t.value; return false } catch { return error is CancellationError } }
+
+        // A cold load cancelled a second in: no result, busy until the load has stopped, and the next prepare loads afresh.
+        var clock = Date()
+        let load = Task { try await engine.prepare(voice: voice) }
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        var cancelAt = Date()
+        load.cancel()
+        let loadCancelled = await cancelled(load)
+        let loadDrain = Date().timeIntervalSince(cancelAt)
+        check(String(format: "cancel a cold load 1 s in: no result %@, engine free %.2f s after the cancel", loadCancelled ? "yes" : "no", loadDrain),
+              loadCancelled && !engine.isBusy && now() == 0)
+        clock = Date()
+        try await engine.prepare(voice: voice)
+        print("load + warm-up after that: \(ms(since: clock)) ms")
+
+        let chunk = String(text.prefix(300)), next = "And here is the next chunk."
+        clock = Date()
+        let whole = try await engine.synthesize(chunk, voice: voice)
+        let wholeSeconds = Date().timeIntervalSince(clock)
+        print(String(format: "an uncancelled %d-character chunk: %.2f s of audio in %.2f s", chunk.utf16.count, Double(whole.samples.count) / whole.sampleRate, wholeSeconds))
+
+        // Where in the chunk each round cancels: seconds after its generation starts, or (nil) once generation has ended
+        // and the chunk is being aligned. 0-150 ms span Breeze's reference encoding and prefill (measured with `.info`).
+        let points: [(String, Double?)] = [("at generation start", 0), ("10 ms in", 0.01), ("25 ms in", 0.025), ("50 ms in", 0.05),
+                                           ("100 ms in", 0.1), ("150 ms in", 0.15), ("decoding, 0.5 s in", 0.5), ("during alignment", nil)]
+        var worst = 0.0
+        for (round, (label, offset)) in points.enumerated() {
             MLXQueue.generations.withLock { $0.peak = $0.now }
-            let first = Task { try await qwen.synthesize(String(text.prefix(300)), voice: voice) }
+            let first = Task { try await engine.synthesize(chunk, voice: voice) }
             while now() == 0 { try await Task.sleep(nanoseconds: 1_000_000) }
-            try await Task.sleep(nanoseconds: 500_000_000)   // well inside a chunk that takes seconds
-            if round == 1 {
+            if let offset {
+                if offset > 0 { try await Task.sleep(nanoseconds: UInt64(offset * 1e9)) }
+            } else {
+                while now() > 0 { try await Task.sleep(nanoseconds: 1_000_000) }   // generated; the aligner runs now
+            }
+            cancelAt = Date()
+            first.cancel()
+            if round == 0 {
                 // Spins off the main actor (a gap may last a millisecond): `isBusy` read before the count, so a running
                 // generation seen after an idle engine really ran while the engine said idle.
-                let watch = Task.detached { () -> (idle: Bool, ended: Date) in
+                let watch = Task.detached { () -> Bool in
                     var idle = false
                     while true {
-                        let busy = qwen.isBusy
-                        if MLXQueue.generations.withLock({ $0.now }) == 0 { return (idle, Date()) }
+                        let busy = engine.isBusy
+                        if MLXQueue.generations.withLock({ $0.now }) == 0 { return idle }
                         if !busy { idle = true }
                     }
                 }
-                let cancelled = Date()
-                first.cancel()
-                let (idle, ended) = await watch.value
-                check(String(format: "cancel alone: generation ended %.0f ms after the cancel; engine busy until then: %@",
-                             ended.timeIntervalSince(cancelled) * 1000, idle ? "no" : "yes"), !idle && ended.timeIntervalSince(cancelled) <= 0.3)
+                let idle = await watch.value
+                let none = await cancelled(first)
+                let drain = Date().timeIntervalSince(cancelAt)
+                worst = max(worst, drain)
+                check(String(format: "cancel alone %@: no result %@, engine free %.0f ms after the cancel, busy until generation ended: %@",
+                             label, none ? "yes" : "no", drain * 1000, idle ? "no" : "yes"), none && !idle)
             } else {
-                let cancelled = Date()
-                first.cancel()
-                let next = try await qwen.synthesize("And here is the next chunk.", voice: voice)
+                let restart = Task { try await engine.synthesize(next, voice: voice) }
+                let none = await cancelled(first)
+                let drain = Date().timeIntervalSince(cancelAt)
+                worst = max(worst, drain)
+                let r = try await restart.value
                 let peak = MLXQueue.generations.withLock { $0.peak }
-                check(String(format: "restart %d: at most %d generation(s) at once; next chunk %.2f s of audio, ready %.0f ms after the cancel",
-                             round - 1, peak, Double(next.samples.count) / next.sampleRate, Date().timeIntervalSince(cancelled) * 1000),
-                      peak == 1 && !next.samples.isEmpty)
+                // 0.3.0's bar: a chunk cancelled while it decodes frees the engine within 300 ms (a decode step).
+                check(String(format: "cancel %@ and restart: no result %@, freed in %.0f ms, at most %d generation(s) at once, next chunk %.2f s of audio ready %.0f ms after the cancel",
+                             label, none ? "yes" : "no", drain * 1000, peak, Double(r.samples.count) / r.sampleRate, Date().timeIntervalSince(cancelAt) * 1000),
+                      none && peak == 1 && !r.samples.isEmpty && (offset != 0.5 || drain <= 0.3))
             }
-            while qwen.isBusy || now() > 0 { try await Task.sleep(nanoseconds: 10_000_000) }
+            while engine.isBusy || now() > 0 { try await Task.sleep(nanoseconds: 10_000_000) }
         }
-        print("Qwen3 cancel/restart: \(pass ? "PASS" : "FAIL") (never two generations at once, busy until generation ended, cancel within 300 ms)")
+        print(String(format: "worst cancel-to-free drain of a chunk: %.0f ms", worst * 1000))
+
+        // The watchdog starts the warm Kokoro fallback the moment it abandons a chunk, while that chunk drains.
+        let kokoro = NeuralEngine(), line = "The clerk smiled and noted that the average repair time was eighteen months."
+        try await kokoro.prepare(voice: "af_heart")
+        var alone: [Double] = [], during: [Double] = []
+        for _ in 0 ..< 3 {
+            clock = Date(); _ = try await kokoro.synthesize(line, voice: "af_heart"); alone.append(Date().timeIntervalSince(clock))
+        }
+        for offset in [0.0, 0.05, 0.5, 0.5] {
+            let first = Task { try await engine.synthesize(chunk, voice: voice) }
+            while now() == 0 { try await Task.sleep(nanoseconds: 1_000_000) }
+            if offset > 0 { try await Task.sleep(nanoseconds: UInt64(offset * 1e9)) }
+            first.cancel()
+            clock = Date(); _ = try await kokoro.synthesize(line, voice: "af_heart"); during.append(Date().timeIntervalSince(clock))
+            _ = await cancelled(first)
+            while engine.isBusy || now() > 0 { try await Task.sleep(nanoseconds: 10_000_000) }
+        }
+        print(String(format: "warm Kokoro chunk (%d characters): alone %@ ms; started at a %@ cancel %@ ms; slowed by at most %.0f ms", line.utf16.count,
+                     alone.map { String(Int($0 * 1000)) }.joined(separator: "/"), name, during.map { String(Int($0 * 1000)) }.joined(separator: "/"),
+                     max(0, (during.max() ?? 0) - (alone.max() ?? 0)) * 1000))
+        print("\(name) cancel/restart: \(pass ? "PASS" : "FAIL") (no result after a cancel, never two generations at once, busy until generation ended, freed within 300 ms while decoding)")
+        return pass ? 0 : 1
+    }
+
+    /// Sol plan review 0.4.0 #1 and #5, on one shared queue as in the app. (1) Reads switch Qwen3 -> Breeze -> Qwen3, each
+    /// stopped with a chunk in flight and the next started at once: never two generations at once, each read starts in its
+    /// own voice (the aligner traps if used off the queue). (2) Leaving Breeze while it warms up, while it synthesises and
+    /// while a cancelled chunk drains (AppModel's own switch path) unloads it within 0.5 s of the queue going idle, not at
+    /// the idle timer. (3) Pause, an idle unload, resume: the read goes on, every token once, no starvation.
+    @MainActor private static func mlxSwitchRun(_ fixture: String, aligner: Aligner) async throws -> Int32 {
+        var checks: [(String, Bool)] = []
+        func check(_ what: String, _ ok: Bool) { checks.append((what, ok)); print("\(ok ? "ok" : "FAILED"): \(what)") }
+        func until(_ timeout: Double, _ condition: () -> Bool) async -> Bool {
+            let end = Date().addingTimeInterval(timeout)
+            while !condition() { if Date() >= end { return false }; try? await Task.sleep(nanoseconds: 5_000_000) }
+            return true
+        }
+        func gens() -> Int { MLXQueue.generations.withLock { $0.now } }
+        let kokoro = Voice(id: "af_heart", name: "af_heart", accent: "", gender: "Female", engine: .neural, installed: true)
+        var engines = Engines(aligner: aligner)
+        let voices = await engines.allVoices()
+        guard ["qwen.us_warm", "breeze.us_warm"].allSatisfy({ id in voices.contains { $0.id == id && $0.installed } }) else {
+            print("Qwen3, Breeze or the aligner is not installed"); return 1
+        }
+        func voice(_ id: String) -> Voice { voices.first { $0.id == id }! }
+        Player.warmOutput()
+
+        // (1)
+        MLXQueue.generations.withLock { $0.peak = $0.now }
+        for id in ["qwen.us_warm", "breeze.us_warm", "qwen.us_warm"] {
+            // At 1x the producer runs ahead, so the model is nearly always generating when the read is stopped.
+            let s = ReadSession(text: fixture, capture: nil, voice: voice(id), rate: 1, startToken: 0, engines: engines, lexicon: [:], fallback: kokoro)
+            s.player.volume = 0
+            let started = Date()
+            s.start()
+            let playing = await until(60) { s.state == .playing }
+            let inFlight = await until(20) { gens() > 0 }
+            s.stop()
+            check(String(format: "%@ read playing after %.1f s, stopped with a chunk in flight: %@", id, s.firstAudioMs.map { Double($0) / 1000 } ?? Date().timeIntervalSince(started),
+                         inFlight ? "yes" : "no"), playing && inFlight && s.made.first?.voice == id)
+        }
+        _ = await until(30) { !engines.isBusy }
+        check("Qwen3 -> Breeze -> Qwen3: at most \(MLXQueue.generations.withLock { $0.peak }) generation(s) at once", MLXQueue.generations.withLock { $0.peak } == 1)
+        engines.unloadAll()
+        _ = await until(30) { !engines.isBusy }
+
+        // (2) Through AppModel with real engines: picking Breeze loads it; leaving it must free it promptly.
+        let model = AppModel.shared
+        model.engines = Engines(aligner: aligner)
+        engines = model.engines
+        await model.loadVoices()
+        model.settings.voiceID = "af_heart"
+        let breeze = engines.breeze, line = String(fixture.prefix(300))
+        for phase in ["warm-up", "synthesis", "cancellation"] {
+            model.settings.voiceID = "breeze.us_warm"   // the app loads it ahead of the read
+            _ = await until(5) { engines.isBusy }
+            var work: Task<SynthChunk, Error>?
+            if phase == "warm-up" {
+                try await Task.sleep(nanoseconds: 1_000_000_000)   // inside the load
+            } else {
+                _ = await until(120) { !engines.isBusy }
+                work = Task { try await breeze.synthesize(line, voice: "breeze.us_warm") }
+                _ = await until(10) { gens() > 0 }
+                try await Task.sleep(nanoseconds: 500_000_000)
+                if phase == "cancellation" { work?.cancel() }
+            }
+            let unloads = engines.unloads, switchedAt = Date()
+            let idle = OSAllocatedUnfairLock<Date?>(initialState: nil)
+            model.settings.voiceID = "af_heart"   // leave Breeze while its queue is busy
+            let busy = engines.isBusy
+            engines.whenIdle { idle.withLock { $0 = $0 ?? Date() } }
+            let unloaded = await until(120) { engines.unloads > unloads }
+            let unloadedAt = Date()
+            _ = await until(30) { !engines.isBusy }
+            _ = try? await work?.value
+            let lag = idle.withLock { $0 }.map { unloadedAt.timeIntervalSince($0) } ?? .infinity
+            check(String(format: "leave Breeze during %@: queue busy at the switch %@, unloaded %.2f s after the switch, %.0f ms after the queue went idle",
+                         phase, busy ? "yes" : "no", unloadedAt.timeIntervalSince(switchedAt), lag * 1000), busy && unloaded && lag <= 0.5)
+        }
+
+        // (3)
+        engines = Engines(aligner: aligner)
+        try await engines.breeze.prepare(voice: "breeze.us_warm")
+        let s = ReadSession(text: fixture + "\n\n" + fixture, capture: nil, voice: voice("breeze.us_warm"), rate: BreezeEngine.keepsUpTo, startToken: 0,
+                            engines: engines, lexicon: [:], fallback: kokoro)
+        s.player.volume = 0
+        s.start()
+        _ = await until(30) { s.state == .playing }
+        try await Task.sleep(nanoseconds: 8_000_000_000)
+        s.pause()
+        let pausedAt = s.made.count
+        engines.unloadAll()   // what the idle timer does to a paused read (PLAN 0.3.0 rev. 5)
+        _ = await until(60) { !engines.isBusy }
+        s.resume()
+        try await Task.sleep(nanoseconds: 15_000_000_000)
+        let after = s.made.dropFirst(pausedAt).map(\.voice)
+        let whole = s.timings.map(\.token) == Array(0 ..< s.timings.count)
+        check("pause, idle unload, resume: playing \(s.state == .playing), starvations \(s.player.starvations), tokens consecutive \(whole), chunks after resume "
+              + "\(after.filter { $0 == "breeze.us_warm" }.count) Breeze (reloaded) and \(after.filter { $0 == "af_heart" }.count) Kokoro\(s.fallbackReason.map { " (\($0))" } ?? "")",
+              (s.state == .playing || s.state == .finished) && s.player.starvations == 0 && whole && !after.isEmpty)
+        s.stop()
+        engines.unloadAll()
+        _ = await until(30) { !engines.isBusy }
+
+        let pass = checks.allSatisfy(\.1)
+        print("switch checks: \(checks.filter(\.1).count)/\(checks.count) passed")
+        print("Qwen3/Breeze switching: \(pass ? "PASS" : "FAIL") (one generation at a time across engines, prompt unload after leaving Breeze, pause/unload/resume)")
         return pass ? 0 : 1
     }
 
@@ -709,15 +943,17 @@ enum SelfTest {
         sorted.isEmpty ? 0 : sorted[min(Int(Double(sorted.count - 1) * p + 0.5), sorted.count - 1)]
     }
 
+    /// Words after NeMo normalisation (digits -> words), case and punctuation folded: what `wer` and `wordDiff` compare.
+    private static func words(_ s: String, _ language: String) -> [String] {
+        NemoTextNormalizer.normalize(s, language: language == "fr" ? .french : .english).lowercased()
+            .replacingOccurrences(of: "’", with: "'")
+            .components(separatedBy: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "'")).inverted)
+            .filter { !$0.isEmpty }
+    }
+
     /// Word error rate after the same NeMo normalisation on both sides (digits -> words), case and punctuation folded.
     static func wer(reference: String, hypothesis: String, language: String = "en") -> Double {
-        func words(_ s: String) -> [String] {
-            NemoTextNormalizer.normalize(s, language: language == "fr" ? .french : .english).lowercased()
-                .replacingOccurrences(of: "’", with: "'")
-                .components(separatedBy: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "'")).inverted)
-                .filter { !$0.isEmpty }
-        }
-        let r = words(reference), h = words(hypothesis)
+        let r = words(reference, language), h = words(hypothesis, language)
         guard !r.isEmpty else { return h.isEmpty ? 0 : 1 }
         var row = Array(0 ... h.count)
         for i in 1 ... r.count {
@@ -728,6 +964,30 @@ enum SelfTest {
             row = next
         }
         return Double(row[h.count]) / Double(r.count)
+    }
+
+    /// `wer` plus the longest runs of consecutive words missing from the hypothesis and added to it, along one optimal
+    /// alignment (substitutions preferred), so a dropped or repeated sentence shows as a run however low the WER.
+    static func wordDiff(reference: String, hypothesis: String, language: String = "en") -> (wer: Double, missing: Int, extra: Int, worst: String) {
+        let r = words(reference, language), h = words(hypothesis, language)
+        var d = [[Int]](repeating: [Int](repeating: 0, count: h.count + 1), count: r.count + 1)
+        for i in 0 ... r.count { d[i][0] = i }
+        for j in 0 ... h.count { d[0][j] = j }
+        for i in stride(from: 1, through: r.count, by: 1) {
+            for j in stride(from: 1, through: h.count, by: 1) {
+                d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (r[i - 1] == h[j - 1] ? 0 : 1))
+            }
+        }
+        var i = r.count, j = h.count, missing = 0, extra = 0, runM = 0, runE = 0, at = (0, 0)
+        while i > 0 || j > 0 {
+            if i > 0, j > 0, d[i][j] == d[i - 1][j - 1] + (r[i - 1] == h[j - 1] ? 0 : 1) { i -= 1; j -= 1; runM = 0; runE = 0 }
+            else if i > 0, d[i][j] == d[i - 1][j] + 1 { i -= 1; runM += 1; runE = 0; if runM > max(missing, extra) { at = (i, j) }; missing = max(missing, runM) }
+            else { j -= 1; runE += 1; runM = 0; if runE > max(missing, extra) { at = (i, j) }; extra = max(extra, runE) }
+        }
+        // The longest run in context: the text's words, then what was heard, around where it starts.
+        let worst = "text \"" + r[max(at.0 - 4, 0) ..< min(at.0 + 10, r.count)].joined(separator: " ") + "\" / heard \""
+            + h[max(at.1 - 4, 0) ..< min(at.1 + 10, h.count)].joined(separator: " ") + "\""
+        return (r.isEmpty ? (h.isEmpty ? 0 : 1) : Double(d[r.count][h.count]) / Double(r.count), missing, extra, worst)
     }
 
     static func writeWAV(_ samples: [Float], to url: URL, rate: Double = Player.sampleRate) throws {
@@ -813,4 +1073,29 @@ private final class FakeEngine: SpeechEngine, @unchecked Sendable {
         }
         return SynthChunk(samples: [Float](repeating: 0, count: Int(seconds * Player.sampleRate)), sampleRate: Player.sampleRate, words: words)
     }
+}
+
+/// The chunks a read's engines returned, in order across engines: what the session queued, bar a late result it dropped.
+private final class ChunkLog: @unchecked Sendable {   // `_entries` only behind `lock`
+    private let lock = NSLock()
+    private var _entries: [(voice: String, text: String, samples: [Float], sampleRate: Double, work: Double)] = []
+    var entries: [(voice: String, text: String, samples: [Float], sampleRate: Double, work: Double)] { lock.withLock { _entries } }
+    func add(_ voice: String, _ text: String, _ c: SynthChunk, _ work: Double) { lock.withLock { _entries.append((voice, text, c.samples, c.sampleRate, work)) } }
+}
+
+/// Forwards everything to `engine` and logs every chunk it returns (the sustained runs hear the queued audio back).
+private final class LoggingEngine: SpeechEngine {
+    let engine: SpeechEngine, log: ChunkLog
+    init(_ engine: SpeechEngine, _ log: ChunkLog) { self.engine = engine; self.log = log }
+    var kind: EngineKind { engine.kind }
+    var isBusy: Bool { engine.isBusy }
+    func voices() async -> [Voice] { await engine.voices() }
+    func prepare(voice: String) async throws { try await engine.prepare(voice: voice) }
+    func synthesize(_ text: String, voice: String) async throws -> SynthChunk {
+        let started = Date()
+        let c = try await engine.synthesize(text, voice: voice)
+        log.add(voice, text, c, Date().timeIntervalSince(started))
+        return c
+    }
+    func unload() { engine.unload() }
 }
