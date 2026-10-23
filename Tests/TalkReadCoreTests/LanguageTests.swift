@@ -19,9 +19,12 @@ final class LanguageTests: XCTestCase {
     }
 
     func testMixedTextIsNotFrench() {
-        // English with a French quotation: English is the top hypothesis
+        // English with a French quotation, and the case NaturalLanguage alone scored fr 0.76: one French sentence, English text
         XCTAssertEqual(Language.detect("The committee met on Tuesday and approved the budget after a long discussion. The members thanked the clerk for her careful work over the past year. \"C'est la vie,\" she said, shrugging, and the meeting ended."), "en")
-        // sentences alternating between the two: French tops at only 0.54, below the 0.7 bar
+        XCTAssertEqual(Language.detect("The committee met on Tuesday and approved the budget after a long discussion. Le comité s'est réuni mardi. The members thanked the clerk for her careful work over the past year."), "en")
+        // mostly French with one English sentence stays French
+        XCTAssertEqual(Language.detect("Le comité s'est réuni mardi et a approuvé le budget après une longue discussion. The members thanked the clerk. Les membres ont remercié le greffier pour son travail minutieux."), "fr")
+        // sentences alternating between the two hold under 60 % of the letters in French
         XCTAssertEqual(Language.detect("Le conseil a voté. The vote was close. Le budget passe. The mayor smiled."), "en")
     }
 
