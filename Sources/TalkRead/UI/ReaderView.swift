@@ -183,7 +183,7 @@ private struct ReaderPage: View {
             SymbolButton(symbol: "forward.fill", label: "Next sentence (⌘])") { model.skip(1) }
                 .keyboardShortcut("]", modifiers: .command).disabled(!live)
             Divider().frame(height: 22).padding(.horizontal, 6)
-            SpeedMenu(speed: Double(model.settings.speed)) { model.setSpeed(Float($0)) }
+            SpeedMenu(speed: Double(model.activeSpeed)) { model.setSpeed(Float($0)) }
             VoiceMenu(voices: data.voices, english: model.settings.voiceID, french: model.settings.frenchVoiceID) { model.setVoice($0) }
             if doc.pdf == nil {
                 SymbolButton(symbol: "textformat.size", label: wider ? "Normal spacing" : "Wider spacing") { wider.toggle() }
@@ -201,9 +201,7 @@ private struct ReaderPage: View {
         }
     }
 
-    private func nudgeSpeed(_ delta: Double) {
-        model.setSpeed(Float(min(3, max(0.5, ((Double(model.settings.speed) + delta) * 20).rounded() / 20))))
-    }
+    private func nudgeSpeed(_ delta: Double) { model.stepSpeed(Float(delta)) }
 
     private func playPause() {
         switch state {

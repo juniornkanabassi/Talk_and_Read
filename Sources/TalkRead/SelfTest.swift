@@ -642,6 +642,13 @@ enum SelfTest {
             check("fake: choosing 2.5x during the 1x preview applies it (rate \(p.player.rate)x, shown \(model.activeSpeed)x)", p.player.rate == 2.5 && model.activeSpeed == 2.5)
         } else { check("fake: the preview started", false) }
         model.stopReading()
+        model.preview(fakeBreeze.listed[0])   // saved 2.5x again
+        if let p = model.session {
+            p.player.volume = 0
+            model.stepSpeed(0.05)   // what ⌥D does
+            check("fake: ⌥D during a 1x preview gives 1.05x (rate \(p.player.rate)x, shown \(model.activeSpeed)x)", abs(p.player.rate - 1.05) < 0.001 && abs(model.activeSpeed - 1.05) < 0.001)
+        } else { check("fake: the second preview started", false) }
+        model.stopReading()
         model.settings.speed = 1
         model.settings.voiceID = "af_heart"
         if fakeOnly { return finish() }
