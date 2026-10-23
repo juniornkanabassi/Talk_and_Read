@@ -181,7 +181,7 @@ enum TalkReadMain {
         case .pause: model.togglePause()
         case .screenshot: model.readScreenshot()
         // The current read only (S4); without one the key was not swallowed and typed its character.
-        case .increaseSpeed, .decreaseSpeed: if reading { model.setSpeed(model.settings.speed + (action == .increaseSpeed ? 0.05 : -0.05)) }
+        case .increaseSpeed, .decreaseSpeed: if reading { model.stepSpeed(action == .increaseSpeed ? 0.05 : -0.05) }
         case .skipBackward, .skipForward: if reading { model.skip(action == .skipForward ? 1 : -1) }
         default: model.dictation.handle(action)   // caller "user": the human always wins
         }

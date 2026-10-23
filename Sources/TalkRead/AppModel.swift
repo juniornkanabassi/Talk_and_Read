@@ -507,8 +507,12 @@ extension EngineKind {
         live.setRate(settings.speed)
     }
 
-    /// The speed the mini player and the menu bar show: the live read's (a preview plays at 1x), else the saved one.
+    /// The speed the mini player, the menu bar and the reader show and step from: the live read's (a preview plays at
+    /// 1x), else the saved one.
     var activeSpeed: Float { liveSession == nil ? settings.speed : sessionInfo.rate }
+
+    /// The speed keys and the reader's nudges: from what is playing; `validated` keeps 0.05 steps within 0.5-3x.
+    func stepSpeed(_ delta: Float) { setSpeed(activeSpeed + delta) }
 
     /// The picker, the menus and `talkread voice`: a French voice becomes the French voice, any other the English one;
     /// an English Kokoro voice is also the one a slower model falls back to. Applies from the next read (V1).
