@@ -33,8 +33,10 @@ cp "$ROOT/Resources/MenuBarIcon.png" "$ROOT/Resources/MenuBarIcon@2x.png" "$APP/
 # SwiftPM resource bundles (FluidAudio ships some) must travel with the app.
 for bundle in "$BIN_DIR"/*.bundle(N); do /usr/bin/ditto "$bundle" "$APP/Contents/Resources/${bundle:t}"; done
 [[ -s "$APP/Contents/Resources/$METALLIB" ]] || { print -u2 "$METALLIB did not reach the app bundle"; exit 1; }
-# Qwen3 reference clips, one per voice (Resources/Voices/<voice id>.wav).
+# Qwen3 and Breeze reference clips, one per voice (Resources/Voices/<voice id>.wav).
 /usr/bin/ditto "$ROOT/Resources/Voices" "$APP/Contents/Resources/Voices"
+# The pinned Breeze licence text, shown before its download and on the Models page (PLAN 0.4.0 Sol rev. 6); never the weights.
+/usr/bin/ditto "$ROOT/Resources/Licences" "$APP/Contents/Resources/Licences"
 # The Developer ID certificate is installed twice; the SHA-1 picks one explicitly. Ad hoc is the fallback and loses TCC grants on rebuild.
 SIGN_ID="-"
 DEV_ID_SHA="AD9C29D9DAA8406609281158C2F4DF1B23260AD2"
