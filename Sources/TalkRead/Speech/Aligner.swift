@@ -5,7 +5,9 @@ import FluidAudio
 import Foundation
 import TalkReadCore
 
-/// Not thread-safe by itself: QwenEngine calls it only from inside its one serial queue.
+/// Not thread-safe by itself: one instance is shared by Qwen3 and Breeze, which call it only from inside the one MLX
+/// queue they share (PLAN 0.4.0 Sol rev. 1); `align` and `unload` trap anywhere else, so a stray call fails every
+/// self-test rather than racing a read.
 final class Aligner: @unchecked Sendable {
     /// FluidAudio's own cache folder by default (exempt from "<data root>/Models only", PLAN 0.3.0 decision 6); the
     /// self-test passes a local copy so nothing is downloaded.
@@ -27,6 +29,7 @@ final class Aligner: @unchecked Sendable {
     }
 
     func unload() async {
+        precondition(MLXQueue.isCurrent, "Aligner used outside the MLX queue")
         await manager?.cleanup()
         manager = nil
     }
@@ -34,6 +37,7 @@ final class Aligner: @unchecked Sendable {
     /// The chunk's audio after the stop guard and its words, chunk-local. No words when the model is not installed
     /// (Timeline then spreads the chunk's tokens over its audio by length).
     func align(_ samples: [Float], sampleRate: Double, text: String, language: String) async throws -> (samples: [Float], words: [SpokenWord]) {
+        precondition(MLXQueue.isCurrent, "Aligner used outside the MLX queue")
         guard let asr = try await load() else { return (samples, []) }
         let audio = try AudioConverter().resample(samples, from: sampleRate)
         var state = try TdtDecoderState(decoderLayers: await asr.decoderLayerCount)
