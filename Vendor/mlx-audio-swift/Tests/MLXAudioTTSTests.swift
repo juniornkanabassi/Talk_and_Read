@@ -2088,6 +2088,41 @@ struct BreezeTTSTests {
         #expect(second.shape == [1, 8])
     }
 
+    @Test func depthDecoderCacheMatchesFullSequence() throws {
+        let config = try JSONDecoder().decode(BreezeDepthDecoderConfig.self, from: Data("""
+        {
+          "vocab_size": 8,
+          "num_codebooks": 4,
+          "audio_embed_size": 6,
+          "backbone_hidden_size": 5,
+          "hidden_size": 8,
+          "num_hidden_layers": 2,
+          "intermediate_size": 16,
+          "num_attention_heads": 2,
+          "num_key_value_heads": 1,
+          "head_dim": 4
+        }
+        """.utf8))
+        let decoder = BreezeDepthDecoder(config: config)
+        decoder.codebooksHead.update(parameters: ModuleParameters.unflattened([("weight", MLXRandom.normal([3, 8, 8]))]))
+        let hidden = MLXRandom.normal([1, 5])
+        let tokens: [Int32] = [3, 5, 1]
+        let cache = decoder.model.makeCache()
+        for head in 0..<tokens.count {
+            let cached = decoder.stepLogits(
+                tokenID: MLXArray([tokens[head]]),
+                headIndex: head,
+                backboneHiddenState: hidden,
+                cache: cache
+            )
+            let full = decoder.nextLogits(
+                tokenIDs: MLXArray([0] + tokens[...head]).reshaped([1, head + 2]),
+                backboneHiddenState: hidden
+            )
+            #expect(allClose(cached, full, atol: 1e-4).item(Bool.self))
+        }
+    }
+
     @Test func promptUsesVoiceAsInstruction() {
         #expect(BreezeTTSModel.promptText(text: "Hello", instruction: nil) == "[S0]Hello")
         #expect(

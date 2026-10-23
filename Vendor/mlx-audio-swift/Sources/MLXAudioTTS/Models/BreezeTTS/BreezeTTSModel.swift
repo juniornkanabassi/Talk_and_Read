@@ -97,6 +97,26 @@ public final class BreezeTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         language: String?,
         generationParameters: GenerateParameters
     ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
+        generateStream(
+            text: text,
+            voice: voice,
+            refAudio: refAudio,
+            refText: refText,
+            language: language,
+            generationParameters: generationParameters,
+            streamingInterval: 2.0
+        )
+    }
+
+    public func generateStream(
+        text: String,
+        voice: String?,
+        refAudio: sending MLXArray?,
+        refText: String?,
+        language: String?,
+        generationParameters: GenerateParameters,
+        streamingInterval: Double
+    ) -> sending AsyncThrowingStream<AudioGeneration, Error> {
         _ = language
         let refAudio = SendingBox(refAudio)
         return AsyncThrowingStream { continuation in
@@ -113,10 +133,11 @@ public final class BreezeTTSModel: Module, SpeechGenerationModel, @unchecked Sen
                         refAudio: refAudio,
                         refText: refText,
                         parameters: generationParameters,
-                        onToken: { continuation.yield(.token($0)) }
+                        streamingInterval: streamingInterval,
+                        onToken: { continuation.yield(.token($0)) },
+                        onAudioChunk: { continuation.yield(.audio($0)) }
                     )
                     continuation.yield(.info(result.info))
-                    continuation.yield(.audio(result.audio))
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -137,7 +158,9 @@ public final class BreezeTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         refAudio: MLXArray?,
         refText: String?,
         parameters: GenerateParameters,
-        onToken: ((Int) -> Void)? = nil
+        streamingInterval: Double = 2.0,
+        onToken: ((Int) -> Void)? = nil,
+        onAudioChunk: ((sending MLXArray) -> Void)? = nil
     ) throws -> GenerationResult {
         guard tokenizer != nil else {
             throw AudioGenerationError.modelNotInitialized("Breeze text tokenizer is not loaded")
@@ -186,10 +209,30 @@ public final class BreezeTTSModel: Module, SpeechGenerationModel, @unchecked Sen
                 minP: parameters.minP
             )
             : nil
-        var frames = [[Int32]]()
+        var firstTokens = [Int]()
+        var frames = [MLXArray]()
 
-        for _ in 0..<maxTokens {
-            if Task.isCancelled { throw CancellationError() }
+        // Streaming decodes every `chunkFrames` frames through the codec's incremental decoder.
+        let chunkFrames = max(1, Int(streamingInterval * Double(sampleRate) / Double(audioTokenizer.decodeUpsampleRate)))
+        var decodedFrames = 0
+        func emitPendingAudio() {
+            guard let onAudioChunk, frames.count > decodedFrames else { return }
+            let codes = concatenated(Array(frames[decodedFrames...]), axis: 1).transposed(0, 2, 1)
+            let chunk = audioTokenizer.decoder.streamingStep(codes).squeezed(axis: 1)[0]
+            eval(chunk)
+            decodedFrames = frames.count
+            onAudioChunk(chunk)
+        }
+        if onAudioChunk != nil {
+            audioTokenizer.decoder.resetStreamingState()
+        }
+        defer {
+            if onAudioChunk != nil {
+                audioTokenizer.decoder.resetStreamingState()
+            }
+        }
+
+        func sampleFirstCodebook() -> MLXArray {
             var logits = lmHead(conditionalHidden)
             if let unconditionalHidden {
                 let unconditioned = lmHead(unconditionalHidden)
@@ -197,51 +240,50 @@ public final class BreezeTTSModel: Module, SpeechGenerationModel, @unchecked Sen
             }
             logits = applyRepetitionPenalty(
                 logits,
-                generatedTokens: frames.map { Int($0[0]) },
+                generatedTokens: firstTokens,
                 penalty: parameters.repetitionPenalty ?? 1
             )
             logits = maskReservedTokens(logits, allowsEOS: true)
-            let first = sample(logits, sampler: sampler)
-            if first == config.audioVocabSize { break }
-            onToken?(first)
-
-            var frame = [Int32(first)]
-            var depthInputs = [Int32(0), Int32(first)]
-            while frame.count < config.numCodebooks {
-                let ids = MLXArray(depthInputs).reshaped([1, depthInputs.count])
-                var depthLogits = depthDecoder.nextLogits(
-                    tokenIDs: ids,
-                    backboneHiddenState: conditionalHidden
-                )
-                if let unconditionalHidden {
-                    let unconditioned = depthDecoder.nextLogits(
-                        tokenIDs: ids,
-                        backboneHiddenState: unconditionalHidden
-                    )
-                    depthLogits = unconditioned + 4 * (depthLogits - unconditioned)
-                }
-                depthLogits = maskReservedTokens(depthLogits, allowsEOS: false)
-                let next = sample(depthLogits, sampler: sampler)
-                frame.append(Int32(next))
-                depthInputs.append(Int32(next))
-            }
-            frames.append(frame)
-
-            let codebooks = MLXArray(frame).reshaped([1, 1, config.numCodebooks])
-            conditionalHidden = backboneModel(inputIDs: codebooks, cache: conditionalCache)[0..., -1, 0...]
-            if let cache = unconditionalCache {
-                unconditionalHidden = backboneModel(inputIDs: codebooks, cache: cache)[0..., -1, 0...]
-            }
-            eval(conditionalHidden)
-            if let unconditionalHidden { eval(unconditionalHidden) }
+            let token = sample(logits, sampler: sampler)
+            asyncEval(token)
+            return token
         }
 
+        var first = sampleFirstCodebook()
+        for _ in 0..<maxTokens {
+            if Task.isCancelled { throw CancellationError() }
+            // Queue this frame's depth tokens and the next backbone step before reading the first
+            // codebook back, so the GPU keeps working while the host checks for the end of speech.
+            // Frames stay on the GPU; apart from streamed decoding, this read is the only host sync.
+            let frame = depthFrame(
+                first: first,
+                conditionalHidden: conditionalHidden,
+                unconditionalHidden: unconditionalHidden,
+                sampler: sampler
+            )
+            let nextConditionalHidden = backboneModel(inputIDs: frame, cache: conditionalCache)[0..., -1, 0...]
+            let nextUnconditionalHidden = unconditionalCache.map {
+                backboneModel(inputIDs: frame, cache: $0)[0..., -1, 0...]
+            }
+            let token = first.item(Int.self)
+            if token == config.audioVocabSize { break }
+            onToken?(token)
+            firstTokens.append(token)
+            frames.append(frame)
+            conditionalHidden = nextConditionalHidden
+            unconditionalHidden = nextUnconditionalHidden
+            first = sampleFirstCodebook()
+            if frames.count - decodedFrames >= chunkFrames {
+                emitPendingAudio()
+            }
+        }
+        emitPendingAudio()
+
         let audio: MLXArray
-        if frames.isEmpty {
+        if frames.isEmpty || onAudioChunk != nil {
             audio = MLXArray.zeros([0])
         } else {
-            let flat = frames.flatMap { $0 }
-            let codes = MLXArray(flat).reshaped([1, frames.count, config.numCodebooks])
+            let codes = concatenated(frames, axis: 1)
             let decoded = audioTokenizer.decode(codes)
             var waveform = decoded.0.squeezed()
             let validSamples = decoded.1.asArray(Int32.self).first.map(Int.init) ?? waveform.dim(0)
@@ -265,6 +307,41 @@ public final class BreezeTTSModel: Module, SpeechGenerationModel, @unchecked Sen
                 peakMemoryUsage: Double(Memory.peakMemory) / 1_000_000_000
             )
         )
+    }
+
+    /// Completes one frame's remaining codebooks with fresh depth-decoder KV caches, sampling on the GPU.
+    private func depthFrame(
+        first: MLXArray,
+        conditionalHidden: MLXArray,
+        unconditionalHidden: MLXArray?,
+        sampler: TopPSampler?
+    ) -> MLXArray {
+        let conditionalCache = depthDecoder.model.makeCache()
+        let unconditionalCache = unconditionalHidden.map { _ in depthDecoder.model.makeCache() }
+        var tokens = [first]
+        for headIndex in 0..<(config.numCodebooks - 1) {
+            var logits = depthDecoder.stepLogits(
+                tokenID: tokens[headIndex],
+                headIndex: headIndex,
+                backboneHiddenState: conditionalHidden,
+                cache: conditionalCache
+            )
+            if let unconditionalHidden, let unconditionalCache {
+                let unconditioned = depthDecoder.stepLogits(
+                    tokenID: tokens[headIndex],
+                    headIndex: headIndex,
+                    backboneHiddenState: unconditionalHidden,
+                    cache: unconditionalCache
+                )
+                logits = unconditioned + 4 * (logits - unconditioned)
+            }
+            logits = maskReservedTokens(logits, allowsEOS: false)
+            let token = sample(logits, sampler: sampler)
+            // Start this step on the GPU while the next one is being built.
+            asyncEval(token)
+            tokens.append(token)
+        }
+        return concatenated(tokens).reshaped([1, 1, config.numCodebooks])
     }
 
     private func promptEmbeddings(
@@ -328,10 +405,8 @@ public final class BreezeTTSModel: Module, SpeechGenerationModel, @unchecked Sen
         return result[0..., ..<width]
     }
 
-    private func sample(_ logits: MLXArray, sampler: TopPSampler?) -> Int {
-        let token = sampler?.sample(logits: logits) ?? argMax(logits, axis: -1)
-        eval(token)
-        return token.item(Int.self)
+    private func sample(_ logits: MLXArray, sampler: TopPSampler?) -> MLXArray {
+        (sampler?.sample(logits: logits) ?? argMax(logits, axis: -1)).asType(.int32)
     }
 
     private func applyRepetitionPenalty(
