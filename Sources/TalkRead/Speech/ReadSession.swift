@@ -110,12 +110,6 @@ import TalkReadCore
 
     func start() {
         startedAt = Date()
-        // Above the speed the chosen engine sustains (Breeze, 1.5x) the read starts on the warm fallback: its first audio,
-        // no wait for a chunk that would be handed over seconds later, no GPU (lead, 0.4.0). The saved choice is
-        // untouched and, as with any hand-over, a later rate change does not switch back.
-        if fallback != nil, let limit = engines.engine(for: voice).keepsUpTo, player.rate > limit {
-            useFallback("\(voice.engine.modelName) keeps up to \(String(format: "%g", limit))×; \(fallbackName) is reading at \(String(format: "%g", player.rate))×")
-        }
         warmFallback()
         restart(from: startToken)
         // Queued behind the producer, so the engine starts while the first chunk is synthesised off the main actor;
@@ -182,6 +176,13 @@ import TalkReadCore
         let gen = generation
         producer?.cancel()
         player.reset()
+        // Above the speed the chosen engine sustains (Breeze, 1.5x) the read goes on with the fallback (warm Kokoro, else
+        // the system voice of its language): at start (its first audio, no wait for a chunk handed over seconds later,
+        // no GPU; lead, 0.4.0) and at every restart (seek, skip, resume after an interruption) once the rate is past it
+        // (Sol inspection 5 #3, #4). The saved choice is untouched; a fallback already chosen stays, as any hand-over.
+        if effectiveVoice == voice, let limit = engines.engine(for: voice).keepsUpTo, player.rate > limit {
+            useFallback("\(voice.engine.modelName) keeps up to \(String(format: "%g", limit))×; \(fallbackName) is reading at \(String(format: "%g", player.rate))×")
+        }
         timings = []
         made = []
         chunkEnds = []
