@@ -316,7 +316,7 @@ enum SelfTest {
 
     // MARK: - 0.3.0 engines (V-A)
 
-    /// Qwen3 timing judged by the acoustic onset check, which is independent of Parakeet: median |ours - onset| <= 60 ms
+    /// Qwen3 timing judged by the acoustic onset check, which is independent of Parakeet: median |ours - onset| <= 90 ms (PLAN 0.3.0 build results)
     /// and p90 <= 150 ms over at least 15 words that follow a silence, plus the invariants.
     private static func qwenVerdict(_ audio: [Float], timings: [TalkReadCore.WordTiming], firstChunkMs: Int, synthSeconds: Double, chunks: Int, invariants: Bool) -> Bool {
         let onset = onsetErrors(audio, starts: timings.filter { $0.end > $0.start }.map(\.start))
@@ -333,7 +333,7 @@ enum SelfTest {
     }
 
     /// A sustained Qwen3 read through a real session and Player at volume 0 (V3, V7): the model is loaded first, as on
-    /// selection; then 60 s at `rate` with the Kokoro fallback warm. Passes with first audio <= 1.5 s, no starvation, no
+    /// selection; then 60 s at `rate` with the Kokoro fallback warm. Passes with first audio <= 2.5 s (PLAN 0.3.0 build results), no starvation, no
     /// duplicated or skipped token, whether Qwen3 kept up or handed over cleanly; memory before, while and after.
     @MainActor private static func qwenLongRun(_ fixture: String, voice: String, rate: Float, aligner: Aligner) async throws -> Int32 {
         var text = fixture

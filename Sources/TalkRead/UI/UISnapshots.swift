@@ -311,7 +311,7 @@ import TalkReadCore
 
         check(MiniPlayerView.height(expanded: false, notice: true) == 118 && MiniPlayerView.height(expanded: true) == 196,
               "mini player grows for the notice", "96 → \(Int(MiniPlayerView.height(expanded: false, notice: true))) pt")
-        print("info Language.detect(French sample) = \(Language.detect("Bonjour, je vous lis ce texte en français pour vérifier la langue.")) (V-B implements it; the main stub says en)")
+        print("info Language.detect(French sample) = \(Language.detect("Bonjour, je vous lis ce texte en français pour vérifier la langue."))")
         return failures
     }
 
