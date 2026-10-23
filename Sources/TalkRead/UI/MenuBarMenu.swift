@@ -8,8 +8,6 @@ import TalkReadCore
     private let openMain: () -> Void
     private let openSettings: () -> Void
     private let openOnboarding: () -> Void
-    // ponytail: recent voices are remembered for this launch only; persist in Settings if wanted across launches.
-    private var recentVoices: [String] = []
 
     init(model: AppModel, openMain: @escaping () -> Void, openSettings: @escaping () -> Void, openOnboarding: @escaping () -> Void) {
         self.model = model
@@ -43,14 +41,7 @@ import TalkReadCore
         for p in Theme.quickSpeeds { add(Theme.speed(p), on: abs(p - speed) < 0.001, to: speeds) { [model] in model.setSpeed(Float(p)) } }
         submenu("Speed  \(Theme.speed(speed))", speeds)
 
-        if !s.voiceID.isEmpty { recentVoices.removeAll { $0 == s.voiceID }; recentVoices.insert(s.voiceID, at: 0) }
-        let fill = VoiceGroups.groups(model.voices).flatMap(\.voices).map(\.id)
-        let shown = Array((recentVoices + fill).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }.prefix(6))
-        let voices = NSMenu()
-        for id in shown { add(VoiceGroups.name(id, in: model.voices), on: id == s.voiceID, to: voices) { [model] in model.setVoice(id) } }
-        voices.addItem(.separator())
-        add("More voices…", to: voices) { [openMain] in WindowRouter.shared.pane = .voices; openMain() }
-        submenu("Voice  \(VoiceGroups.name(s.voiceID, in: model.voices))", voices)
+        submenu("Voice  \(VoiceGroups.name(s.voiceID, in: model.voices))", voiceMenu(model.voices, english: s.voiceID, french: s.frenchVoiceID))
 
         add("Show mini player", on: s.showMiniPlayer) { [model] in
             model.settings.showMiniPlayer.toggle()
@@ -70,6 +61,26 @@ import TalkReadCore
         if model.needsSetup { add("⚠︎ Finish setup…", action: openOnboarding) }
         menu.addItem(.separator())
         add("Quit Talk and Read", key: "q") { NSApp.terminate(nil) }
+    }
+
+    /// Female voices grouped by model (V5), then the French voices; ticks on the English and the French voice.
+    func voiceMenu(_ voices: [Voice], english: String, french: String) -> NSMenu {
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+        func list(_ v: Voice, _ title: String, on: Bool) { add(title, on: on, to: sub) { [model] in model.setVoice(v.id) } }
+        for group in VoiceGroups.byModel(voices, language: "en") {
+            sub.addItem(.sectionHeader(title: group.model.modelName))
+            for v in group.voices { list(v, VoiceGroups.label(v), on: v.id == english) }
+        }
+        let frenchGroups = VoiceGroups.byModel(voices, language: "fr")
+        if !frenchGroups.isEmpty {
+            sub.addItem(.separator())
+            sub.addItem(.sectionHeader(title: "French"))
+            for g in frenchGroups { for v in g.voices { list(v, "\(v.name) (\(g.model.modelName))", on: v.id == french) } }
+        }
+        sub.addItem(.separator())
+        add("More voices…", to: sub) { [openMain] in WindowRouter.shared.pane = .voices; openMain() }
+        return sub
     }
 
     // MARK: Building items
@@ -107,6 +118,7 @@ import TalkReadCore
     func dump(_ m: NSMenu? = nil, indent: String = "") -> [String] {
         (m ?? menu).items.flatMap { item -> [String] in
             if item.isSeparatorItem { return ["\(indent)----"] }
+            if item.isSectionHeader { return ["\(indent)[\(item.title)]"] }
             var mods = ""
             let mask = item.keyEquivalentModifierMask
             if !item.keyEquivalent.isEmpty {

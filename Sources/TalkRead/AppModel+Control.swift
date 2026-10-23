@@ -40,7 +40,9 @@ extension AppModel {
             return status()
 
         case "voices":
-            return ["voices": .array(voices.map(Self.json)), "current": .string(settings.voiceID)]
+            // `current` (the English voice) is kept for 0.2 callers.
+            return ["voices": .array(voices.map(Self.json)), "current": .string(settings.voiceID),
+                    "english": .string(settings.voiceID), "french": .string(settings.frenchVoiceID)]
 
         case "speak":
             guard let text = a["text"], !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -103,8 +105,9 @@ extension AppModel {
             guard let raw = a["id"] else { throw AppError.badArgs("voice needs an id; see `talkread voices`.") }
             let id = try validVoice(raw)
             try claim(r)
-            settings.voiceID = id
-            return ["voice": .string(id), "speaking": .string(voice(for: id).id)]
+            setVoice(id)
+            let v = voice(for: id)
+            return ["voice": .string(id), "language": .string(v.language), "speaking": .string(v.id)]
 
         case "dictate-start":
             try dictation.start(caller: r.caller, force: r.force)
@@ -159,8 +162,13 @@ extension AppModel {
             guard let key = a["key"], let raw = a["value"] else { throw AppError.badArgs("settings-set needs a key and a value.") }
             var next = settings
             do { try next.set(key, to: raw) } catch let e as ControlError { throw AppError.badArgs(e.message) }
-            if key == "voiceID" { _ = try validVoice(next.voiceID) }
-            if key == "speed" || key == "voiceID" { try claim(r) }
+            switch key {
+            case "voiceID": _ = try validVoice(next.voiceID, language: "en")
+            case "frenchVoiceID": _ = try validVoice(next.frenchVoiceID, language: "fr")
+            case "fallbackVoiceID": _ = try validVoice(next.fallbackVoiceID, language: "en", engine: .neural)
+            default: break
+            }
+            if ["speed", "voiceID", "frenchVoiceID", "fallbackVoiceID"].contains(key) { try claim(r) }
             settings = next
             return [key: settings.json()[key] ?? .null]
 
@@ -172,7 +180,7 @@ extension AppModel {
                 await downloadTask?.value
             default: throw AppError.badArgs("models takes status or download.")
             }
-            return ["voice": Self.json(voiceModel), "dictation": Self.json(dictationModel)]
+            return modelsJSON()
 
         default:
             throw AppError(code: "unknown_command", message: "Unknown command '\(r.command)'.")
@@ -189,12 +197,12 @@ extension AppModel {
     /// Waits up to 5 s for the first audio of a read the caller just started.
     private func firstAudio(_ s: ReadSession) async throws -> [String: JSONValue] {
         for _ in 0..<500 {
-            if let ms = s.firstAudioMs { return ["firstAudioMs": .number(Double(ms)), "voice": .string(sessionInfo.voice)] }
+            if let ms = s.firstAudioMs { return ["firstAudioMs": .number(Double(ms)), "voice": .string(s.effectiveVoice.id)] }
             if case .failed(let m) = s.state { throw AppError(code: "failed", message: m) }
             if s.state == .finished { break }
             try? await Task.sleep(for: .milliseconds(10))
         }
-        return ["firstAudioMs": .null, "state": .string(Self.name(s.state)), "voice": .string(sessionInfo.voice)]
+        return ["firstAudioMs": .null, "state": .string(Self.name(s.state)), "voice": .string(s.effectiveVoice.id)]
     }
 
     func status() -> [String: JSONValue] {
@@ -205,7 +213,8 @@ extension AppModel {
             "caller": owner.map { .string($0.caller) } ?? .null,
             "token": num(s?.currentToken),
             "sentence": num(s?.currentSentence),
-            "voice": .string(s == nil ? settings.voiceID : sessionInfo.voice),
+            "voice": .string(s?.effectiveVoice.id ?? settings.voiceID),   // the voice speaking, after any fallback (V3)
+            "fallbackReason": s?.fallbackReason.map { .string($0) } ?? .null,
             "speed": .number(Double(s == nil ? settings.speed : sessionInfo.rate)),
             "firstAudioMs": num(s?.firstAudioMs),
             "source": s == nil ? .null : .string(sessionInfo.source)
@@ -216,8 +225,19 @@ extension AppModel {
             "dictation": .object(["state": .string(Self.name(dictation.state)), "owner": dictation.owner.map { .string($0) } ?? .null]),
             "permissions": .object(["accessibility": .bool(permissions.accessibility), "microphone": .bool(permissions.microphone),
                                     "screenRecording": .bool(permissions.screenRecording)]),
-            "models": .object(["voice": Self.json(voiceModel), "dictation": Self.json(dictationModel)])
+            "models": .object(modelsJSON())
         ]
+    }
+
+    /// Kokoro's English voice and the dictation model, then every optional download (Qwen3, word timing, French).
+    private func modelsJSON() -> [String: JSONValue] {
+        let downloads = models.map { row -> JSONValue in
+            guard case .object(var o) = Self.json(row.state) else { return .null }
+            o["title"] = .string(row.title)
+            o["megabytes"] = .number(Double(row.megabytes))
+            return .object(o)
+        }
+        return ["voice": Self.json(voiceModel), "dictation": Self.json(dictationModel), "downloads": .array(downloads)]
     }
 
     // MARK: Argument checks
@@ -229,8 +249,13 @@ extension AppModel {
         return url
     }
 
-    private func validVoice(_ id: String) throws -> String {
-        guard voices.contains(where: { $0.id == id }) else { throw AppError.badArgs("Unknown voice '\(id)'; see `talkread voices`.") }
+    /// A listed voice; for the voice settings also of the right language (and Kokoro, for the fallback).
+    private func validVoice(_ id: String, language: String? = nil, engine: EngineKind? = nil) throws -> String {
+        guard let v = voices.first(where: { $0.id == id }) else { throw AppError.badArgs("Unknown voice '\(id)'; see `talkread voices`.") }
+        if let language, v.language != language {
+            throw AppError.badArgs("'\(id)' is not \(language == "fr" ? "a French" : "an English") voice; see `talkread voices`.")
+        }
+        if let engine, v.engine != engine { throw AppError.badArgs("'\(id)' is not a \(engine.modelName) voice; see `talkread voices`.") }
         return id
     }
 
@@ -263,7 +288,8 @@ extension AppModel {
 
     nonisolated static func json(_ v: Voice) -> JSONValue {
         .object(["id": .string(v.id), "name": .string(v.name), "accent": .string(v.accent), "gender": .string(v.gender),
-                 "engine": .string(v.engine.rawValue), "installed": .bool(v.installed)])
+                 "engine": .string(v.engine.rawValue), "model": .string(v.engine.modelName), "language": .string(v.language),
+                 "installed": .bool(v.installed)])
     }
 
     nonisolated static func json(_ m: ModelState) -> JSONValue {

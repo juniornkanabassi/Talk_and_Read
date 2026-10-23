@@ -107,6 +107,29 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(try cli(["voices"]).out, "af_heart  Heart  American\nbf_emma  Emma  British (not installed)\n")
     }
 
+    func testVoicesListingWithModelLanguageAndCurrent() throws {
+        func voice(_ id: String, _ name: String, _ accent: String, _ model: String, _ language: String, _ installed: Bool) -> JSONValue {
+            ["id": .string(id), "name": .string(name), "accent": .string(accent), "gender": "Female", "engine": "neural",
+             "model": .string(model), "language": .string(language), "installed": .bool(installed)]
+        }
+        let voices: JSONValue = .array([voice("af_heart", "Heart", "American", "Kokoro", "en", true),
+                                        voice("qwen.us_warm", "Warm", "American", "Qwen3", "en", false),
+                                        voice("ff_siwis", "Siwis", "French", "Kokoro", "fr", true)])
+        let server = try startServer(Recorder(), response: ControlResponse(ok: true, data: ["voices": voices, "current": "af_heart",
+                                                                                              "english": "af_heart", "french": "ff_siwis"]))
+        defer { server.stop() }
+        XCTAssertEqual(try cli(["voices"]).out, """
+            af_heart  Heart  American  Female  Kokoro  en  <- English voice
+            qwen.us_warm  Warm  American  Female  Qwen3  en (not installed)
+            ff_siwis  Siwis  French  Female  Kokoro  fr  <- French voice
+
+            """)
+        let json = try cli(["voices", "--json"]).json
+        let data = json["data"] as? [String: Any]
+        XCTAssertEqual(data?["french"] as? String, "ff_siwis")
+        XCTAssertEqual(((data?["voices"] as? [[String: Any]])?.last)?["language"] as? String, "fr")
+    }
+
     // MARK: usage
 
     func testUsageErrorsExitTwo() throws {

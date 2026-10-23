@@ -19,6 +19,11 @@ enum Theme {
 
     static func speed(_ s: Double) -> String { String(format: "%.2f×", s) }
 
+    /// "90 MB", "3.1 GB".
+    static func size(_ megabytes: Int) -> String {
+        megabytes < 1000 ? "\(megabytes) MB" : String(format: "%.1f GB", Double(megabytes) / 1000)
+    }
+
     static func kindIcon(_ kind: String) -> String {
         switch kind {
         case "pdf": "doc.richtext"
@@ -259,22 +264,65 @@ struct PermissionRow: View {
 /// A downloadable model: size, progress, ready or failed.
 struct ModelStatusRow: View {
     enum Kind { case voice, dictation }
-    let kind: Kind
+    let symbol: String
+    let title: String
+    let what: String
+    let megabytes: Int
     let state: ModelState
     /// nil hides the row's own button (onboarding has one button for both).
     var download: (() -> Void)?
 
+    init(symbol: String, title: String, what: String, megabytes: Int, state: ModelState, download: (() -> Void)? = nil) {
+        (self.symbol, self.title, self.what, self.megabytes, self.state, self.download) = (symbol, title, what, megabytes, state, download)
+    }
+
+    /// Kokoro's English voice and the dictation model.
+    init(kind: Kind, state: ModelState, download: (() -> Void)? = nil) {
+        self.init(symbol: kind == .voice ? "waveform" : "mic", title: kind == .voice ? "Natural voice" : "Dictation model",
+                  what: kind == .voice ? "Kokoro, American and British voices" : "Parakeet, fast and accurate English",
+                  megabytes: Self.megabytes(kind, state), state: state, download: download)
+    }
+
+    /// One optional download (Models page).
+    init(row: ModelRow, download: (() -> Void)? = nil) {
+        let p = VoiceGroups.purpose(row.title)
+        self.init(symbol: p.symbol, title: row.title, what: p.what, megabytes: row.megabytes, state: row.state, download: download)
+    }
+
     static func megabytes(_ kind: Kind, _ state: ModelState) -> Int {
         if case .missing(let mb) = state, mb > 0 { return mb }
-        return kind == .voice ? 330 : 570
+        return kind == .voice ? AppModel.voiceMegabytes : AppModel.dictationMegabytes
+    }
+
+    /// What is left to fetch of several downloads (what was already fetched is not counted again).
+    static func megabytes(_ rows: [ModelRow]) -> Int {
+        let left = rows.filter { $0.state != .ready }
+        return (left.isEmpty ? rows : left).reduce(0) { $0 + $1.megabytes }
+    }
+
+    /// One state for several downloads a model needs: failed if any failed, ready when all are, downloading with
+    /// size-weighted progress while any is, else missing.
+    static func combined(_ rows: [ModelRow]) -> ModelState {
+        for r in rows { if case .failed = r.state { return r.state } }
+        if rows.allSatisfy({ $0.state == .ready }) { return .ready }
+        guard rows.contains(where: { if case .downloading = $0.state { true } else { false } }) else {
+            return .missing(megabytes: megabytes(rows))
+        }
+        let total = Double(rows.reduce(0) { $0 + $1.megabytes })
+        let done = rows.reduce(0.0) { sum, r in
+            if r.state == .ready { return sum + Double(r.megabytes) }
+            if case .downloading(let p) = r.state { return sum + p * Double(r.megabytes) }
+            return sum
+        }
+        return .downloading(progress: total > 0 ? done / total : 0)
     }
 
     var body: some View {
         HStack(spacing: 14) {
-            IconTile(symbol: kind == .voice ? "waveform" : "mic")
+            IconTile(symbol: symbol)
             VStack(alignment: .leading, spacing: 4) {
-                Text(kind == .voice ? "Natural voice" : "Dictation model").font(.headline)
-                Text(detail).font(.callout).foregroundStyle(.secondary)
+                Text(title).font(.headline)
+                Text(detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if case .downloading(let p) = state { ThinBar(value: p).frame(maxWidth: 240).padding(.top, 2) }
             }
             Spacer(minLength: 12)
@@ -294,8 +342,7 @@ struct ModelStatusRow: View {
     }
 
     private var detail: String {
-        let size = "\(Self.megabytes(kind, state)) MB"
-        let what = kind == .voice ? "Kokoro, British and American voices" : "Parakeet, fast and accurate English"
+        let size = Theme.size(megabytes)
         switch state {
         case .ready: return what
         case .downloading: return "\(what) · downloading \(size)"

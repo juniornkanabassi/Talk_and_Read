@@ -14,6 +14,8 @@ struct ViewData {
     var permissions: Permissions
     var voiceModel: ModelState
     var dictationModel: ModelState
+    /// Optional downloads (Qwen3, word timing, Kokoro French) for the Models and Voices pages.
+    var models: [ModelRow] = []
     var documentText: @MainActor (LibraryItem) throws -> String
     /// Snapshots only: the word shown highlighted in the reader when no live session is reading the document.
     var previewToken: Int?
@@ -36,7 +38,8 @@ struct ViewData {
 extension AppModel {
     var viewData: ViewData {
         ViewData(voices: voices, library: library, recentReads: recentReads, dictations: dictation.history, permissions: permissions,
-                 voiceModel: voiceModel, dictationModel: dictationModel, documentText: { [unowned self] in try self.documentText($0) })
+                 voiceModel: voiceModel, dictationModel: dictationModel, models: models,
+                 documentText: { [unowned self] in try self.documentText($0) })
     }
     var needsSetup: Bool { viewData.setupIssue != nil }
 }
@@ -611,58 +614,79 @@ struct DictationPane: View {
 
 // MARK: - Voices
 
-/// British, American and built-in voices, in that order (the picker, the reader's menu and the menu bar share it).
+/// What every picker offers (V5, Junior 23 Oct): female voices of the models only, never system or male voices,
+/// grouped by model (Kokoro, Qwen3, Breeze), American before British. The Voices page, Settings, the reader's and mini
+/// player's menus and the menu bar share it.
 enum VoiceGroups {
+    static let models: [EngineKind] = [.neural, .qwen, .breeze]
+
     static func isBritish(_ v: Voice) -> Bool {
         let a = v.accent.lowercased()
         return a.contains("brit") || a.hasSuffix("gb") || a.contains("uk")
     }
-    static func isAmerican(_ v: Voice) -> Bool {
-        let a = v.accent.lowercased()
-        return a.contains("americ") || a.hasSuffix("-us") || a == "us"
+
+    static func byModel(_ voices: [Voice], language: String) -> [(model: EngineKind, voices: [Voice])] {
+        let female = voices.filter { $0.language == language && $0.gender.lowercased().hasPrefix("f") }
+        return models.map { m in
+            let own = female.filter { $0.engine == m }
+            return (m, own.filter { !isBritish($0) } + own.filter(isBritish))
+        }
+        .filter { !$0.voices.isEmpty }
     }
-    static func groups(_ voices: [Voice]) -> [(title: String, voices: [Voice])] {
-        let neural = voices.filter { $0.engine == .neural }
-        return [("British", neural.filter(isBritish)), ("American", neural.filter { !isBritish($0) }),
-                ("Built in (no download)", voices.filter { $0.engine == .system })].filter { !$0.voices.isEmpty }
+
+    /// The voice a model starts on when it is picked (PLAN 0.3.0 decision 1): for Kokoro the Kokoro voice last chosen
+    /// (`kokoro`: the fallback voice, or `ff_siwis`), otherwise the model's first voice.
+    static func startVoice(_ voices: [Voice], kokoro: String) -> String? {
+        (voices.first { $0.id == kokoro } ?? voices.first)?.id
     }
+
     static func name(_ id: String, in voices: [Voice]) -> String { voices.first { $0.id == id }?.name ?? id }
+
+    /// A voice in a menu: "Emma (British)"; American voices by name alone.
+    static func label(_ v: Voice) -> String { isBritish(v) ? "\(v.name) (British)" : v.name }
+
+    /// Whether a download (`Engines.downloadables()`, by title) is needed by a model's voices in a language: the model
+    /// itself and Parakeet v3 word timing for Qwen3 and Breeze, the French pack for Kokoro's French voice.
+    // ponytail: matched by title because DownloadableModel names no engine; an `engine` property on it would end this.
+    static func needs(_ model: EngineKind, language: String, title: String) -> Bool {
+        let t = title.lowercased()
+        switch model {
+        case .qwen: return t.contains("qwen") || t.contains("parakeet")
+        case .breeze: return t.contains("breeze") || t.contains("parakeet")
+        case .neural: return language == "fr" && t.contains("french")
+        case .system: return false
+        }
+    }
+
+    /// Icon and one line for an optional download on the Models page.
+    static func purpose(_ title: String) -> (symbol: String, what: String) {
+        let t = title.lowercased()
+        if t.contains("qwen") { return ("waveform", "More natural American and French voices") }
+        if t.contains("breeze") { return ("waveform", "Expressive English voices") }
+        if t.contains("parakeet") { return ("text.word.spacing", "Word timing for the Qwen3 voices") }
+        if t.contains("french") { return ("globe.europe.africa", "Kokoro's French voice, Siwis") }
+        return ("square.and.arrow.down", "Optional download")
+    }
+
+    static func blurb(_ model: EngineKind) -> String {
+        switch model {
+        case .neural: "Light and instant. The default."
+        case .qwen: "More natural. Uses about 4 GB of memory while it reads; if it falls behind your speed, Kokoro reads the rest."
+        case .breeze: "The most expressive. English only."
+        case .system: ""
+        }
+    }
 }
 
 struct VoicesPane: View {
     @ObservedObject var model: AppModel
     let data: ViewData
-    @State private var accent = "All"
-    @State private var gender = "Any"
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 26) {
                 speedCard
-                ModelStatusRow(kind: .voice, state: data.voiceModel) { model.downloadModels() }.card(padding: 0)
-                HStack(spacing: 12) {
-                    Picker("Accent", selection: $accent) { ForEach(["All", "British", "American"], id: \.self) { Text($0) } }
-                        .pickerStyle(.segmented).labelsHidden().frame(width: 250)
-                    Picker("Voice", selection: $gender) { ForEach(["Any", "Female", "Male"], id: \.self) { Text($0) } }
-                        .pickerStyle(.segmented).labelsHidden().frame(width: 200)
-                    Spacer()
-                }
-                ForEach(VoiceGroups.groups(filtered), id: \.title) { group in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(group.title).font(.headline)
-                        VStack(spacing: 0) {
-                            ForEach(group.voices) { voice in
-                                VoiceRow(voice: voice, selected: voice.id == model.settings.voiceID,
-                                         needsDownload: voice.engine == .neural && data.voiceModel != .ready,
-                                         choose: { model.setVoice(voice.id) },
-                                         preview: { preview(voice) })
-                                if voice.id != group.voices.last?.id { Divider().padding(.leading, 48) }
-                            }
-                        }
-                        .card(padding: 0)
-                    }
-                }
-                if data.voices.isEmpty { EmptyNote(text: "Loading voices…") }
+                VoicePickers(model: model, data: data)
             }
             .padding(28)
             .frame(maxWidth: 760)
@@ -670,19 +694,6 @@ struct VoicesPane: View {
         }
         .background(Theme.surface)
         .navigationTitle("Voices")
-    }
-
-    private var filtered: [Voice] {
-        data.voices.filter { v in
-            (accent == "All" || (accent == "British" ? VoiceGroups.isBritish(v) : VoiceGroups.isAmerican(v)))
-                && (gender == "Any" || v.gender.lowercased().hasPrefix(gender.lowercased().prefix(1)))
-        }
-    }
-
-    /// Picking a voice plays a sample in it (AppModel.speak uses the current voice).
-    private func preview(_ voice: Voice) {
-        if voice.id != model.settings.voiceID { model.setVoice(voice.id) }
-        try? model.speak("Hello, I'm \(voice.name). This is how I sound reading your text.", title: nil, caller: "ui-preview")
     }
 
     private var speed: Double { Double(model.settings.speed) }
@@ -714,43 +725,133 @@ struct VoicesPane: View {
     }
 }
 
+/// The English and the French voice, one section each (the Voices page and Settings ▸ Voices).
+struct VoicePickers: View {
+    @ObservedObject var model: AppModel
+    let data: ViewData
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            VoiceSection(model: model, data: data, language: "en")
+            VoiceSection(model: model, data: data, language: "fr")
+            Text("A new choice is used from the next read.").font(.callout).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// One language's voice (V1, V2, V5): the model first, then that model's female voices. A model not yet downloaded
+/// shows its size and a Download button; until it is ready another voice reads (`AppModel.voice(for:)`).
+struct VoiceSection: View {
+    @ObservedObject var model: AppModel
+    let data: ViewData
+    /// "en" or "fr".
+    let language: String
+
+    private var french: Bool { language == "fr" }
+    private var current: String { french ? model.settings.frenchVoiceID : model.settings.voiceID }
+
+    var body: some View {
+        let groups = VoiceGroups.byModel(data.voices, language: language)
+        let chosen = data.voices.first { $0.id == current }?.engine
+        let shown = groups.first { $0.model == chosen } ?? groups.first
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(french ? "French voice" : "English voice").font(.headline)
+                    Text(french ? "Reads text that is in French." : "Reads everything that is not French.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                Picker("Model", selection: Binding(get: { chosen }, set: { m in pick(groups.first { $0.model == m }) })) {
+                    ForEach(groups, id: \.model) { Text($0.model.modelName).tag(Optional($0.model)) }
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                .accessibilityLabel("\(french ? "French" : "English") voice model")
+            }
+            if let shown {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(VoiceGroups.blurb(shown.model)).font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
+                    download(shown.model, shown.voices)
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 4) {
+                        ForEach(shown.voices) { v in
+                            VoiceRow(voice: v, selected: v.id == current, choose: { model.setVoice(v.id) }, preview: { preview(v) })
+                        }
+                    }
+                    .padding(8)
+                }
+                .card(padding: 0)
+            } else {
+                EmptyNote(text: data.voices.isEmpty ? "Loading voices…" : "No \(french ? "French" : "English") voices yet.").card(padding: 0)
+            }
+        }
+    }
+
+    /// The model's missing downloads as one row: Kokoro's English voice is the existing voice download; the others come
+    /// from `Engines.downloadables()`.
+    @ViewBuilder private func download(_ kind: EngineKind, _ voices: [Voice]) -> some View {
+        if voices.contains(where: { !$0.installed }) {
+            if kind == .neural && !french {
+                ModelStatusRow(kind: .voice, state: data.voiceModel) { model.downloadModels() }
+            } else {
+                let matched = data.models.filter { VoiceGroups.needs(kind, language: language, title: $0.title) }
+                let rows = matched.isEmpty ? data.models.filter { $0.state != .ready } : matched
+                let state = ModelStatusRow.combined(rows)
+                ModelStatusRow(symbol: "square.and.arrow.down", title: "\(kind.modelName) needs a download",
+                               what: "Another voice reads until it is ready", megabytes: ModelStatusRow.megabytes(rows), state: state) {
+                    for r in rows where r.state != .ready { model.download(r.title) }
+                }
+            }
+            Divider().padding(.horizontal, 14)
+        }
+    }
+
+    private func pick(_ group: (model: EngineKind, voices: [Voice])?) {
+        guard let group, let id = VoiceGroups.startVoice(group.voices, kokoro: french ? "ff_siwis" : model.settings.fallbackVoiceID) else { return }
+        model.setVoice(id)
+    }
+
+    /// Plays a short sample in that voice without choosing it.
+    private func preview(_ v: Voice) {
+        let text = v.language == "fr" ? "Bonjour, je suis \(v.name). Voici comment je lis vos textes."
+            : "Hello, I'm \(v.name). This is how I sound reading your text."
+        try? model.speak(text, title: nil, caller: "ui-preview", voice: v.id)
+    }
+}
+
 struct VoiceRow: View {
     let voice: Voice
     let selected: Bool
-    let needsDownload: Bool
     let choose: () -> Void
     let preview: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Group {
                 if selected { Tick(size: 20) } else { Circle().strokeBorder(Color.primary.opacity(0.2), lineWidth: 1.5).frame(width: 18, height: 18) }
             }
             .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(voice.name).fontWeight(selected ? .semibold : .regular)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(voice.name).fontWeight(selected ? .semibold : .regular).lineLimit(1)
+                Text(voice.accent).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: 4)
             Button(action: preview) { Image(systemName: "play.circle").font(.title3) }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
-                .help("Choose and play a sample")
+                .disabled(!voice.installed)
+                .opacity(voice.installed ? 1 : 0.35)
+                .help(voice.installed ? "Play a sample" : "Download it to hear a sample")
                 .accessibilityLabel("Preview \(voice.name)")
         }
-        .padding(.horizontal, 14).padding(.vertical, 9)
-        .background(selected ? Theme.accent.opacity(0.12) : .clear)
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(selected ? Theme.accent.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .contentShape(Rectangle())
         .onTapGesture(perform: choose)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(voice.name), \(detail)\(selected ? ", current voice" : "")")
+        .accessibilityLabel("\(voice.name), \(voice.accent)\(selected ? ", current voice" : "")")
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction(named: "Choose", choose)
-    }
-
-    private var detail: String {
-        var parts = [voice.gender.capitalized]
-        if voice.engine == .neural { parts.append(needsDownload ? "Needs download" : "Natural") } else { parts.append(voice.accent) }
-        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }

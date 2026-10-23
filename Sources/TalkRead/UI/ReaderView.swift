@@ -184,7 +184,7 @@ private struct ReaderPage: View {
                 .keyboardShortcut("]", modifiers: .command).disabled(!live)
             Divider().frame(height: 22).padding(.horizontal, 6)
             SpeedMenu(speed: Double(model.settings.speed)) { model.setSpeed(Float($0)) }
-            VoiceMenu(voices: data.voices, current: model.settings.voiceID) { model.setVoice($0) }
+            VoiceMenu(voices: data.voices, english: model.settings.voiceID, french: model.settings.frenchVoiceID) { model.setVoice($0) }
             if doc.pdf == nil {
                 SymbolButton(symbol: "textformat.size", label: wider ? "Normal spacing" : "Wider spacing") { wider.toggle() }
                     .foregroundStyle(wider ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(.primary))
@@ -235,24 +235,41 @@ struct SpeedMenu: View {
     }
 }
 
+/// Female voices by model, then the French ones; ticks on the English and the French voice. A choice applies to the
+/// next read.
 struct VoiceMenu: View {
     let voices: [Voice]
-    let current: String
+    let english: String
+    let french: String
+    /// The label; nil shows the English voice (the mini player passes the voice speaking now).
+    var title: String?
     let choose: (String) -> Void
+
     var body: some View {
+        let label = title ?? VoiceGroups.name(english, in: voices)
+        let frenchVoices = VoiceGroups.byModel(voices, language: "fr").flatMap { g in g.voices.map { (model: g.model, voice: $0) } }
         Menu {
-            ForEach(VoiceGroups.groups(voices), id: \.title) { group in
-                Section(group.title) {
-                    ForEach(group.voices) { v in Toggle(v.name, isOn: Binding(get: { v.id == current }, set: { _ in choose(v.id) })) }
+            ForEach(VoiceGroups.byModel(voices, language: "en"), id: \.model) { group in
+                Section(group.model.modelName) {
+                    ForEach(group.voices) { v in
+                        Toggle(VoiceGroups.label(v), isOn: Binding(get: { v.id == english }, set: { _ in choose(v.id) }))
+                    }
+                }
+            }
+            if !frenchVoices.isEmpty {
+                Section("French") {
+                    ForEach(frenchVoices, id: \.voice.id) { f in
+                        Toggle("\(f.voice.name) (\(f.model.modelName))", isOn: Binding(get: { f.voice.id == french }, set: { _ in choose(f.voice.id) }))
+                    }
                 }
             }
             Divider()
             Button("More voices…") { WindowRouter.shared.show(.voices) }
         } label: {
-            Label(VoiceGroups.name(current, in: voices), systemImage: "person.wave.2").font(.callout)
+            Label(label, systemImage: "person.wave.2").font(.callout)
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .accessibilityLabel("Voice: \(VoiceGroups.name(current, in: voices))")
+        .accessibilityLabel("Voice: \(label)")
     }
 }
 
