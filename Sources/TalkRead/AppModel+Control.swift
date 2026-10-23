@@ -99,6 +99,7 @@ extension AppModel {
             var next = settings
             next.speed = v
             settings = next.validated()
+            applySpeedToLiveRead()
             return ["speed": .number(Double(settings.speed))]
 
         case "voice":

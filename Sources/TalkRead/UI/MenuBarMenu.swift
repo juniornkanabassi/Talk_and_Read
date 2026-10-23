@@ -36,7 +36,7 @@ import TalkReadCore
         add("Screenshot and listen", s.screenshotShortcut) { [model] in model.readScreenshot() }
         menu.addItem(.separator())
 
-        let speed = Double(s.speed)
+        let speed = Double(model.activeSpeed)   // a 1x preview shows 1x
         let speeds = NSMenu()
         for p in Theme.quickSpeeds { add(Theme.speed(p), on: abs(p - speed) < 0.001, to: speeds) { [model] in model.setSpeed(Float(p)) } }
         submenu("Speed  \(Theme.speed(speed))", speeds)

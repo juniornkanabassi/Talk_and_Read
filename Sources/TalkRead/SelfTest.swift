@@ -634,8 +634,12 @@ enum SelfTest {
         if let p = model.session {
             p.player.volume = 0
             let spoke = await until(10) { fakeBreeze.calls > calls }
-            check("fake: a preview at the saved 2.5x speaks the Breeze voice at \(p.player.rate)x (effective \(p.effectiveVoice.id)), saved speed \(model.settings.speed)",
-                  spoke && p.player.rate == 1 && p.effectiveVoice.id == "breeze.us_warm" && fakeBreeze.voiceIDs.last == "breeze.us_warm" && model.settings.speed == 2.5)
+            check("fake: a preview at the saved 2.5x speaks the Breeze voice at \(p.player.rate)x (effective \(p.effectiveVoice.id)), saved speed \(model.settings.speed), shown \(model.activeSpeed)x",
+                  spoke && p.player.rate == 1 && p.effectiveVoice.id == "breeze.us_warm" && fakeBreeze.voiceIDs.last == "breeze.us_warm" && model.settings.speed == 2.5
+                  && model.activeSpeed == 1)
+            // Sol verification 6: choosing the saved 2.5x during the preview reaches it, though the setting is unchanged.
+            model.setSpeed(2.5)
+            check("fake: choosing 2.5x during the 1x preview applies it (rate \(p.player.rate)x, shown \(model.activeSpeed)x)", p.player.rate == 2.5 && model.activeSpeed == 2.5)
         } else { check("fake: the preview started", false) }
         model.stopReading()
         model.settings.speed = 1
