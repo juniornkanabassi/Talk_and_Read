@@ -246,8 +246,12 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     /// Captures the selection and starts the read reserved as `id`; nil when nothing was found or another read took over.
     @discardableResult func captureAndRead(id: UUID, app: NSRunningApplication?) async -> ReadSession? {
         let capture = await TextCapture.capture(app: app)
-        guard owner?.sessionID == id else { return nil }
+        guard owner?.sessionID == id else {
+            if let capture { AXWake.restore(capture.pid) }   // no Highlighter will end this read (E8)
+            return nil
+        }
         guard let capture, !capture.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            if let capture { AXWake.restore(capture.pid) }
             owner = nil
             MiniPlayer.shared.flash("Select some text first")
             return nil

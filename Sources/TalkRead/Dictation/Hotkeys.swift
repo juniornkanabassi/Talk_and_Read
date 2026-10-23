@@ -113,6 +113,7 @@ final class Hotkeys {
     /// Re-enable a tap the system switched off; recreate it if that fails. Also the 5 s health timer.
     private func checkHealth() {
         if let tap, CGEvent.tapIsEnabled(tap: tap) { return }
+        consumer.reset()   // key-ups missed while the tap was off must not leave a key swallowed
         if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
         if let tap, CGEvent.tapIsEnabled(tap: tap) { return }
         removeTap()
@@ -123,7 +124,7 @@ final class Hotkeys {
     /// True = swallow the event. Decided here, synchronously and quickly (a slow callback gets the tap switched off);
     /// the action itself runs on the main thread.
     fileprivate func received(_ type: CGEventType, _ event: CGEvent) -> Bool {
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { checkHealth(); return false }
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { consumer.reset(); checkHealth(); return false }
         let ours = event.getIntegerValueField(.eventSourceUserData) == PasteboardGate.eventTag   // our own ⌘V (the only key event we post)
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))

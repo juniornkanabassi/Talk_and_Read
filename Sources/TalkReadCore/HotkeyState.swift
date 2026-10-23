@@ -96,6 +96,9 @@ public struct KeyConsumer: Sendable {
 
     public init() {}
 
+    /// The tap was disabled or recreated: key-ups during the gap were never seen, so forget what was being swallowed.
+    public mutating func reset() { swallowing.removeAll() }
+
     /// True = swallow. `ours`: an event Talk and Read posted itself (the insertion ⌘V), which always passes.
     public mutating func swallow(_ event: Event, keyCode: UInt16, modifiers: UInt64, ours: Bool, in c: Context) -> Bool {
         guard !ours else { return false }
