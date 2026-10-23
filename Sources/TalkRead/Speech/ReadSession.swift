@@ -1,9 +1,9 @@
 // One read: chunks -> synthesis ahead of playback -> player -> timeline -> highlight ticks.
 // A producer task synthesises up to three chunks ahead; a 30 Hz main-actor tick maps the player's media clock to the
 // current token. Seek, skip and voice change restart synthesis at a token (PLAN decision 15); rate is instant.
-// Slow engines (Qwen3) get bounded chunks sized by a time budget and a watchdog on the chunk in flight; when they cannot
-// keep up, the rest of the read goes to the warm Kokoro fallback without restarting speech (PLAN 0.3.0, Sol revisions 2,
-// 2b and 4). Kokoro-only reads take exactly the 1.0 path.
+// Slow engines (Qwen3, Breeze) get bounded chunks sized by a time budget and a watchdog on the chunk in flight; when they
+// cannot keep up, the rest of the read goes to the warm Kokoro fallback without restarting speech (PLAN 0.3.0, Sol
+// revisions 2, 2b and 4). Kokoro-only reads take exactly the 1.0 path.
 import Foundation
 import TalkReadCore
 
@@ -36,12 +36,21 @@ import TalkReadCore
     /// per 1x (about 2 s of playback), filled to that size across sentences. Smaller openings left the read handing over
     /// at its second chunk even at 2x (Qwen3, 23 Oct). The price is first audio: measured 0.9-1.3 s at 2x in French,
     /// 1.8 s in English, 1.4-2.4 s at 2.5x (target 1.5 s); a fixed 60 brings 2.5x back to about 1.5 s but then Qwen3
-    /// mostly hands over to Kokoro within seconds at 2.5x.
-    static func openingChars(rate: Float) -> Int { min(max(40, Int(30 * rate)), slowChars) }
-    // ponytail: Qwen3's fixed cost per chunk (prefill, decoder start, alignment), fitted 23 Oct over 148 chunks as
-    // 0.18 s + 0.27 s per second of audio; the budget charges it once per chunk so small chunks are not mistaken for a
-    // slow engine. Estimate it per engine if Breeze differs.
-    static let chunkOverhead = 0.18
+    /// mostly hands over to Kokoro within seconds at 2.5x. Breeze caps it at 45: rendering at about 2.2x real time it
+    /// cannot keep up above about 1.5x, where a bigger opening only delays first audio (about 3 s for a 60-character
+    /// sentence) before the hand-over; at 1.5x and below the rule gives 45 or less anyway.
+    static func openingChars(rate: Float, kind: EngineKind = .qwen) -> Int { min(max(40, Int(30 * rate)), kind == .breeze ? 45 : slowChars) }
+    // ponytail: a slow engine's fixed cost per chunk (prefill, decoder start, alignment), fitted through the session as
+    // fixed seconds + seconds per second of audio: Qwen3 0.18 s + 0.27 s/s (23 Oct, 148 chunks); Breeze 0.30 s + 0.41 s/s
+    // (23 Oct, 119 chunks of 26-172 characters, both voices, M3 Max on mains power), 0.24 s of it the prefill, of which
+    // re-encoding the 13 s reference clip is 0.04 s (so no reference cache, PLAN 0.4.0 Sol rev. 2).
+    // The budget charges it once per chunk so small chunks are not mistaken for a slow engine.
+    static func chunkOverhead(_ kind: EngineKind) -> Double { kind == .breeze ? 0.30 : 0.18 }
+    // ponytail: Breeze's cost per character swings with what it says (0.05-0.15 s of audio per character; numbers, dates
+    // and pauses take longest), so the budget charges it at its 95th-percentile overrun: actual over predicted, 125 chunks
+    // (23 Oct), median 0.96, p90 1.19, p95 1.25, max 1.47. Charged as measured, overruns tripped the watchdog's 0.25 s
+    // margin even at 1.5x. Qwen3's steadier cost is charged as measured.
+    static func costMargin(_ kind: EngineKind) -> Double { kind == .breeze ? 1.25 : 1 }
     /// Buffered playback a slow chunk must leave when ready, on top of the fallback's per-character time for it: the
     /// watchdog's deadline is 0.5 s of it (the fallback's fixed 0.2 s plus 0.3 s), the rest is the margin before that
     /// deadline. Measured 23 Oct with Qwen3 on the M3 Max, 60 s reads: 0.5 (finishing on the deadline itself) let
@@ -265,11 +274,12 @@ import TalkReadCore
     /// Nil when not even a `minSlowChars` chunk fits: that chunk and the rest go to the fallback. Chunks thus grow only
     /// as fast as the engine's measured headroom allows.
     private func nextSlowChunk(from next: Int, opening: Bool) -> Chunk? {
-        if opening { return slowChunk(from: next, limit: Self.openingChars(rate: player.rate), fill: 10) }   // the buffer: fill it
+        let kind = engines.engine(for: effectiveVoice).kind
+        if opening { return slowChunk(from: next, limit: Self.openingChars(rate: player.rate, kind: kind), fill: 10) }   // the buffer: fill it
         // Paused (nothing drains) or nothing measured yet: the largest chunk; the watchdog covers a later resume.
         guard player.isPlaying, let spc = slowSecondsPerChar else { return slowChunk(from: next, limit: Self.slowChars) }
         let fixed = Self.spare + fallbackFixed - 0.2   // `spare` counts the warm fallback's 0.2 s
-        let room = (bufferedSeconds - fixed - Self.chunkOverhead) / (spc + fallbackSecondsPerChar)   // spoken characters that fit
+        let room = (bufferedSeconds - fixed - Self.chunkOverhead(kind)) / (spc * Self.costMargin(kind) + fallbackSecondsPerChar)   // spoken characters that fit
         var limit = min(Int(room), Self.slowChars)
         // ponytail: each try re-chunks the rest of the text (linear in it, about 1 ms per 10k characters); a token
         // window if 100k-character reads ever show it.
@@ -280,7 +290,7 @@ import TalkReadCore
             limit = min(limit - 1, Int(Double(limit) * room / Double(n)))   // shrink by the overshoot
         }
         Log.write(String(format: "read: budget %.2f s buffered at %gx, %.4f s per character, room %.0f characters",
-                         bufferedSeconds, player.rate, spc + fallbackSecondsPerChar, room))
+                         bufferedSeconds, player.rate, spc * Self.costMargin(kind) + fallbackSecondsPerChar, room))
         return nil
     }
 
@@ -329,7 +339,7 @@ import TalkReadCore
         }
         switch box.value! {
         case .success(let s):
-            let spc = max(Date().timeIntervalSince(started) - Self.chunkOverhead, 0) / Double(max(spoken.utf16.count, 1))
+            let spc = max(Date().timeIntervalSince(started) - Self.chunkOverhead(engine.kind), 0) / Double(max(spoken.utf16.count, 1))
             slowSecondsPerChar = slowSecondsPerChar.map { 0.5 * $0 + 0.5 * spc } ?? spc
             return s
         case .failure(let error):
