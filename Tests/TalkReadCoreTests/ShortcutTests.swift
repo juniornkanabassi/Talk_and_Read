@@ -112,6 +112,15 @@ final class ShortcutTests: XCTestCase {
         }
     }
 
+    func testResetForgetsSwallowedKeysAfterATapRestart() {
+        var k = KeyConsumer()
+        XCTAssertTrue(k.swallow(.down, keyCode: 0, modifiers: ctrl, ours: false, in: idle), "⌃A held")
+        k.reset()   // the tap was disabled while it was held: its key-up was never seen
+        XCTAssertFalse(k.swallow(.autoRepeat, keyCode: 0, modifiers: 0, ours: false, in: idle), "nothing is swallowed after the reset")
+        XCTAssertFalse(k.swallow(.up, keyCode: 0, modifiers: 0, ours: false, in: idle), "a stale key-up passes")
+        XCTAssertTrue(k.swallowing.isEmpty)
+    }
+
     func testUnmatchedKeysPass() {
         var k = KeyConsumer()
         XCTAssertFalse(k.swallow(.down, keyCode: 0, modifiers: ctrl | shift, ours: false, in: reading), "⌃⇧A")

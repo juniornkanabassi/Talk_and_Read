@@ -696,8 +696,9 @@ enum SelfTestWindow {
         let before = flag("before")
         let expected = bare ? (out["windows"] as? Int == 0 && flag("woken") && flag("during") && !before)
                             : (out["windows"] as? Int ?? 0 > 0 && !flag("woken") && flag("during") == before)
-        let pass = expected && flag("restored") == before && flag("afterCapture") == before && !flag("leftWoken")
-        record(name, pass, "windows \(out["windows"] ?? "?"): before \(before), woken \(flag("woken")), during \(flag("during")), after restore \(flag("restored")), after capture \(flag("afterCapture")), ledger left \(flag("leftWoken"))")
+        let wakeMs = out["wakeMs"] as? Int ?? .max   // the probe is time-bounded (250 ms, plus slack)
+        let pass = expected && wakeMs < 600 && flag("restored") == before && flag("afterCapture") == before && !flag("leftWoken")
+        record(name, pass, "wake \(wakeMs) ms, windows \(out["windows"] ?? "?"): before \(before), woken \(flag("woken")), during \(flag("during")), after restore \(flag("restored")), after capture \(flag("afterCapture")), ledger left \(flag("leftWoken"))")
     }
 
     private func client(_ pane: String) async -> [String: Any]? {
@@ -870,7 +871,9 @@ enum SelfTestClient {
             func enhanced() -> Any { (axAttribute(app, "AXEnhancedUserInterface") as? Bool).map { $0 } ?? false }
             out["windows"] = (axAttribute(app, kAXWindowsAttribute) as? [AXUIElement])?.count ?? 0
             out["before"] = enhanced()
+            let started = ContinuousClock.now
             await AXWake.wake(app, pid: host)
+            out["wakeMs"] = Int((ContinuousClock.now - started) / .milliseconds(1))
             (out["woken"], out["during"]) = (AXWake.isWoken(host), enhanced())
             AXWake.restore(host)
             out["restored"] = enhanced()
