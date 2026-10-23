@@ -137,8 +137,8 @@ enum SelfTest {
 
         print("words: \(tokens.count) tokens, \(spoken) timed, \(signed.count) matched to the recogniser (\(pct(Double(signed.count) / Double(max(spoken, 1)))))")
         print("start error |ours - ASR|: median \(Int(median.rounded())) ms, p90 \(Int(p90.rounded())) ms; signed median \(Int((percentile(signed.sorted(), 0.5) * 1000).rounded())) ms (ours minus ASR)")
-        let onset = onsetErrors(audio, starts: timings.filter { $0.end > $0.start }.map(\.start))
-        print("acoustic check (no recogniser): \(onset.count) words after silence, ours - energy onset median \(Int((percentile(onset.sorted(), 0.5) * 1000).rounded())) ms, p90 |.| \(Int((percentile(onset.map(abs).sorted(), 0.9) * 1000).rounded())) ms")
+        let onset = onsets(audio, timings: timings)
+        print("acoustic check (no recogniser): \(onset.summary)")
         print("WER (ASR vs spoken text, 1x): \(pct(wer1))")
         print("first-chunk synthesis: \(firstChunkMs) ms; RTF \(String(format: "%.3f", synthSeconds / audioSeconds)) (\(fmt(synthSeconds)) s for \(fmt(audioSeconds)) s of audio, \(chunks.count) chunks)")
         print("invariants: \(problems.isEmpty ? "ok" : problems.prefix(10).joined(separator: "; "))")
@@ -152,9 +152,10 @@ enum SelfTest {
         if language == "fr" {
             // PLAN 0.3.0 "Build results": Parakeet v3's French word starts run ~105 ms early, so French is judged by the
             // acoustic onset check instead of the recogniser.
-            let onMedian = abs(percentile(onset.sorted(), 0.5) * 1000), onP90 = percentile(onset.map(abs).sorted(), 0.9) * 1000
-            pass = problems.isEmpty && onset.count >= 100 && onMedian <= 60 && onP90 <= 150
-            print("R2 (French, acoustic check decides): \(pass ? "PASS" : "FAIL") (|onset median| <= 60 ms, p90 <= 150 ms, >= 100 words after silence, invariants)")
+            // ponytail: >= 40 pairs, as phrase starts are the pairs now (the fixture has about 65; it was >= 100 words
+            // after any 40 ms silence before Sol inspection 5 #6).
+            pass = problems.isEmpty && onset.errors.count >= 40 && onset.coverage >= 0.6 && abs(onset.signedMedian) <= 0.06 && onset.absP90 <= 0.15
+            print("R2 (French, acoustic check decides): \(pass ? "PASS" : "FAIL") (|signed median| <= 60 ms, p90 <= 150 ms, >= 40 pairs, >= 60 % of phrase starts paired, invariants)")
         } else {
             print("R2: \(pass ? "PASS" : "FAIL") (median <= 60 ms, p90 <= 150 ms, >= 200 matched words, invariants)")
         }
@@ -335,23 +336,18 @@ enum SelfTest {
         return nil
     }
 
-    /// Qwen3 or Breeze timing judged by the acoustic onset check, which is independent of Parakeet: median |ours - onset|
-    /// <= 90 ms (PLAN 0.3.0 build results) and p90 <= 150 ms over at least 15 words that follow a silence, the invariants,
-    /// and for Breeze (PLAN 0.4.0 Sol rev. 8) intelligibility: recogniser WER at 1x <= 8 %, R3's bar. Qwen3 keeps its
-    /// 0.3.0 verdict; its WER is printed (French through Parakeet v3 has no bar).
+    /// Qwen3 or Breeze timing judged by the acoustic onset check, which is independent of Parakeet (`mlxTimingPass`), the
+    /// invariants, and for Breeze (PLAN 0.4.0 Sol rev. 8) intelligibility: recogniser WER at 1x <= 8 %, R3's bar. Qwen3's
+    /// WER is printed (French through Parakeet v3 has no bar).
     private static func mlxVerdict(_ name: String, _ audio: [Float], timings: [TalkReadCore.WordTiming], firstChunkMs: Int, synthSeconds: Double,
                                    chunks: Int, wer: Double, invariants: Bool) -> Bool {
-        let onset = onsetErrors(audio, starts: timings.filter { $0.end > $0.start }.map(\.start))
-        let absErr = onset.map(abs).sorted()
-        let median = percentile(absErr, 0.5) * 1000, p90 = percentile(absErr, 0.9) * 1000
+        let onset = onsets(audio, timings: timings)
         print(String(format: "%@: first chunk %d ms; %.2fx real time including alignment (%d chunks)",
                      name, firstChunkMs, Double(audio.count) / Player.sampleRate / synthSeconds, chunks))
-        let bias = percentile(onset.sorted(), 0.5), spread = onset.map { abs($0 - bias) }.sorted()
-        print("\(name) acoustic check: \(onset.count) words after silence; |ours - onset| median \(Int(median.rounded())) ms, p90 \(Int(p90.rounded())) ms; signed median \(Int((bias * 1000).rounded())) ms (spread around it: median \(Int((percentile(spread, 0.5) * 1000).rounded())) ms, p90 \(Int((percentile(spread, 0.9) * 1000).rounded())) ms)")
-        // PLAN 0.3.0 "Build results": Parakeet v3's 80 ms frames set the floor; 90 ms median is about 36 ms as heard at 2.5x.
+        print("\(name) acoustic check: \(onset.summary)")
         let breeze = name == "Breeze"
-        let pass = invariants && onset.count >= 15 && median <= 90 && p90 <= 150 && (!breeze || wer <= 0.08)
-        print("\(name) timing: \(pass ? "PASS" : "FAIL") (acoustic median <= 90 ms, p90 <= 150 ms, >= 15 words after silence, \(breeze ? "WER <= 8 %, " : "")invariants)")
+        let pass = invariants && mlxTimingPass(onset) && (!breeze || wer <= 0.08)
+        print("\(name) timing: \(pass ? "PASS" : "FAIL") (acoustic: >= 15 pairs, >= 60 % of phrase starts paired, median <= 90 ms, p90 <= 150 ms; \(breeze ? "WER <= 8 %, " : "")invariants)")
         return pass
     }
 
@@ -927,6 +923,28 @@ enum SelfTest {
         let caught = TRCatchException { NSException(name: .genericException, reason: "probe reason", userInfo: nil).raise() }
         check(caught?.localizedDescription == "probe reason" && TRCatchException({}) == nil, "exception catch: \(String(describing: caught))")
 
+        // Sol inspection 5 #6: the acoustic check must be able to fail. 30 tone words of 150 ms, each after 600 ms of
+        // silence (as the phrase starts it pairs, far apart, so a shifted start cannot borrow the next word's onset).
+        var words: [Float] = [], truth: [Double] = []
+        for _ in 0 ..< 30 {
+            words += [Float](repeating: 0, count: 14_400)
+            truth.append(Double(words.count) / 24_000)
+            words += (0 ..< 3600).map { Float(0.3 * sin(Double($0) * 0.2)) }
+        }
+        words += [Float](repeating: 0, count: 4800)
+        func shifted(_ shift: (Int) -> Double, extra: Bool = false) -> [TalkReadCore.WordTiming] {
+            truth.enumerated().flatMap { k, t -> [TalkReadCore.WordTiming] in
+                let word = TalkReadCore.WordTiming(token: k, start: t + shift(k), end: t + shift(k) + 0.12)
+                return extra ? [TalkReadCore.WordTiming(token: k, start: t - 0.1, end: t - 0.05), word] : [word]   // a start with no onset
+            }
+        }
+        let good = onsets(words, timings: shifted { _ in 0.03 })
+        check(mlxTimingPass(good), "acoustic check: well-timed words pass (\(good.summary))")
+        for (what, o) in [("all 250 ms late", onsets(words, timings: shifted { _ in 0.25 })), ("one in three 200 ms late", onsets(words, timings: shifted { $0 % 3 == 0 ? 0.2 : 0.03 })),
+                          ("half the starts with no onset", onsets(words, timings: shifted({ _ in 0.03 }, extra: true)))] {
+            check(!mlxTimingPass(o), "acoustic check: \(what) must fail (\(o.summary))")
+        }
+
         // Stop guard (PLAN 0.3.0 decision 9): 1 s of tone at 24 kHz, then silence.
         let tone = (0 ..< 24_000).map { Float(0.3 * sin(Double($0) * 0.1)) }
         let quiet = [Float](repeating: 0, count: 24_000)
@@ -989,25 +1007,51 @@ enum SelfTest {
         return ok
     }
 
-    /// Reference-free timing check: for words whose start is within 150 ms of an energy onset that follows at least
-    /// 40 ms of silence (5 ms RMS below -34 dB of peak), our start minus that onset.
-    static func onsetErrors(_ audio: [Float], starts: [Double]) -> [Double] {
+    /// Our start minus the paired onset, per pair, out of `candidates` starts of ours that follow a pause.
+    struct Onsets {
+        let errors: [Double], candidates: Int
+        var coverage: Double { candidates == 0 ? 0 : Double(errors.count) / Double(candidates) }
+        var absMedian: Double { SelfTest.percentile(errors.map(abs).sorted(), 0.5) }
+        var absP90: Double { SelfTest.percentile(errors.map(abs).sorted(), 0.9) }
+        var signedMedian: Double { SelfTest.percentile(errors.sorted(), 0.5) }
+        var summary: String {
+            "\(errors.count) of \(candidates) phrase starts paired with an onset (\(SelfTest.pct(coverage))); |ours - onset| median "
+                + "\(Int((absMedian * 1000).rounded())) ms, p90 \(Int((absP90 * 1000).rounded())) ms; signed median \(Int((signedMedian * 1000).rounded())) ms"
+        }
+    }
+
+    /// Reference-free timing check (Sol inspection 5 #6). Onsets are found in the audio alone: a 5 ms RMS frame within
+    /// 34 dB of the peak after a pause, `pause` frames (100 ms) below it. Our candidates are the word starts that follow
+    /// a gap as long in our own timings (and the first), so both sides are phrase starts, far enough apart that a
+    /// shifted start cannot borrow a neighbour's onset (with every 40 ms silence and every gap, Kokoro paired 44 % and
+    /// neighbours leaked in). Pairs are made one to one, nearest first, within 400 ms: an association bound well beyond
+    /// the 150 ms bar, so a mistimed word is a large error, not a dropped one, and a start with no onset near it lowers
+    /// the coverage. Kokoro on 23 Oct: English 56 of 64 paired, median 15 ms, p90 60 ms; French 60 of 65, signed +25 ms.
+    static func onsets(_ audio: [Float], timings: [TalkReadCore.WordTiming], pause: Int = 20) -> Onsets {
         let hop = 120   // 5 ms at 24 kHz
         let env: [Float] = stride(from: 0, to: audio.count, by: hop).map { i in
             let s = audio[i ..< min(i + hop, audio.count)]
             return (s.reduce(0) { $0 + $1 * $1 } / Float(s.count)).squareRoot()
         }
         let threshold = (env.max() ?? 0) * powf(10, -34 / 20)
-        return starts.compactMap { start in
-            let i = Int(start * 200)
-            guard let j = (max(i - 30, 8) ..< min(i + 30, env.count)).first(where: { j in
-                env[j] >= threshold && (1 ... 8).allSatisfy { env[j - $0] < threshold }
-            }) else { return nil }
-            return start - Double(j) / 200
+        let found = env.indices.dropFirst(pause).filter { j in env[j] >= threshold && (1 ... pause).allSatisfy { env[j - $0] < threshold } }.map { Double($0) / 200 }
+        let spoken = timings.filter { $0.end > $0.start }
+        let starts = spoken.indices.filter { $0 == 0 || spoken[$0].start - spoken[$0 - 1].end >= Double(pause) / 200 }.map { spoken[$0].start }
+        var near: [(d: Double, i: Int, j: Int)] = []
+        for (i, s) in starts.enumerated() { for (j, o) in found.enumerated() where abs(s - o) <= 0.4 { near.append((abs(s - o), i, j)) } }
+        var usedStart = Set<Int>(), usedOnset = Set<Int>(), errors: [Double] = []
+        for p in near.sorted(by: { $0.d < $1.d }) where !usedStart.contains(p.i) && !usedOnset.contains(p.j) {
+            usedStart.insert(p.i); usedOnset.insert(p.j)
+            errors.append(starts[p.i] - found[p.j])
         }
+        return Onsets(errors: errors, candidates: starts.count)
     }
 
-    private static func percentile(_ sorted: [Double], _ p: Double) -> Double {
+    /// Qwen3's and Breeze's acoustic bars: at least 15 pairs, 60 % of our phrase starts paired, |error| median <= 90 ms
+    /// (PLAN 0.3.0 build results: Parakeet v3's 80 ms frames set the floor) and p90 <= 150 ms.
+    static func mlxTimingPass(_ o: Onsets) -> Bool { o.errors.count >= 15 && o.coverage >= 0.6 && o.absMedian <= 0.09 && o.absP90 <= 0.15 }
+
+    static func percentile(_ sorted: [Double], _ p: Double) -> Double {
         sorted.isEmpty ? 0 : sorted[min(Int(Double(sorted.count - 1) * p + 0.5), sorted.count - 1)]
     }
 
@@ -1069,7 +1113,7 @@ enum SelfTest {
 
     private static func ms(since d: Date) -> Int { Int(Date().timeIntervalSince(d) * 1000) }
     private static func fmt(_ x: Double) -> String { String(format: "%.3f", x) }
-    private static func pct(_ x: Double) -> String { String(format: "%.1f %%", x * 100) }
+    static func pct(_ x: Double) -> String { String(format: "%.1f %%", x * 100) }
 }
 
 /// Parakeet batch recogniser for the round trip (English v2: its word timestamps track Kokoro audio better than "ultra";
