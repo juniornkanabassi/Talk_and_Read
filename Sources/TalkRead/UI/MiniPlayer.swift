@@ -255,7 +255,7 @@ struct MiniPlayerView: View {
             SymbolButton(symbol: "forward.fill", label: "Next sentence", size: 13) { model.skip(1) }.disabled(!active)
             if let note { Text(note).font(.caption).foregroundStyle(.secondary).padding(.leading, 6).lineLimit(1) }
             Spacer(minLength: 6)
-            SpeedControl(speed: Double(model.settings.speed)) { model.setSpeed(Float($0)) }
+            SpeedControl(speed: Double(model.activeSpeed)) { model.setSpeed(Float($0)) }   // a 1x preview shows 1x
                 .frame(width: 56, height: 24)
             VoiceMenu(voices: voices, english: model.settings.voiceID, french: model.settings.frenchVoiceID, title: voiceName) { model.setVoice($0) }
                 .help("Reading with \(voiceName). A new choice applies to the next read.")

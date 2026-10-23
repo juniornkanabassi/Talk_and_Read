@@ -496,7 +496,19 @@ extension EngineKind {
         var next = settings
         next.speed = s
         settings = next.validated()
+        applySpeedToLiveRead()
     }
+
+    /// An explicit speed choice also reaches a live read playing at another rate (a 1x preview) when the saved value did
+    /// not change, so settingsDidChange returned early (Sol verification 6).
+    func applySpeedToLiveRead() {
+        guard let live = liveSession, sessionInfo.rate != settings.speed else { return }
+        sessionInfo.rate = settings.speed
+        live.setRate(settings.speed)
+    }
+
+    /// The speed the mini player and the menu bar show: the live read's (a preview plays at 1x), else the saved one.
+    var activeSpeed: Float { liveSession == nil ? settings.speed : sessionInfo.rate }
 
     /// The picker, the menus and `talkread voice`: a French voice becomes the French voice, any other the English one;
     /// an English Kokoro voice is also the one a slower model falls back to. Applies from the next read (V1).
