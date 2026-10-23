@@ -90,5 +90,7 @@ final class Engines {
     /// Preparing, synthesising or unloading somewhere: the idle unload waits.
     var isBusy: Bool { neural.isBusy || qwen.isBusy || system.isBusy }
     /// Frees every engine's model memory (idle timer, quit). An engine finishes its in-flight work first.
-    func unloadAll() { neural.unload(); system.unload(); qwen.unload() }
+    func unloadAll() { unloads += 1; neural.unload(); system.unload(); qwen.unload() }
+    /// How many times `unloadAll` ran: a read's warm fallback is cold again once this moves (Sol inspection 4 #2).
+    private(set) var unloads = 0
 }

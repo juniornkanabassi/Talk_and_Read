@@ -7,6 +7,7 @@ import Foundation
 import MLX
 import MLXAudioCore
 import MLXAudioTTS
+import os
 import TalkReadCore
 
 final class QwenEngine: SpeechEngine, @unchecked Sendable {   // mutable state is only touched inside `serial`
@@ -132,14 +133,49 @@ final class QwenEngine: SpeechEngine, @unchecked Sendable {   // mutable state i
         return (model, conditioning, ref.language)
     }
 
+    /// Streams the chunk and returns only once the dependency's generation has ended (Sol inspection 4 #1). `generateStream`
+    /// generates in a task of its own, which ending the stream (our cancellation) cancels but nothing joins; that task
+    /// inherits `probe` and releases it when it ends, so waiting for the probe's release joins it, whatever our
+    /// cancellation (were the dependency to start it detached, `--cancel` would fail). Streaming in 2 s decode steps, not
+    /// the awaitable non-streaming `generate`: that decodes the reference clip with every chunk, about 2 GB more at peak
+    /// (7.4 against 5.3-5.5 GB at 2.5x, 23 Oct).
     private static func render(_ model: Qwen3TTSModel, _ text: String, _ conditioning: Qwen3TTSModel.Qwen3TTSReferenceConditioning) async throws -> [Float] {
-        var samples: [Float] = []
-        for try await event in model.generateStream(text: text, conditioning: conditioning, generationParameters: model.defaultGenerationParameters,
-                                                    streamingInterval: streamingInterval) {
-            if case .audio(let a) = event { samples += a.asArray(Float.self) }
+        let (released, release) = AsyncStream<Void>.makeStream()
+        let joined = Task { for await _ in released {} }   // created outside the binding, and not cancelled with us
+        let samples: [Float]
+        do {
+            samples = try await $probe.withValue(Probe(release)) {
+                var samples: [Float] = []
+                for try await event in model.generateStream(text: text, conditioning: conditioning, generationParameters: model.defaultGenerationParameters,
+                                                            streamingInterval: streamingInterval) {
+                    if case .audio(let a) = event { samples += a.asArray(Float.self) }
+                }
+                return samples
+            }
+        } catch {
+            await joined.value
+            throw error
         }
+        await joined.value
+        try Task.checkCancellation()   // a cancelled stream just ends: its partial chunk is no result
         guard !samples.isEmpty, samples.allSatisfy(\.isFinite) else { throw SpeechError.badAudio }
         return samples
+    }
+
+    /// Qwen3 generations still running and the most at once since the last reset (the cancel/restart self-test): every
+    /// task the dependency starts inside `render` inherits `probe` and holds it until that task ends.
+    static let generations = OSAllocatedUnfairLock(initialState: (now: 0, peak: 0))
+    @TaskLocal private static var probe: Probe?
+    private final class Probe: Sendable {
+        let release: AsyncStream<Void>.Continuation
+        init(_ release: AsyncStream<Void>.Continuation) {
+            self.release = release
+            QwenEngine.generations.withLock { $0.now += 1; $0.peak = max($0.peak, $0.now) }
+        }
+        deinit {
+            QwenEngine.generations.withLock { $0.now -= 1 }
+            release.finish()
+        }
     }
 
     /// The bundled clip; in a `swift build` run (no app bundle) the source tree's copy.
@@ -180,7 +216,8 @@ extension QwenEngine: DownloadableModel {
 }
 
 /// The app's own model downloader (PLAN 0.3.0 decision 6): every file into a staging folder beside the target, each
-/// checked against its expected size, then the folder moved into place; redirects are followed only to Hugging Face.
+/// checked against its expected size, then the folder moved into place; redirects are followed only to Hugging Face. A
+/// failed or cancelled download leaves no staging folder behind (gigabytes, Sol inspection 4 #5).
 enum ModelDownload {
     enum Failure: Error, LocalizedError {
         case size(String, expected: Int64, got: Int64), status(String, Int)
@@ -202,10 +239,12 @@ enum ModelDownload {
         let fm = FileManager.default
         let staging = folder.deletingLastPathComponent().appendingPathComponent(".\(folder.lastPathComponent).partial", isDirectory: true)
         try? fm.removeItem(at: staging)
+        defer { try? fm.removeItem(at: staging) }   // any failure or cancellation; after the move there is nothing left
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
         let total = Double(files.reduce(0) { $0 + $1.bytes })
         var done: Int64 = 0
         for file in files {
+            try Task.checkCancellation()
             let target = staging.appendingPathComponent(file.path)
             try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             let before = done

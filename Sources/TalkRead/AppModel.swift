@@ -1,6 +1,5 @@
 // @MainActor observable app state; the UI binds only to these members, the control handler routes through them. Owned by WP7.
 import AppKit
-import AVFoundation
 import Combine
 import Foundation
 import TalkReadCore
@@ -207,19 +206,9 @@ extension EngineKind {
         let kokoro = lang == "fr" ? "ff_siwis" : englishKokoro
         if let k = voices.first(where: { $0.id == kokoro && $0.installed }) { return k }
         return voices.first { $0.engine == .system && $0.language == lang }
-            ?? systemVoice(lang)
+            ?? SystemEngine.voice(language: lang)
             ?? voices.first { $0.engine == .system }
             ?? Voice(id: "", name: "System", accent: "", gender: "", engine: .system, installed: true)
-    }
-
-    /// The best installed Apple voice for a language the system engine does not list (it lists English only).
-    // ponytail: here rather than in SystemEngine (V-A/V-B own Speech/); move it there if another caller needs it.
-    nonisolated static func systemVoice(_ language: String) -> Voice? {
-        AVSpeechSynthesisVoice.speechVoices()
-            .filter { $0.language.hasPrefix(language) && !$0.voiceTraits.contains(.isNoveltyVoice) && !$0.voiceTraits.contains(.isPersonalVoice) }
-            .max { $0.quality.rawValue < $1.quality.rawValue }
-            .map { Voice(id: $0.identifier, name: $0.name, accent: $0.language, gender: $0.gender == .female ? "Female" : $0.gender == .male ? "Male" : "",
-                         engine: .system, installed: true, language: language) }
     }
 
     /// The Kokoro voice a read in `language` switches to if its model falls behind (V3); nil when not installed.
