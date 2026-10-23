@@ -25,6 +25,7 @@ import TalkReadCore
             }
             opacity = CGFloat(settings.opacity)
             tintEnabled = settings.tintEnabled
+            shape = Shape(rawValue: settings.highlightStyle) ?? .box
         }
     }
     var style: Style

@@ -41,6 +41,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var fallbackVoiceID = "af_heart"
     public var speed: Float = 2.5                  // 0.5...3.0, step 0.05; Junior's Speechify speed
     public var highlightHex = "#FFD21F"
+    /// "box" (default), "outline" or "underline" (H1).
+    public var highlightStyle = "box"
     public var tintEnabled = true
     public var opacity = 0.85
     public var showMiniPlayer = true
@@ -69,7 +71,7 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.pasteLastShortcut, &pasteLastShortcut); get(.dictationHoldKey, &dictationHoldKey)
         get(.increaseSpeedShortcut, &increaseSpeedShortcut); get(.decreaseSpeedShortcut, &decreaseSpeedShortcut)
         get(.skipBackwardShortcut, &skipBackwardShortcut); get(.skipForwardShortcut, &skipForwardShortcut)
-        get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.highlightHex, &highlightHex)
+        get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.highlightHex, &highlightHex); get(.highlightStyle, &highlightStyle)
         get(.tintEnabled, &tintEnabled); get(.opacity, &opacity); get(.showMiniPlayer, &showMiniPlayer)
         get(.miniPlayerAutoHideSeconds, &miniPlayerAutoHideSeconds); get(.miniPlayerOrigin, &miniPlayerOrigin)
         get(.subtitlesExpanded, &subtitlesExpanded); get(.useOCRFallback, &useOCRFallback)
@@ -93,6 +95,7 @@ public struct Settings: Codable, Equatable, Sendable {
         if frenchVoiceID.trimmingCharacters(in: .whitespaces).isEmpty { s.frenchVoiceID = d.frenchVoiceID }
         if fallbackVoiceID.trimmingCharacters(in: .whitespaces).isEmpty { s.fallbackVoiceID = d.fallbackVoiceID }
         if highlightHex.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) == nil { s.highlightHex = "#FFD21F" }
+        if !["box", "outline", "underline"].contains(highlightStyle) { s.highlightStyle = "box" }
         return s
     }
 
@@ -157,6 +160,11 @@ public struct Settings: Codable, Equatable, Sendable {
                 throw ControlError("invalid_value", "highlightHex must look like #FFD21F.")
             }
             highlightHex = raw.uppercased()
+        case "highlightStyle":
+            guard ["box", "outline", "underline"].contains(raw) else {
+                throw ControlError("invalid_value", "highlightStyle must be one of: box, outline, underline.")
+            }
+            highlightStyle = raw
         case "tintEnabled": tintEnabled = try bool()
         case "opacity": opacity = try number()
         case "showMiniPlayer": showMiniPlayer = try bool()

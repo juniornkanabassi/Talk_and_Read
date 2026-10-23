@@ -134,6 +134,10 @@ struct SettingsContent: View {
             Section {
                 HighlightPreview(colour: NSColor(hex: model.settings.highlightHex) ?? Theme.accentNS, tint: model.settings.tintEnabled)
                 ColorPicker("Word colour", selection: highlightColour, supportsOpacity: false)
+                Picker("Style", selection: $model.settings.highlightStyle) {
+                    Text("Box").tag("box"); Text("Outline").tag("outline"); Text("Underline").tag("underline")
+                }
+                .pickerStyle(.segmented).frame(width: 300)
                 Toggle("Tint the sentence being read", isOn: $model.settings.tintEnabled)
                 LabeledContent("Box opacity") {
                     Slider(value: $model.settings.opacity, in: 0.1...1).frame(width: 220).accessibilityValue("\(Int(model.settings.opacity * 100)) percent")
