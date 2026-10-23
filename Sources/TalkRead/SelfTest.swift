@@ -145,9 +145,9 @@ enum SelfTest {
         print("invariants: \(problems.isEmpty ? "ok" : problems.prefix(10).joined(separator: "; "))")
         if let slow {
             let name = slow.kind == .breeze ? "Breeze" : "Qwen3"
-            print("(\(name)'s words come from Parakeet v3, so the recogniser comparison above is not independent; the acoustic check decides)")
-            return mlxVerdict(name, audio, timings: timings, firstChunkMs: firstChunkMs, synthSeconds: synthSeconds,
-                              chunks: chunks.count, wer: wer1, invariants: problems.isEmpty) ? 0 : 1
+            print("(\(name)'s words come from Parakeet v3, corrected (Aligner.corrected); the acoustic check decides\(language == "en" ? ", and v2's signed median guards it" : "; v3 also judges French, so not independent"))")
+            return mlxVerdict(name, audio, timings: timings, firstChunkMs: firstChunkMs, synthSeconds: synthSeconds, chunks: chunks.count, wer: wer1,
+                              recogniserSigned: language == "en" ? percentile(signed.sorted(), 0.5) : nil, invariants: problems.isEmpty) ? 0 : 1
         }
         var pass = problems.isEmpty && signed.count >= 200 && median <= 60 && p90 <= 150
         if language == "fr" {
@@ -339,16 +339,19 @@ enum SelfTest {
 
     /// Qwen3 or Breeze timing judged by the acoustic onset check, which is independent of Parakeet (`mlxTimingPass`), the
     /// invariants, and for Breeze (PLAN 0.4.0 Sol rev. 8) intelligibility: recogniser WER at 1x <= 8 %, R3's bar. Qwen3's
-    /// WER is printed (French through Parakeet v3 has no bar).
+    /// WER is printed (French through Parakeet v3 has no bar). In English, Parakeet v2 (a different model from the
+    /// aligner's v3; Kokoro shows it 10 ms early mid-phrase) also guards the correction: its signed median within 60 ms,
+    /// since after `Aligner.corrected` phrase starts sit on onsets by construction (timing diagnosis, 24 Oct).
     private static func mlxVerdict(_ name: String, _ audio: [Float], timings: [TalkReadCore.WordTiming], firstChunkMs: Int, synthSeconds: Double,
-                                   chunks: Int, wer: Double, invariants: Bool) -> Bool {
+                                   chunks: Int, wer: Double, recogniserSigned: Double?, invariants: Bool) -> Bool {
         let onset = onsets(audio, timings: timings)
         print(String(format: "%@: first chunk %d ms; %.2fx real time including alignment (%d chunks)",
                      name, firstChunkMs, Double(audio.count) / Player.sampleRate / synthSeconds, chunks))
         print("\(name) acoustic check: \(onset.summary)")
         let breeze = name == "Breeze"
-        let pass = invariants && mlxTimingPass(onset) && (!breeze || wer <= 0.08)
-        print("\(name) timing: \(pass ? "PASS" : "FAIL") (acoustic: >= 15 pairs, >= 60 % of phrase starts paired, median <= 90 ms, p90 <= 150 ms; \(breeze ? "WER <= 8 %, " : "")invariants)")
+        let pass = invariants && mlxTimingPass(onset) && (!breeze || wer <= 0.08) && abs(recogniserSigned ?? 0) <= 0.06
+        print("\(name) timing: \(pass ? "PASS" : "FAIL") (acoustic: >= 15 pairs, >= 60 % of phrase starts paired, median <= 90 ms, p90 <= 150 ms; \(breeze ? "WER <= 8 %, " : "")"
+              + "\(recogniserSigned.map { "recogniser signed median \(Int(($0 * 1000).rounded())) ms within 60 ms, " } ?? "")invariants)")
         return pass
     }
 
@@ -1033,26 +1036,49 @@ enum SelfTest {
         // Sol inspection 5 #6 and verification 6: the acoustic check must be able to fail. 30 tone words of 150 ms, each
         // after a silence of `gap(k)` seconds, timed as `shift(k)` after their true start (`extra`: plus a start with no
         // onset 100 ms before each word).
-        func fixture(_ gap: (Int) -> Double, _ shift: (Int) -> Double, extra: Bool = false) -> Onsets {
+        // `spurious`: our previous word runs to the true start (no gap before the true word), then a false 110 ms gap
+        // and a word 250 ms after the true start (timing diagnosis, 24 Oct).
+        func fixtureData(_ gap: (Int) -> Double, _ shift: (Int) -> Double, extra: Bool = false, spurious: (Int) -> Bool = { _ in false })
+            -> (audio: [Float], timings: [TalkReadCore.WordTiming]) {
             var audio: [Float] = [], timings: [TalkReadCore.WordTiming] = []
             for k in 0 ..< 30 {
                 audio += [Float](repeating: 0, count: Int(gap(k) * 24_000))
-                let t = Double(audio.count) / 24_000
-                if extra { timings.append(TalkReadCore.WordTiming(token: 2 * k, start: t - 0.1, end: t - 0.05)) }
-                timings.append(TalkReadCore.WordTiming(token: 2 * k + 1, start: t + shift(k), end: t + shift(k) + 0.12))
+                let t = Double(audio.count) / 24_000, s = t + shift(k)
+                if extra { timings.append(TalkReadCore.WordTiming(token: 3 * k, start: t - 0.1, end: t - 0.05)) }
+                if spurious(k), let last = timings.popLast() {
+                    timings += [TalkReadCore.WordTiming(token: last.token, start: last.start, end: s), TalkReadCore.WordTiming(token: 3 * k + 1, start: s, end: s + 0.14),
+                                TalkReadCore.WordTiming(token: 3 * k + 2, start: s + 0.25, end: s + 0.37)]
+                } else {
+                    timings.append(TalkReadCore.WordTiming(token: 3 * k + 1, start: s, end: s + 0.12))
+                }
                 audio += (0 ..< 3600).map { Float(0.3 * sin(Double($0) * 0.2)) }
             }
-            return onsets(audio + [Float](repeating: 0, count: 4800), timings: timings)
+            return (audio + [Float](repeating: 0, count: 4800), timings)
+        }
+        func fixture(_ gap: (Int) -> Double, _ shift: (Int) -> Double, extra: Bool = false, spurious: (Int) -> Bool = { _ in false }) -> Onsets {
+            let f = fixtureData(gap, shift, extra: extra, spurious: spurious)
+            return onsets(f.audio, timings: f.timings)
+        }
+        /// Through the aligner's correction first, as Qwen3's and Breeze's words go.
+        func corrected(_ gap: (Int) -> Double, _ shift: (Int) -> Double) -> Onsets {
+            let f = fixtureData(gap, shift)
+            let words = Aligner.corrected(f.timings.map { SpokenWord(text: "w", start: $0.start, end: $0.end) }, samples: f.audio, sampleRate: 24_000)
+            return onsets(f.audio, timings: zip(f.timings, words).map { TalkReadCore.WordTiming(token: $0.token, start: $1.start, end: $1.end) })
         }
         let sparse: (Int) -> Double = { _ in 0.6 }, irregular: (Int) -> Double = { 0.4 + 0.1 * Double(($0 * 7) % 6) }   // 0.4-0.9 s
         var verdicts: [String] = []
-        for (what, o) in [("600 ms gaps", fixture(sparse, { _ in 0.03 })), ("irregular gaps", fixture(irregular, { _ in 0.03 }))] {
-            check(mlxTimingPass(o), "acoustic check: well-timed words with \(what) pass (\(o.summary))")
+        for (what, o) in [("600 ms gaps", fixture(sparse, { _ in 0.03 })), ("irregular gaps", fixture(irregular, { _ in 0.03 })),
+                          ("one in three with a spurious gap 250 ms after the true start", fixture(sparse, { _ in 0.03 }, spurious: { $0 % 3 == 1 })),
+                          ("corrected: all 300 ms early into silence, 600 ms gaps", corrected(sparse, { _ in -0.3 }))] {
+            check(mlxTimingPass(o), "acoustic check: \(what) must pass (\(o.summary))")
             verdicts.append("\(what) \(mlxTimingPass(o) ? "pass" : "FAIL")")
         }
         for (what, o) in [("all 250 ms late, 600 ms gaps", fixture(sparse, { _ in 0.25 })), ("all 250 ms late, 100 ms gaps", fixture({ _ in 0.1 }, { _ in 0.25 })),
                           ("all 250 ms late, irregular gaps", fixture(irregular, { _ in 0.25 })), ("one onset late (350 ms), 200 ms gaps", fixture({ _ in 0.2 }, { _ in 0.35 })),
-                          ("one in three 200 ms late", fixture(sparse, { $0 % 3 == 0 ? 0.2 : 0.03 })), ("half the starts with no onset", fixture(sparse, { _ in 0.03 }, extra: true))] {
+                          ("one in three 200 ms late", fixture(sparse, { $0 % 3 == 0 ? 0.2 : 0.03 })), ("half the starts with no onset", fixture(sparse, { _ in 0.03 }, extra: true)),
+                          ("all 250 ms early, 100 ms gaps", fixture({ _ in 0.1 }, { _ in -0.25 })),
+                          ("corrected: all 250 ms late, 100 ms gaps", corrected({ _ in 0.1 }, { _ in 0.25 })), ("corrected: all 250 ms late, 600 ms gaps", corrected(sparse, { _ in 0.25 })),
+                          ("corrected: all 250 ms early, 100 ms gaps", corrected({ _ in 0.1 }, { _ in -0.25 }))] {
             check(!mlxTimingPass(o), "acoustic check: \(what) must fail (\(o.summary))")
             verdicts.append("\(what) \(mlxTimingPass(o) ? "PASSED" : "fails")")
         }
@@ -1066,6 +1092,12 @@ enum SelfTest {
         check(Aligner.keptSamples(tone + quiet, sampleRate: 24_000, lastMatchedEnd: 1.5) == 39_600, "stop guard: never before the last matched word")
         check(Aligner.keptSamples(tone + tone, sampleRate: 24_000, lastMatchedEnd: 0.5) == 48_000, "stop guard: audible tail never cut")
         check(Aligner.keptSamples(tone + quiet, sampleRate: 24_000, lastMatchedEnd: 0) == 27_600, "stop guard: no matched word, silence still trimmed")
+        // Parakeet start correction (timing diagnosis, 24 Oct): after 300 ms of silence a word Parakeet put at [0, 0.24]
+        // starts on the sound, with a frame at least; a word inside sound moves by the 80 ms lead only.
+        let fixedWords = Aligner.corrected([SpokenWord(text: "a", start: 0, end: 0.24), SpokenWord(text: "b", start: 0.5, end: 0.6)],
+                                           samples: Array(quiet.prefix(7_200)) + tone, sampleRate: 24_000)
+        check(abs(fixedWords[0].start - 0.3) < 1e-9 && fixedWords[0].end >= 0.38 - 1e-9 && abs(fixedWords[1].start - 0.58) < 1e-9 && abs(fixedWords[1].end - 0.68) < 1e-9,
+              "start correction: \(fixedWords.map { "[\($0.start), \($0.end)]" })")
 
         // Sol inspection 4 #4 through the real spell checker: common words stay, names and misspellings are still corrected.
         let v = ["contract": "contract", "Footballco": "Footballco", "Nkanabassi": "Nkanabassi", "Dembélé": "Dembélé", "Vitinha": "Vitinha",
@@ -1141,7 +1173,8 @@ enum SelfTest {
     /// silence). Our candidates are the word starts that follow a gap as long in our own timings, and the first: phrase
     /// starts on both sides (with every 40 ms silence Kokoro paired 44 %). They are paired in order, anchored: our first
     /// start must have the audio's first onset, and only it, within `window`; each later start takes the one unused
-    /// onset after the last pair within `window`, none if there is none, and none if there are several. So a uniform
+    /// onset after the last pair within `window`, none if there is none or several, and none if another word of ours
+    /// starts nearer that onset. So a uniform
     /// shift cannot slide by one onset (nearest-first pairing let every start borrow the next onset: 250 ms late with
     /// 100 ms gaps paired 29 of 30 at 0 ms), a mistimed start is a large error rather than a dropped one (the window is
     /// twice the 150 ms bar), and a start with no onset, or an ambiguous one, lowers the coverage.
@@ -1158,7 +1191,9 @@ enum SelfTest {
         var errors: [Double] = [], next = 0
         for (i, s) in starts.enumerated() {
             let near = found.indices.dropFirst(next).prefix { found[$0] <= s + window }.filter { found[$0] >= s - window }
-            guard near.count == 1, i > 0 || near[0] == 0 else {
+            // ...and only if no other word of ours starts nearer that onset (a start after a spurious gap in our timings
+            // took the previous word's onset: Breeze calm, two of them, about 280 ms; timing diagnosis, 24 Oct).
+            guard near.count == 1, i > 0 || near[0] == 0, !spoken.contains(where: { abs($0.start - found[near[0]]) < abs(s - found[near[0]]) }) else {
                 if i == 0 { return Onsets(errors: [], candidates: starts.count, anchored: false) }
                 continue
             }
