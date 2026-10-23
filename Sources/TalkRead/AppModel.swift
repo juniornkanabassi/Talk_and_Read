@@ -111,6 +111,7 @@ extension EngineKind {
         library = Self.loadJSON(Paths.library) ?? []
         recentReads = Self.loadJSON(Paths.reads) ?? []
         refreshModelStates()
+        applyDictationSettings()
         // Recording, transcribing (live or a file) or typing: one flag from the dictation's admission slot (Sol #16).
         dictationWatch = dictation.$isBusy.sink { [weak self] busy in
             self?.dictating = busy
@@ -120,8 +121,16 @@ extension EngineKind {
 
     // MARK: Settings
 
+    /// The three Dictation settings live on the controller (V-G).
+    private func applyDictationSettings() {
+        dictation.preferApple = settings.dictationEngine == "apple"
+        dictation.learnCorrections = settings.learnCorrections
+        dictation.britishSpelling = settings.britishSpelling
+    }
+
     private func settingsDidChange(from old: Settings) {
         guard settings != old else { return }
+        applyDictationSettings()
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
@@ -507,7 +516,7 @@ extension EngineKind {
             }
             switch await dictation.reinsert(id, targetPID: app.processIdentifier) {
             case .inserted: break
-            case .refusedSecure: MiniPlayer.shared.flash("Not typed: password field")
+            case .refusedSecure: MiniPlayer.shared.flash(Inserter.refusal())
             case .failed(let reason): MiniPlayer.shared.flash(reason)
             }
         }

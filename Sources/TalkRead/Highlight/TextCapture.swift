@@ -17,8 +17,9 @@ struct Capture {
     let selectionStart: Int?
     let source: Source
 
-    /// Sources whose text has a place on screen; the Highlighter draws only for these.
-    var hasGeometry: Bool { [.accessibility, .copied, .cursor, .ocr].contains(source) }
+    /// Sources whose text has a place on screen; the Highlighter draws only for these. Clipboard text only with a window
+    /// (an xterm terminal's own ⌘C, see `TextCapture.read`).
+    var hasGeometry: Bool { [.accessibility, .copied, .cursor, .ocr].contains(source) || source == .clipboard && window != nil }
 }
 
 enum TextCapture {
@@ -64,9 +65,17 @@ enum TextCapture {
         }
         if !secure, let focused, let c = caretToEnd(focused, pid: pid, window: window) { return c }
         if let text = await gate.transaction({ clipboardText() }) {
-            return Capture(text: text, pid: pid, element: nil, window: nil, selectionStart: nil, source: .clipboard)
+            // An xterm.js terminal (Claude's, Codex's, VS Code's) draws its selection on a canvas that neither AX nor Edit ▸
+            // Copy can reach. After the user's own ⌘C the text is on the clipboard and still on screen in this window, so
+            // the locators may box it (node map, else OCR; a text found more than once is hidden). Other apps: no box.
+            let terminal = focused.map(isXterm) ?? false
+            return Capture(text: text, pid: pid, element: nil, window: terminal ? window : nil, selectionStart: nil, source: .clipboard)
         }
         return nil
+    }
+
+    static func isXterm(_ element: AXUIElement) -> Bool {
+        (axAttribute(element, "AXDOMClassList") as? [String])?.contains("xterm-helper-textarea") == true
     }
 
     // MARK: - 1. AX selection

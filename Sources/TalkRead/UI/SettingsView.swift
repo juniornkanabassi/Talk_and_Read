@@ -134,6 +134,10 @@ struct SettingsContent: View {
             Section {
                 HighlightPreview(colour: NSColor(hex: model.settings.highlightHex) ?? Theme.accentNS, tint: model.settings.tintEnabled)
                 ColorPicker("Word colour", selection: highlightColour, supportsOpacity: false)
+                Picker("Style", selection: $model.settings.highlightStyle) {
+                    Text("Box").tag("box"); Text("Outline").tag("outline"); Text("Underline").tag("underline")
+                }
+                .pickerStyle(.segmented).frame(width: 300)
                 Toggle("Tint the sentence being read", isOn: $model.settings.tintEnabled)
                 LabeledContent("Box opacity") {
                     Slider(value: $model.settings.opacity, in: 0.1...1).frame(width: 220).accessibilityValue("\(Int(model.settings.opacity * 100)) percent")
@@ -155,6 +159,21 @@ struct SettingsContent: View {
 
     private var dictation: some View {
         Form {
+            Section {
+                Picker("Recogniser", selection: $model.settings.dictationEngine) {
+                    Text("Parakeet (most accurate, 580 MB)").tag("parakeet")
+                    Text("Apple (built in, no download)").tag("apple")
+                }
+                Picker("Spelling", selection: $model.settings.britishSpelling) {
+                    Text("British").tag(true)
+                    Text("American").tag(false)
+                }
+            }
+            Section {
+                Toggle("Learn from my corrections", isOn: $model.settings.learnCorrections)
+            } footer: {
+                Text("Reads the field for 15 seconds after dictating, never password fields, stays on this Mac.").foregroundStyle(.secondary)
+            }
             Section {
                 Toggle("Remove filler words (um, uh, er)", isOn: $model.settings.removeFillers)
                 Toggle("Polish with Apple Intelligence", isOn: $model.settings.polishWithAppleIntelligence)

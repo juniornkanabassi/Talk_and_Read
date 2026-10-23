@@ -39,6 +39,21 @@ enum DictationError: LocalizedError, Equatable {
     @Published private(set) var isBusy = false
     /// No pill and no sounds (self-tests).
     var quiet = false
+    /// Use Apple's on-device recogniser instead of Parakeet (lead: a Settings choice; default Parakeet). Apple's is also
+    /// used, with no setting, while Parakeet's model is not on the Mac, so dictation works before any download.
+    var preferApple = false
+    let apple = AppleTranscriber()
+    private var appleInstalled = false
+    /// Learn from the user's corrections after a dictation (opt-in, off by default; lead: a Settings toggle).
+    var learnCorrections = false
+    /// Respell American spellings the British dictionary rejects (Junior writes British English; lead: a Settings row).
+    var britishSpelling = true
+    /// Re-spellings seen in two dictations, offered for the vocabulary (the pill offers the first one).
+    @Published private(set) var suggestions: [AutoLearn.Correction] = []
+    /// The suggestion the pill is offering, once each (ignored ones stay in `suggestions`).
+    @Published private(set) var offering: AutoLearn.Correction?
+    private var offered: Set<AutoLearn.Correction> = []
+    private var watcher: Task<Void, Never>?
 
     /// Types `text`; `isCurrent` is checked inside the pasteboard transaction just before the paste.
     typealias Insert = @MainActor (_ text: String, _ targetPID: pid_t?, _ isCurrent: @MainActor () -> Bool) async -> InsertResult
@@ -66,6 +81,20 @@ enum DictationError: LocalizedError, Equatable {
         self.decode = decode ?? { try Transcriber.samples(of: $0) }
         history = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
         self.asr.onLoadingChange = { [weak self] in self?.updateBusy() }
+        Task { [weak self] in
+            let installed = await AppleTranscriber.isInstalled(.speech)
+            self?.appleInstalled = installed
+        }
+    }
+
+    /// The recogniser for the next utterance: Parakeet, unless Apple's is preferred, or Parakeet's model is not on the
+    /// Mac yet and Apple's is installed (no download needed).
+    private func recogniser() -> DictationASR {
+        guard asr is Transcriber, appleInstalled else { return asr }
+        let parakeetReady = asr.isLoaded || asr.isLoading || Transcriber.isDownloaded
+        guard preferApple || !parakeetReady else { return asr }
+        apple.contextualStrings = Cleanup.terms(vocabulary())
+        return apple
     }
 
     // MARK: Control (CLI/MCP pass their caller and force; hotkeys and the GUI pass "user")
@@ -79,17 +108,19 @@ enum DictationError: LocalizedError, Equatable {
         owner = caller
         generation += 1
         let gen = generation
+        watcher?.cancel()                                         // a new dictation ends the last one's watch
+        offering = nil
         insertOnStop = true
         levels = levels.map { _ in 0 }
         lastPartial = ""
         state = .recording(level: 0, partial: "")
         showPill()
+        let asr = recogniser()
         if !asr.isLoaded { Task { try? await asr.load(progress: nil) } }   // load alongside any drain ("Preparing…")
         let (stream, feed) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
         self.feed = feed
         audio.onBuffer = { feed.yield($0) }
         audio.onLevel = { [weak self] level in self?.update(gen, level: level) }
-        let asr = asr
         let onPartial: @MainActor (String) -> Void = { [weak self] text in self?.update(gen, partial: text) }
         let transcript = Task { try await asr.run(stream, partial: onPartial) }
         self.transcript = transcript
@@ -105,9 +136,9 @@ enum DictationError: LocalizedError, Equatable {
         guard current == caller || caller == Self.user || force else { throw DictationError.busy(owner: current) }
         guard case .recording = state else { return }             // already transcribing
         insertOnStop = insert
-        _ = audio.stop()
-        feed?.finish()
+        feed?.finish()                                            // the recogniser finishes while the input stops
         feed = nil
+        _ = audio.stop()
         state = .transcribing
         play("Pop")
     }
@@ -126,7 +157,7 @@ enum DictationError: LocalizedError, Equatable {
     func transcribe(file: URL, caller: String) async throws -> String {
         if let busy = owner { throw DictationError.busy(owner: busy) }
         owner = caller                                            // admitted before the first await
-        let asr = asr, decode = decode
+        let asr = recogniser(), decode = decode
         let job = Task {
             // ponytail: the decode reads the whole file and cannot be interrupted; a takeover waits for it (the drain),
             // a few ms for a dictation clip. Make it chunked and cancellable if hour-long files ever matter.
@@ -219,14 +250,70 @@ enum DictationError: LocalizedError, Equatable {
         owner = nil
         if result != .refusedSecure { remember(text, app: app) }   // never keep what was said into a password field
         if result == .inserted { show(done: text) } else { show(failure: result) }
+        if result == .inserted, insertOnStop, learnCorrections {
+            watcher = Task { [weak self] in
+                let found = await CorrectionWatcher.watch(text: text)
+                self?.learn(found)
+            }
+        }
         return result == .inserted ? text : nil
     }
 
     private func clean(_ raw: String) async -> String {
         let settings = Settings.load()
-        let vocabulary = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: Paths.vocabulary))) ?? [:]
-        let text = Cleanup.apply(raw, vocabulary: vocabulary, removeFillers: settings.removeFillers)
+        var text = Cleanup.apply(raw, vocabulary: vocabulary(), removeFillers: settings.removeFillers)
+        if britishSpelling { text = BritishSpelling.apply(text) }
         return settings.polishWithAppleIntelligence ? await Polish.polish(text) : text
+    }
+
+    private func vocabulary() -> [String: String] {
+        (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: Paths.vocabulary))) ?? [:]
+    }
+
+    // MARK: Learning from corrections (opt-in)
+
+    private static var learntFile: URL { Paths.dataRoot.appendingPathComponent("learned-corrections.json") }
+
+    /// Counts the corrections of one dictation; those seen twice and not yet in the vocabulary are offered.
+    private func learn(_ found: [AutoLearn.Correction]) {
+        guard !found.isEmpty else { return }
+        var counts = (try? JSONDecoder().decode([String: Int].self, from: Data(contentsOf: Self.learntFile))) ?? [:]
+        let ready = AutoLearn.record(found, in: &counts)
+        try? JSONEncoder().encode(counts).write(to: Self.learntFile, options: .atomic)
+        let known = vocabulary()
+        let new = ready.filter { known[$0.heard.lowercased()] != $0.typed && !suggestions.contains($0) }
+        guard !new.isEmpty else { return }
+        suggestions += new
+        if owner == nil, state == .idle { offerOrHide() }          // else when this dictation's result has gone
+    }
+
+    /// While idle: the pill offers the next suggestion not yet offered for 8 s, or hides.
+    private func offerOrHide() {
+        offering = quiet ? nil : suggestions.first { !offered.contains($0) }
+        guard let shown = offering else { pill?.hide(); return }
+        offered.insert(shown)
+        showPill()
+        let gen = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            guard let self, gen == self.generation, self.owner == nil, self.offering == shown else { return }
+            self.offering = nil                                   // ignored: still listed in `suggestions`
+            self.pill?.hide()
+        }
+    }
+
+    /// Adds the suggestion to the vocabulary ("heard as" → "type instead").
+    func acceptSuggestion(_ c: AutoLearn.Correction) {
+        var map = vocabulary()
+        map[c.heard.lowercased()] = c.typed
+        try? FileManager.default.createDirectory(at: Paths.vocabulary.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? JSONEncoder().encode(map).write(to: Paths.vocabulary, options: .atomic)
+        dismissSuggestion(c)
+    }
+
+    func dismissSuggestion(_ c: AutoLearn.Correction) {
+        suggestions.removeAll { $0 == c }
+        if offering == c { offering = nil }
+        if owner == nil, state == .idle { offerOrHide() }
     }
 
     /// Drops the current utterance or file transcription: stops the input, cancels its startup and transcript (or the
@@ -303,7 +390,7 @@ enum DictationError: LocalizedError, Equatable {
 
     private func show(failure: InsertResult) {
         switch failure {
-        case .refusedSecure: state = .failed("Not typed: password field")
+        case .refusedSecure: state = .failed(Inserter.refusal())
         case .failed(let reason): state = .failed(reason)
         case .inserted: return
         }
@@ -316,7 +403,7 @@ enum DictationError: LocalizedError, Equatable {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self, gen == self.generation, self.owner == nil else { return }
             self.state = .idle
-            self.pill?.hide()
+            self.offerOrHide()
         }
     }
 

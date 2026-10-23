@@ -1,6 +1,8 @@
-// `TalkRead --selftest-window` (R4, R5, R6, R7, R7c, R7d, R12, E8). Headless first: PasteboardGate, the coordinate flip,
-// screenshot OCR and the OCR selection-colour anchor on rendered bitmaps. Then, on the Prompter XL screen only, one test
-// window (NSTextView, WKWebView, PDFView, rendered-text NSImageView) shown without activating the app or becoming key.
+// `TalkRead --selftest-window` (R4, R5, R6, R7, R7c, R7d, R12, E8, H1, H2, H3). Headless first: PasteboardGate, the
+// coordinate flip, screenshot OCR and the OCR selection-colour anchor on rendered bitmaps, the overlay pin on recorded
+// window-server snapshots and on live windows placed off every display. Then, on the Prompter XL screen only, one test
+// window (NSTextView, WKWebView, PDFView, rendered-text NSImageView, a terminal-style text view) shown without activating
+// the app or becoming key.
 // Each pane is read by a child process of this binary through the real TextCapture and Locator: AX calls into one's own
 // process are answered in-process, where WebKit's remote web content has no role on the main thread and crashes off it,
 // so only a second process sees what any other app sees. Finally a read-only node-map probe on a Chromium/Electron window.
@@ -90,7 +92,9 @@ enum SelfTestWindow {
         let probe = CGRect(x: 100, y: 50, width: 200, height: 20)
         record("Coordinate flip", Locator.convert(topLeftScreenRect: Locator.convert(topLeftScreenRect: probe)) == probe, "AX/CG top-left <-> Cocoa is its own inverse")
         pageBaseCheck()
+        pinPlacementCheck()
         await wakeCheck("E8 wake, app with no text", bare: true)   // before any window exists in this host
+        await pinnedOverlayCheck()
         await screenshotTextCheck()
         await ocrHighlightCheck()
         if let screen = NSScreen.screens.first(where: { $0.localizedName.contains("Prompter") }) {
@@ -659,8 +663,25 @@ enum SelfTestWindow {
                    && (caret?["selectionStart"] as? Int) == textSecond.location,
                "source=\(caret?["source"] as? String ?? "nil") selectionStart=\(caret?["selectionStart"] as? Int ?? -1) (caret at \(textSecond.location)), \(TextKit.tokenize(caret?["text"] as? String ?? "").count) words to the end")
 
+        // Terminal-style (H3): monospaced light-on-dark lines with scrollback, scrolled to the end, read the way
+        // Terminal.app's AXTextArea is (direct AXBoundsForRange). The phrase also sits in the scrolled-away history,
+        // which must never be boxed.
+        let history = (1...120).map { "user@mac ~ % echo line \($0)" }.joined(separator: "\n")
+        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.backgroundColor = .black
+        textView.textColor = .white
+        textView.string = "\(SelfTestWindow.phrase)\n\(history)\n\(SelfTestWindow.phrase)\nuser@mac ~ % "
+        textView.scrollToEndOfDocument(nil)
+        let terminal = textView.string as NSString
+        let terminalLast = terminal.range(of: SelfTestWindow.phrase, options: .backwards), terminalFirst = terminal.range(of: SelfTestWindow.phrase)
+        textView.setSelectedRange(terminalLast)
+        window.makeFirstResponder(textView)
+        await pane("Terminal-style text view", "text", expected: SelfTestWindow.phrase,
+                   truth: tokens.map { glyphRect(SelfTestWindow.ns($0.range, plus: terminalLast.location)) },
+                   first: tokens.map { glyphRect(SelfTestWindow.ns($0.range, plus: terminalFirst.location)) })
+
         await wakeCheck("E8 wake, app with native text", bare: false)
-        await overlayCheck(screen: screen, word: textTruth[0], sentence: textTruth)
+        await overlayCheck(window: window, screen: screen, word: textTruth[0], sentence: textTruth)
         record("Test window never key", !window.isKeyWindow && !window.isMainWindow, "shown with orderFrontRegardless on \(screen.localizedName)")
     }
 
@@ -714,6 +735,13 @@ enum SelfTestWindow {
         guard let line = String(data: data, encoding: .utf8)?.split(separator: "\n").last,
               let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return nil }
         return object
+    }
+
+    static func microseconds(_ n: Int, _ body: () -> Void) -> Double {
+        let start = ContinuousClock.now
+        for _ in 0..<n { body() }
+        let each = (ContinuousClock.now - start) / n
+        return Double(each.components.seconds) * 1e6 + Double(each.components.attoseconds) / 1e12
     }
 
     static func rects(_ value: Any?) -> [CGRect?] {
@@ -774,23 +802,206 @@ enum SelfTestWindow {
                "\(cases.count - wrong.count)/\(cases.count) cases; only-page-2 exposed reads as zero-based, no metadata on a partial set hides\(wrong.isEmpty ? "" : "; wrong: \(wrong.map { "\($0.descriptions)" })")")
     }
 
-    // MARK: Overlay (R4: never takes clicks, never key; no panel while idle)
+    // MARK: Overlay (R4: never takes clicks, never key; no panel while idle; H2: pinned to the window being read)
 
-    private func overlayCheck(screen: NSScreen, word: CGRect, sentence: [CGRect]) async {
-        let overlay = Overlay(style: Overlay.Style(), screens: { [screen] })
-        overlay.show(word: word, sentence: sentence)
-        let panels = overlay.panels
-        let flags = panels.allSatisfy { p in
-            p.panel.ignoresMouseEvents && !p.panel.canBecomeKey && !p.panel.canBecomeMain && p.panel.styleMask.contains(.nonactivatingPanel)
-                && p.panel.level == .screenSaver && p.panel.collectionBehavior.contains([.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle])
+    private func overlayCheck(window: NSWindow, screen: NSScreen, word: CGRect, sentence: [CGRect]) async {
+        let overlay = Overlay(style: Overlay.Style())
+        overlay.source = CGWindowID(window.windowNumber)
+        var followed = false, above = false
+        for _ in 0..<2 where !above {   // two reading ticks: an order shows once the run loop has committed it
+            followed = overlay.follow()
+            try? await Task.sleep(for: .milliseconds(60))
+            let order = WindowPin.snapshot(above: CGWindowID(window.windowNumber)).map(\.id)
+            above = overlay.panel.map { order.count >= 2 && order[order.count - 2] == CGWindowID($0.windowNumber) } ?? false
         }
-        let drawn = panels.first.map { p in p.wordLayer.frame.offsetBy(dx: p.panel.frame.minX, dy: p.panel.frame.minY).insetBy(dx: 2, dy: 1) }
+        overlay.show(word: word, sentence: sentence)
+        let panel = overlay.panel
+        let flags = panel.map(Self.overlayFlags) ?? false
+        let drawn = panel.map { overlay.wordLayer.frame.offsetBy(dx: $0.frame.minX, dy: $0.frame.minY).insetBy(dx: 2, dy: 1) }
         let placed = drawn.map { abs($0.midX - word.midX) < 0.5 && abs($0.midY - word.midY) < 0.5 } ?? false
         try? await Task.sleep(for: .milliseconds(400))
         overlay.hide()
-        try? await Task.sleep(for: .milliseconds(2300))
-        record("Overlay panels", panels.count == 1 && flags && placed && overlay.panels.isEmpty,
-               "\(panels.count) panel on \(screen.localizedName): click-through, never key/main, nonactivating, screenSaver level, all Spaces; box on the word: \(placed); closed 2 s after hide: \(overlay.panels.isEmpty)")
+        record("Overlay panel", followed && flags && above && placed && overlay.panel == nil,
+               "on \(screen.localizedName), directly above the test window: \(above); click-through, never key/main, nonactivating, the window's level, one Space: \(flags); box on the word: \(placed); closed at hide: \(overlay.panel == nil)")
+    }
+
+    static func overlayFlags(_ p: NSPanel) -> Bool {
+        p.ignoresMouseEvents && !p.canBecomeKey && !p.canBecomeMain && !p.isKeyWindow && p.styleMask.contains(.nonactivatingPanel)
+            && p.level == .normal && !p.collectionBehavior.contains(.canJoinAllSpaces)
+            && p.collectionBehavior.contains([.transient, .fullScreenAuxiliary, .ignoresCycle])
+    }
+
+    // MARK: Window pin (H2), headless: recorded window-server snapshots
+
+    /// Read-only snapshot, 23 Oct: Claude full screen (667) under its own title strip (669) and other apps' higher-layer
+    /// windows; 690 is Codex's window on another Space, which the window server leaves out (listing everything else).
+    /// Our panel (9000) and another app's window (2741) are placed into it as the live check saw them.
+    private func pinPlacementCheck() {
+        let claude: pid_t = 6134
+        let main = WindowInfo(id: 667, pid: claude, bounds: CGRect(x: 0, y: 0, width: 2304, height: 1296))
+        let strip = WindowInfo(id: 669, pid: claude, bounds: CGRect(x: 0, y: -32, width: 2304, height: 32))
+        let higher = [WindowInfo(id: 2562, pid: 30286, layer: 27, bounds: CGRect(x: 1820, y: 1168, width: 94, height: 38)),
+                      WindowInfo(id: 346, pid: 432, layer: 24, bounds: CGRect(x: -2304, y: 0, width: 2304, height: 30)),
+                      WindowInfo(id: 1439, pid: 30347, layer: 5, bounds: CGRect(x: 2272, y: 50, width: 35, height: 1202)),
+                      WindowInfo(id: 2563, pid: 30286, layer: 1, bounds: CGRect(x: 324, y: 1101, width: 1580, height: 163))]
+        let panel = WindowInfo(id: 9000, pid: getpid(), bounds: main.bounds)
+        let cover = WindowInfo(id: 2741, pid: 777, bounds: CGRect(x: 300, y: 200, width: 800, height: 600))
+        let moved = WindowInfo(id: 667, pid: claude, bounds: CGRect(x: 100, y: 40, width: 1600, height: 1000))
+        let elsewhere = [WindowInfo(id: 347, pid: 432, layer: -2147483602, bounds: CGRect(x: -2304, y: 0, width: 2304, height: 110)),
+                         WindowInfo(id: 348, pid: 657, layer: -2147483603, bounds: CGRect(x: -2304, y: 0, width: 2304, height: 1296)),
+                         WindowInfo(id: 1271, pid: 656, layer: -2147483625, bounds: CGRect(x: 0, y: 0, width: 2304, height: 1296)),
+                         WindowInfo(id: 336, pid: 432, layer: -2147483626, bounds: CGRect(x: -2304, y: 0, width: 2304, height: 1296))]
+        func shown(_ order: WindowPin.PanelOrder, _ w: WindowInfo = main) -> WindowPin.Placement { .shown(bounds: w.bounds, layer: 0, panel: order) }
+        let cases: [(name: String, list: [WindowInfo], source: CGWindowID, expected: WindowPin.Placement)] = [
+            ("no panel, or the window raised over it", higher + [strip, main], 667, shown(.missing)),
+            ("directly above", higher + [strip, panel, main], 667, shown(.directlyAbove)),
+            ("over the app's own title strip", higher + [panel, strip, main], 667, shown(.separated)),
+            ("another app's window covers it", higher + [cover, panel, main], 667, shown(.directlyAbove)),
+            ("our app raised it over another app", higher + [panel, cover, main], 667, shown(.separated)),
+            ("window moved", higher + [panel, moved], 667, shown(.directlyAbove, moved)),
+            ("other Space, minimised or hidden", elsewhere, 690, .hidden),
+            ("closed (empty list)", [], 667, .hidden),
+            ("fully transparent", higher + [WindowInfo(id: 667, pid: claude, bounds: main.bounds, alpha: 0)], 667, .hidden),
+        ]
+        let wrong = cases.filter { WindowPin.placement($0.list, source: $0.source, panel: 9000) != $0.expected }.map(\.name)
+
+        // Parsing a CGWindowList entry; kCGWindowIsOnscreen is absent for an off-screen window.
+        let entry: [String: Any] = [kCGWindowNumber as String: NSNumber(value: 667), kCGWindowOwnerPID as String: NSNumber(value: claude),
+                                    kCGWindowLayer as String: NSNumber(value: 0), kCGWindowAlpha as String: NSNumber(value: 1),
+                                    kCGWindowBounds as String: main.bounds.dictionaryRepresentation, kCGWindowIsOnscreen as String: kCFBooleanTrue!]
+        var offEntry = entry
+        offEntry[kCGWindowIsOnscreen as String] = nil
+        let parsed = WindowInfo(entry) == main && WindowInfo(offEntry)?.onScreen == false
+
+        // The window behind the capture: AX frame match, ties to the frontmost, slivers never; no frame: the frontmost.
+        let back = WindowInfo(id: 700, pid: claude, bounds: CGRect(x: 200, y: 100, width: 900, height: 700))
+        let onScreen = higher + [strip, main, back]
+        let resolved = WindowPin.windowID(pid: claude, axFrame: main.bounds, in: onScreen) == 667
+            && WindowPin.windowID(pid: claude, axFrame: CGRect(x: 201, y: 100, width: 900, height: 700), in: onScreen) == 700
+            && WindowPin.windowID(pid: claude, axFrame: nil, in: onScreen) == 667
+            && WindowPin.windowID(pid: claude, axFrame: main.bounds, in: [WindowInfo(id: 667, pid: claude, bounds: main.bounds, onScreen: false)]) == nil
+        record("Overlay pin on recorded snapshots (H2)", wrong.isEmpty && parsed && resolved,
+               "\(cases.count - wrong.count)/\(cases.count) placements (directly above, separated, missing, hidden) right; CGWindowList entry parsed: \(parsed); capture window resolved: \(resolved)\(wrong.isEmpty ? "" : "; wrong: \(wrong)")")
+    }
+
+    // MARK: Pinned overlay (H1, H2), live window server, nothing on any display
+
+    /// A child process plays the app being read: its window sits far off every display (nothing visible anywhere, never
+    /// key) and it raises, covers, moves and hides that window on command. This process pins a real Overlay to it, as
+    /// the Highlighter does, and checks with window-server facts that the panel sits directly above the window, stays
+    /// under a window covering it, moves with it, is closed while the window is off screen and comes back with it.
+    private func pinnedOverlayCheck() async {
+        guard let executable = Bundle.main.executableURL else { return }
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = ["--selftest-window", "--client", String(getpid()), "pinsource", pasteboardName]
+        let input = Pipe(), output = Pipe()
+        (process.standardInput, process.standardOutput) = (input, output)
+        guard (try? process.run()) != nil else { record("Pinned overlay (H2)", false, "the source process did not start"); return }
+        defer { if process.isRunning { process.terminate() } }
+        var lines = output.fileHandleForReading.bytes.lines.makeAsyncIterator()
+        func send(_ command: String) async -> CGWindowID? {   // the reply carries the cover window's number (0: none)
+            input.fileHandleForWriting.write(Data((command + "\n").utf8))
+            let reply = try? await lines.next()
+            try? await Task.sleep(for: .milliseconds(60))   // its order is committed after its reply
+            return reply.flatMap { $0.split(separator: " ").last.flatMap { CGWindowID($0) } }
+        }
+        guard let first = try? await lines.next(), let sid = CGWindowID(first) else {
+            record("Pinned overlay (H2)", false, "the source process reported no window")
+            return
+        }
+        let pid = process.processIdentifier
+        let axWindow = (axAttribute(AXUIElementCreateApplication(pid), kAXWindowsAttribute) as? [AXUIElement])?.first
+        let overlay = Overlay(style: Overlay.Style())
+        overlay.source = WindowPin.windowID(pid: pid, axFrame: axWindow.flatMap(axFrame))
+        func order() -> [CGWindowID] { WindowPin.snapshot(above: sid).map(\.id) }   // front to back, the source last
+        func pinned() -> Bool {
+            guard let panel = overlay.panel else { return false }
+            let o = order()
+            return o.count >= 2 && o.last == sid && o[o.count - 2] == CGWindowID(panel.windowNumber)
+        }
+        /// Two reading ticks: an order shows in the window list once the run loop has committed it.
+        func follow() async -> Bool {
+            var ok = false
+            for _ in 0..<2 where !ok {
+                guard overlay.follow() else { break }
+                try? await Task.sleep(for: .milliseconds(60))
+                ok = pinned()
+            }
+            if !ok {
+                let o = WindowPin.snapshot(above: sid)
+                FileHandle.standardError.write(Data("  pin: panel \(overlay.panel.map { "\($0.windowNumber) \($0.frame) level \($0.level.rawValue)" } ?? "nil"), source \(sid), order \(o.suffix(5).map { "\($0.id)/\($0.pid)/L\($0.layer)" })\n".utf8))
+            }
+            return ok
+        }
+        func sourceFrame() -> CGRect? { WindowPin.snapshot(above: sid).last.map { Locator.convert(topLeftScreenRect: $0.bounds) } }
+        func box() -> CGRect? {
+            guard let panel = overlay.panel, !overlay.wordLayer.isHidden else { return nil }
+            return overlay.wordLayer.frame.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY)
+        }
+        func near(_ a: CGRect?, _ b: CGRect) -> Bool { a.map { abs($0.minX - b.minX) < 0.5 && abs($0.minY - b.minY) < 0.5 && abs($0.width - b.width) < 0.5 && abs($0.height - b.height) < 0.5 } ?? false }
+
+        var steps: [String: Bool] = [:]
+        steps["resolved"] = overlay.source == sid
+        steps["pinned"] = await follow() && overlay.panel.map(Self.overlayFlags) == true && overlay.panel?.frame == sourceFrame()
+        guard let frame = sourceFrame() else { record("Pinned overlay (H2)", false, "the source window is not on screen"); return }
+        let word = CGRect(x: frame.minX + 40, y: frame.maxY - 60, width: 80, height: 18)
+        overlay.show(word: word, sentence: [word.insetBy(dx: -30, dy: 0)])
+        steps["box on the word"] = near(box(), word.insetBy(dx: -2, dy: -1))
+
+        _ = await send("raise")
+        let raisedOver = !pinned()   // the window now covers the panel, as when its app is activated
+        steps["window raised: back above it"] = raisedOver ? await follow() : false
+
+        let cover = await send("cover") ?? 0
+        let coverAbove = { let o = order(); return (o.firstIndex(of: cover) ?? .max) < (overlay.panel.flatMap { o.firstIndex(of: CGWindowID($0.windowNumber)) } ?? -1) }
+        steps["covered: stays under the cover"] = cover != 0 ? await follow() && coverAbove() : false
+        overlay.panel?.orderFrontRegardless()   // our app activated: its windows rise over the other app's
+        try? await Task.sleep(for: .milliseconds(60))
+        let wasOver = !coverAbove()
+        steps["raised over the cover: back under it"] = wasOver ? await follow() && coverAbove() : false
+
+        let before = box()
+        _ = await send("move")
+        steps["window moved: panel and box follow"] = await follow() && overlay.panel?.frame == sourceFrame()
+            && near(box(), before?.offsetBy(dx: 100, dy: -40) ?? .null)
+
+        _ = await send("hide")   // to the window server, minimised, hidden and on another Space all look like this
+        let hidden = !overlay.follow() && overlay.panel == nil
+        steps["window off screen: no panel"] = hidden
+        _ = await send("show")
+        steps["window back: new panel, word shown"] = await follow() && box() != nil
+
+        // H1: the style option; the box stays today's default.
+        let moved = word.offsetBy(dx: 100, dy: -40)
+        var shapes: [String] = []
+        for shape in [Overlay.Style.Shape.box, .outline, .underline] {
+            overlay.style.shape = shape
+            overlay.show(word: moved, sentence: [])
+            let layer = overlay.wordLayer
+            let ok = switch shape {
+            case .box: near(box(), moved.insetBy(dx: -2, dy: -1)) && layer.backgroundColor != nil && layer.borderWidth == 1.5
+            case .outline: near(box(), moved.insetBy(dx: -2, dy: -1)) && layer.backgroundColor == nil && layer.borderWidth == 2
+            case .underline: near(box(), CGRect(x: moved.minX, y: moved.minY - 3, width: moved.width, height: 3)) && layer.borderWidth == 0
+            }
+            if ok { shapes.append(shape.rawValue) }
+        }
+        steps["styles box, outline, underline"] = shapes.count == 3 && Overlay.Style().shape == .box
+        overlay.style.shape = .box
+
+        // Cost per reading tick with the panel in place: the pin (one window-server query) and the drawing.
+        let followUs = Self.microseconds(300) { _ = overlay.follow() }
+        let showUs = Self.microseconds(300) { overlay.show(word: moved, sentence: [moved]) }
+
+        overlay.hide()
+        steps["closed at the end of the read"] = overlay.panel == nil
+        _ = await send("quit")
+        let failed = steps.filter { !$0.value }.keys.sorted()
+        record("Pinned overlay, live window server (H2)", failed.isEmpty,
+               "\(steps.count - failed.count)/\(steps.count) steps in another process's window off every display: resolved from its AX frame, directly above it, under a covering window, back above after raises, follows a move, gone while off screen, back with it\(failed.isEmpty ? "" : "; failed: \(failed)")")
+        record("Overlay styles (H1)", steps["styles box, outline, underline"] == true, "drawn: \(shapes.joined(separator: ", ")); default box")
+        record("Overlay tick cost", followUs + showUs < 2000,
+               String(format: "pin %.0f µs, draw %.0f µs: %.2f %% of one core while reading (pin 10 Hz, draw 30 Hz), %.2f %% while paused (pin 5 Hz)", followUs, showUs, (followUs * 10 + showUs * 30) / 1e4, followUs * 5 / 1e4))
     }
 
     // MARK: R5, read-only node map probe on a real Chromium/Electron window
@@ -806,8 +1017,10 @@ enum SelfTestWindow {
                 let locator = Locator(capture: Capture(text: run, pid: app.processIdentifier, element: nil, window: window, selectionStart: nil, source: .provided))
                 let tokens = TextKit.tokenize(run)
                 let hits = tokens.filter { locator.rect(forWord: $0.range) != nil && locator.pathUsed == .nodeMap }.count
+                var i = 0   // a reading tick's AX work once the map is built: one word lookup
+                let lookupUs = Self.microseconds(tokens.count) { _ = locator.rect(forWord: tokens[i % tokens.count].range); i += 1 }
                 record("R5 node map (\(app.localizedName ?? app.bundleIdentifier ?? "?"))", hits * 10 >= tokens.count * 9,
-                       "\(hits)/\(tokens.count) words of a visible text run boxed with path=nodeMap (read-only); node map \(locator.nodeMapSummary)")
+                       "\(hits)/\(tokens.count) words of a visible text run boxed with path=nodeMap (read-only); node map \(locator.nodeMapSummary); \(Int(lookupUs)) µs per word lookup")
                 return
             }
         }
@@ -849,6 +1062,7 @@ enum SelfTestClient {
             fflush(stdout)
         }
         TextCapture.gate = PasteboardGate(pasteboard: NSPasteboard(name: NSPasteboard.Name(pasteboard)))
+        if pane == "pinsource" { return await pinSource() }
         if pane == "ocr", !CGPreflightScreenCaptureAccess() {   // never prompt from a test
             out["skipped"] = "no Screen Recording"
             return 0
@@ -922,6 +1136,41 @@ enum SelfTestClient {
             out["pdfAnchored"] = tokens.indices.map { encode(anchored?.rect(forTokenIndex: $0)) }
             out["pdfUnanchored"] = tokens.indices.map { encode(unanchored?.rect(forTokenIndex: $0)) }
         }
+        return 0
+    }
+
+    /// H2's stand-in for the app being read: borderless windows far off every display, on every Space so they count as
+    /// on screen whatever Space Junior is on, click-through and never key. Prints the window number, then obeys stdin.
+    @MainActor static func pinSource() async -> Int32 {
+        func window(_ frame: NSRect) -> NSPanel {
+            let w = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            w.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle]
+            w.animationBehavior = .none
+            w.ignoresMouseEvents = true
+            w.isReleasedWhenClosed = false
+            return w
+        }
+        let frame = NSRect(x: 30_000, y: 30_000, width: 600, height: 400)
+        let source = window(frame)
+        source.orderFrontRegardless()
+        var cover: NSPanel?
+        print(source.windowNumber)
+        fflush(stdout)
+        do {
+            for try await line in FileHandle.standardInput.bytes.lines {
+                switch line {
+                case "raise", "show": source.orderFrontRegardless()
+                case "cover":
+                    cover = window(frame.insetBy(dx: 100, dy: 100))
+                    cover?.orderFrontRegardless()
+                case "move": source.setFrameOrigin(NSPoint(x: frame.minX + 100, y: frame.minY - 40))
+                case "hide": source.orderOut(nil)
+                default: return 0
+                }
+                print("ok \(cover?.windowNumber ?? 0)")
+                fflush(stdout)
+            }
+        } catch {}
         return 0
     }
 }

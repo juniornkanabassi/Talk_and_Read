@@ -2,6 +2,7 @@
 // or main; Esc cancels through the hotkey tap, not here.
 import AppKit
 import SwiftUI
+import TalkReadCore
 
 @MainActor final class DictationPill {
     private let panel: NSPanel
@@ -44,6 +45,34 @@ struct DictationPillView: View {
     private static let accent = Color(red: 1, green: 0xD2 / 255, blue: 0x1F / 255)   // #FFD21F
 
     var body: some View {
+        if let offer = dictation.offering, dictation.state == .idle { suggestion(offer) } else { status }
+    }
+
+    /// A learnt correction (opt-in): add it to the vocabulary, or not.
+    private func suggestion(_ offer: AutoLearn.Correction) -> some View {
+        HStack(spacing: 8) {
+            Text("Always type “\(offer.typed)” for “\(offer.heard)”?")
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button { dictation.acceptSuggestion(offer) } label: {
+                Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add to vocabulary")
+            Button { dictation.dismissSuggestion(offer) } label: {
+                Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Not now")
+        }
+        .padding(.horizontal, 14)
+        .frame(width: 240, height: 44)
+        .background(.regularMaterial, in: Capsule())
+    }
+
+    private var status: some View {
         HStack(spacing: 10) {
             if case .recording = dictation.state {
                 HStack(spacing: 2) {
