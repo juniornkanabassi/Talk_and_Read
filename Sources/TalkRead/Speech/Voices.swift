@@ -3,7 +3,8 @@
 import Foundation
 import TalkReadCore
 
-enum EngineKind: String, Codable { case neural, system }
+/// `neural` is Kokoro; `qwen` and `breeze` are the MLX models added in 0.3.0 (PLAN 0.3.0 decision 1).
+enum EngineKind: String, Codable { case neural, system, qwen, breeze }
 
 struct Voice: Identifiable, Hashable {
     let id: String
@@ -12,6 +13,8 @@ struct Voice: Identifiable, Hashable {
     let gender: String
     let engine: EngineKind
     var installed: Bool
+    /// `en` or `fr` (PLAN 0.3.0 decision 2).
+    var language = "en"
 }
 
 /// One synthesised chunk; `words` are chunk-local seconds.
@@ -41,9 +44,19 @@ protocol SpeechEngine: AnyObject {
     func unload()
 }
 
+/// An engine backed by a large downloaded model (Qwen3, Breeze): the UI shows its size and asks before downloading.
+protocol ModelBackedEngine: SpeechEngine {
+    var modelMegabytes: Int { get }
+    var isModelInstalled: Bool { get }
+    func downloadModel(progress: @escaping @Sendable (Double) -> Void) async throws
+}
+
 final class Engines {
     let neural: SpeechEngine
     let system: SpeechEngine
     init(neural: SpeechEngine = NeuralEngine(), system: SpeechEngine = SystemEngine()) { self.neural = neural; self.system = system }
+    // Contract for 0.3.0 (V-A fills in the MLX engines; V-C calls these and never the engines' properties directly).
     func engine(for v: Voice) -> SpeechEngine { v.engine == .neural ? neural : system }
+    /// Every engine's voices, all languages and genders; the UI filters (female only, by model, by language).
+    func allVoices() async -> [Voice] { await neural.voices() + system.voices() }
 }

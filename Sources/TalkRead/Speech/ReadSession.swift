@@ -30,7 +30,8 @@ import TalkReadCore
     private var generation = 0
     private var startedAt: Date?
 
-    init(text: String, capture: Capture?, voice: Voice, rate: Float, startToken: Int, engines: Engines, lexicon: [String: String]) {
+    /// `fallback`: the Kokoro voice of the same language the read switches to if `voice`'s engine cannot keep up (V3).
+    init(text: String, capture: Capture?, voice: Voice, rate: Float, startToken: Int, engines: Engines, lexicon: [String: String], fallback: Voice? = nil) {
         self.text = text
         self.tokens = TextKit.tokenize(text)
         self.capture = capture

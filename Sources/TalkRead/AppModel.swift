@@ -117,7 +117,7 @@ enum ModelState: Equatable { case missing(megabytes: Int), downloading(progress:
     // MARK: Voices and models
 
     func loadVoices() async {
-        voices = await engines.neural.voices() + engines.system.voices()
+        voices = await engines.allVoices()
         refreshModelStates()
     }
 
