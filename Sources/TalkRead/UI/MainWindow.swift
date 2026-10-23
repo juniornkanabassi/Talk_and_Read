@@ -805,7 +805,7 @@ struct VoiceSection: View {
                     download(shown.model, shown.voices)
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 4) {
                         ForEach(shown.voices) { v in
-                            VoiceRow(voice: v, selected: v.id == current, choose: { model.setVoice(v.id) }, preview: { preview(v) })
+                            VoiceRow(voice: v, selected: v.id == current, choose: { model.setVoice(v.id) }, preview: { model.preview(v) })
                         }
                     }
                     .padding(8)
@@ -841,12 +841,6 @@ struct VoiceSection: View {
         model.setVoice(id)
     }
 
-    /// Plays a short sample in that voice without choosing it.
-    private func preview(_ v: Voice) {
-        let text = v.language == "fr" ? "Bonjour, je suis \(v.name). Voici comment je lis vos textes."
-            : "Hello, I'm \(v.name). This is how I sound reading your text."
-        try? model.speak(text, title: nil, caller: "ui-preview", voice: v.id)
-    }
 }
 
 /// Breeze TTS 2's weights are under BreezeBlue's research and non-commercial licence (PLAN 0.4.0 Sol rev. 6, V8): the

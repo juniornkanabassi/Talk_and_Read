@@ -154,7 +154,10 @@ extension EngineKind {
     }
 
     private func freeUnchosenModels() {
-        guard modelSwitchPending, liveSession == nil else { return }
+        // The delivered read state, not `liveSession`: a session's @Published state reaches us before it is stored, so
+        // at a natural finish the session still says playing and the switch would wait for the idle timer (Sol
+        // inspection 5 #2).
+        guard modelSwitchPending, !(readState.map { [ReadSession.State.preparing, .playing, .paused].contains($0) } ?? false) else { return }
         // Busy (a warm-up, a chunk or a cancelled one draining): try again the moment the MLX queue is free, not at the
         // idle timer, which may be many minutes away with gigabytes still loaded (Sol plan review 0.4.0 #5).
         guard !engines.isBusy else { return engines.whenIdle { Task { @MainActor [weak self] in self?.freeUnchosenModels() } } }
@@ -397,9 +400,17 @@ extension EngineKind {
     }
 
     /// `voice` (additive) reads with that voice without changing the setting: the Voices pane's preview.
-    func speak(_ text: String, title: String?, caller: String, voice: String? = nil) throws {
+    func speak(_ text: String, title: String?, caller: String, voice: String? = nil, rate: Float? = nil) throws {
         try checkOwner(caller, force: false)
-        startSession(text, capture: nil, id: reserve(caller), voice: voice.map { self.voice(for: $0) })
+        startSession(text, capture: nil, id: reserve(caller), voice: voice.map { self.voice(for: $0) }, rate: rate)
+    }
+
+    /// Plays a short sample in that voice without choosing it (the Voices page), at 1x whatever the saved speed, so a
+    /// Breeze voice is heard as itself rather than handed to Kokoro above its 1.5x (Sol inspection 5 #5).
+    func preview(_ v: Voice) {
+        let text = v.language == "fr" ? "Bonjour, je suis \(v.name). Voici comment je lis vos textes."
+            : "Hello, I'm \(v.name). This is how I sound reading your text."
+        try? speak(text, title: nil, caller: "ui-preview", voice: v.id, rate: 1)
     }
 
     func read(_ item: LibraryItem, fromToken: Int?) {

@@ -46,7 +46,7 @@ enum SelfTest {
             guard await helperChecks() else { return 1 }
             if args.contains("--fake-slow") { return try await fakeSlowRun(text) }
             if mlx, args.contains("--cancel") { return try await mlxCancelRun(text, voice: voice, aligner: aligner) }
-            if args.contains("--switch") { return try await mlxSwitchRun(text, aligner: aligner) }
+            if args.contains("--switch") { return try await mlxSwitchRun(text, aligner: aligner, fakeOnly: args.contains("--fake")) }
             if mlx, args.contains("--long") {
                 return try await mlxLongRun(text, voice: voice, rate: value("--rate").flatMap(Float.init) ?? 2.5, aligner: aligner)
             }
@@ -575,12 +575,20 @@ enum SelfTest {
         return pass ? 0 : 1
     }
 
-    /// Sol plan review 0.4.0 #1 and #5, on one shared queue as in the app. (1) Reads switch Qwen3 -> Breeze -> Qwen3, each
-    /// stopped with a chunk in flight and the next started at once: never two generations at once, each read starts in its
-    /// own voice (the aligner traps if used off the queue). (2) Leaving Breeze while it warms up, while it synthesises and
-    /// while a cancelled chunk drains (AppModel's own switch path) unloads it within 0.5 s of the queue going idle, not at
-    /// the idle timer. (3) Pause, an idle unload, resume: the read goes on, every token once, no starvation.
-    @MainActor private static func mlxSwitchRun(_ fixture: String, aligner: Aligner) async throws -> Int32 {
+    /// Through AppModel.shared, so only with a disposable TALKREAD_HOME (its settings persist), speed 1x (at or below
+    /// Breeze's limit, so choosing it loads it). With fake engines first, no GPU (`--switch --fake` stops there): a read
+    /// left during playback frees its model as soon as it finishes naturally (Sol inspection 5 #2), and a preview at a
+    /// saved 2.5x speaks the chosen Breeze voice at 1x (#5). Then Sol plan review 0.4.0 #1 and #5 on the real models,
+    /// one shared queue as in the app: (1) reads switch Qwen3 -> Breeze -> Qwen3, each stopped with a chunk in flight and
+    /// the next started at once: never two generations at once, each read starts in its own voice (the aligner traps if
+    /// used off the queue); (2) leaving Breeze once its preparation began, while it synthesises and while a cancelled
+    /// chunk drains (AppModel's own switch path) unloads it within 0.5 s of the queue going idle, not at the idle timer;
+    /// (3) pause, an idle unload, resume: the read goes on, every token once, no starvation.
+    @MainActor private static func mlxSwitchRun(_ fixture: String, aligner: Aligner, fakeOnly: Bool) async throws -> Int32 {
+        guard let home = ProcessInfo.processInfo.environment["TALKREAD_HOME"], !home.isEmpty else {
+            print("--switch needs TALKREAD_HOME set to a disposable folder (it changes AppModel's saved settings).")
+            return 2
+        }
         var checks: [(String, Bool)] = []
         func check(_ what: String, _ ok: Bool) { checks.append((what, ok)); print("\(ok ? "ok" : "FAILED"): \(what)") }
         func until(_ timeout: Double, _ condition: () -> Bool) async -> Bool {
@@ -589,6 +597,51 @@ enum SelfTest {
             return true
         }
         func gens() -> Int { MLXQueue.generations.withLock { $0.now } }
+        func finish() -> Int32 {
+            let pass = checks.allSatisfy(\.1)
+            print("switch checks: \(checks.filter(\.1).count)/\(checks.count) passed (home \(home))")
+            print("Qwen3/Breeze switching: \(pass ? "PASS" : "FAIL") (\(fakeOnly ? "fake engines only: " : "")prompt unload after a natural finish, preview at 1x\(fakeOnly ? "" : ", one generation at a time across engines, prompt unload after leaving Breeze, pause/unload/resume"))")
+            return pass ? 0 : 1
+        }
+        let model = AppModel.shared
+        model.settings.speed = 1
+        model.settings.voiceID = "af_heart"
+
+        // Fake engines (no GPU).
+        let fake = FakeEngine(kind: .neural, realTime: 60), fakeBreeze = FakeEngine(kind: .breeze, realTime: 6, keepsUpTo: BreezeEngine.keepsUpTo)
+        fake.listed = [Voice(id: "af_heart", name: "Fake Heart", accent: "American", gender: "Female", engine: .neural, installed: true)]
+        fakeBreeze.listed = [Voice(id: "breeze.us_warm", name: "Fake Breeze", accent: "American", gender: "Female", engine: .breeze, installed: true)]
+        model.engines = Engines(neural: fake, system: SystemEngine(), breeze: fakeBreeze)
+        await model.loadVoices()
+        model.settings.voiceID = "breeze.us_warm"   // 1x: AppModel loads it ahead of the read
+        let loaded = await until(5) { fakeBreeze.prepares > 0 }
+        try model.speak(String(fixture.prefix(120)), title: nil, caller: "switch-test")
+        if let s = model.session {
+            s.player.volume = 0
+            _ = await until(20) { s.state == .playing }
+            let unloads = model.engines.unloads
+            model.settings.voiceID = "af_heart"   // left while it reads: freed when the read ends
+            let reading = s.state == .playing
+            _ = await until(60) { s.state == .finished }
+            let finished = Date()
+            let freed = await until(1) { model.engines.unloads > unloads }
+            check(String(format: "fake: Breeze loaded on choice %@; left during its read, freed %.0f ms after the read finished naturally", loaded ? "yes" : "no",
+                         Date().timeIntervalSince(finished) * 1000), loaded && reading && freed && s.made.allSatisfy { $0.voice == "breeze.us_warm" })
+        } else { check("fake: the read started", false) }
+        model.settings.speed = 2.5   // the saved speed, above Breeze's limit
+        let calls = fakeBreeze.calls
+        model.preview(fakeBreeze.listed[0])
+        if let p = model.session {
+            p.player.volume = 0
+            let spoke = await until(10) { fakeBreeze.calls > calls }
+            check("fake: a preview at the saved 2.5x speaks the Breeze voice at \(p.player.rate)x (effective \(p.effectiveVoice.id)), saved speed \(model.settings.speed)",
+                  spoke && p.player.rate == 1 && p.effectiveVoice.id == "breeze.us_warm" && fakeBreeze.voiceIDs.last == "breeze.us_warm" && model.settings.speed == 2.5)
+        } else { check("fake: the preview started", false) }
+        model.stopReading()
+        model.settings.speed = 1
+        model.settings.voiceID = "af_heart"
+        if fakeOnly { return finish() }
+
         let kokoro = Voice(id: "af_heart", name: "af_heart", accent: "", gender: "Female", engine: .neural, installed: true)
         var engines = Engines(aligner: aligner)
         let voices = await engines.allVoices()
@@ -617,8 +670,7 @@ enum SelfTest {
         engines.unloadAll()
         _ = await until(30) { !engines.isBusy }
 
-        // (2) Through AppModel with real engines: picking Breeze loads it; leaving it must free it promptly.
-        let model = AppModel.shared
+        // (2) Through AppModel with real engines: picking Breeze (at 1x) loads it; leaving it must free it promptly.
         model.engines = Engines(aligner: aligner)
         engines = model.engines
         await model.loadVoices()
@@ -626,7 +678,7 @@ enum SelfTest {
         let breeze = engines.breeze, line = String(fixture.prefix(300))
         for phase in ["warm-up", "synthesis", "cancellation"] {
             model.settings.voiceID = "breeze.us_warm"   // the app loads it ahead of the read
-            _ = await until(5) { engines.isBusy }
+            let began = await until(5) { engines.isBusy }   // its preparation is on the queue
             var work: Task<SynthChunk, Error>?
             if phase == "warm-up" {
                 try await Task.sleep(nanoseconds: 1_000_000_000)   // inside the load
@@ -647,8 +699,8 @@ enum SelfTest {
             _ = await until(30) { !engines.isBusy }
             _ = try? await work?.value
             let lag = idle.withLock { $0 }.map { unloadedAt.timeIntervalSince($0) } ?? .infinity
-            check(String(format: "leave Breeze during %@: queue busy at the switch %@, unloaded %.2f s after the switch, %.0f ms after the queue went idle",
-                         phase, busy ? "yes" : "no", unloadedAt.timeIntervalSince(switchedAt), lag * 1000), busy && unloaded && lag <= 0.5)
+            check(String(format: "leave Breeze during %@: preparation began %@, queue busy at the switch %@, unloaded %.2f s after the switch, %.0f ms after the queue went idle",
+                         phase, began ? "yes" : "no", busy ? "yes" : "no", unloadedAt.timeIntervalSince(switchedAt), lag * 1000), began && busy && unloaded && lag <= 0.5)
         }
 
         // (3)
@@ -675,10 +727,7 @@ enum SelfTest {
         engines.unloadAll()
         _ = await until(30) { !engines.isBusy }
 
-        let pass = checks.allSatisfy(\.1)
-        print("switch checks: \(checks.filter(\.1).count)/\(checks.count) passed")
-        print("Qwen3/Breeze switching: \(pass ? "PASS" : "FAIL") (one generation at a time across engines, prompt unload after leaving Breeze, pause/unload/resume)")
-        return pass ? 0 : 1
+        return finish()
     }
 
     /// Slow and fast fake engines through real sessions and Players at volume 0 (PLAN 0.3.0 Sol revision 10): the budget
@@ -1199,7 +1248,9 @@ private final class FakeEngine: SpeechEngine, @unchecked Sendable {
     var unloadedSynths: Int { lock.withLock { _unloadedSynths } }
     var isBusy: Bool { lock.withLock { _inFlight > 0 } }
 
-    func voices() async -> [Voice] { [] }
+    /// The voices it lists (none unless a test gives some, as the AppModel checks do).
+    var listed: [Voice] = []
+    func voices() async -> [Voice] { listed }
     func prepare(voice: String) async throws {
         if lock.withLock({ _prepares += 1; return !_loaded }) { try await Task.sleep(nanoseconds: UInt64(coldLoad * 1e9)) }
         lock.withLock { _loaded = true }
