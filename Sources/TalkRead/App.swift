@@ -110,6 +110,7 @@ enum TalkReadMain {
 
     func applicationWillTerminate(_ notification: Notification) {
         model.stopReading()
+        AXWake.restoreAll()   // E8: also a capture superseded before its Highlighter existed
         model.saveSettings()
         controlServer?.stop()
     }
