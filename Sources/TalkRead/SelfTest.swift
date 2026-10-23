@@ -640,7 +640,7 @@ enum SelfTest {
             check("fake: a preview at the saved 2.5x speaks the Breeze voice at \(p.player.rate)x (effective \(p.effectiveVoice.id)), saved speed \(model.settings.speed), shown \(model.activeSpeed)x",
                   spoke && p.player.rate == 1 && p.effectiveVoice.id == "breeze.us_warm" && fakeBreeze.voiceIDs.last == "breeze.us_warm" && model.settings.speed == 2.5
                   && model.activeSpeed == 1)
-            // Sol verification 6: choosing the saved 2.5x during the preview reaches it, though the setting is unchanged.
+            // Sol verification 6: choosing 2.5x during the preview reaches it (a preview's speed is its own; nothing is saved).
             model.setSpeed(2.5)
             check("fake: choosing 2.5x during the 1x preview applies it (rate \(p.player.rate)x, shown \(model.activeSpeed)x)", p.player.rate == 2.5 && model.activeSpeed == 2.5)
         } else { check("fake: the preview started", false) }
@@ -649,7 +649,8 @@ enum SelfTest {
         if let p = model.session {
             p.player.volume = 0
             model.stepSpeed(0.05)   // what ⌥D does
-            check("fake: ⌥D during a 1x preview gives 1.05x (rate \(p.player.rate)x, shown \(model.activeSpeed)x)", abs(p.player.rate - 1.05) < 0.001 && abs(model.activeSpeed - 1.05) < 0.001)
+            check("fake: ⌥D during a 1x preview gives 1.05x and the saved 2.5x stays (rate \(p.player.rate)x, shown \(model.activeSpeed)x, saved \(model.settings.speed)x)",
+                  abs(p.player.rate - 1.05) < 0.001 && abs(model.activeSpeed - 1.05) < 0.001 && model.settings.speed == 2.5)
         } else { check("fake: the second preview started", false) }
         model.stopReading()
         model.settings.speed = 1

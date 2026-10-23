@@ -411,7 +411,10 @@ extension EngineKind {
         let text = v.language == "fr" ? "Bonjour, je suis \(v.name). Voici comment je lis vos textes."
             : "Hello, I'm \(v.name). This is how I sound reading your text."
         try? speak(text, title: nil, caller: "ui-preview", voice: v.id, rate: 1)
+        previewSession = session
     }
+    /// The read `preview` started; any later read replaces `session`, so it is a preview only while it is that one.
+    private weak var previewSession: ReadSession?
 
     func read(_ item: LibraryItem, fromToken: Int?) {
         guard let text = try? documentText(item) else { MiniPlayer.shared.flash("Could not open “\(item.title)”"); return }
@@ -495,7 +498,14 @@ extension EngineKind {
         owner?.caller = "user"
         var next = settings
         next.speed = s
-        settings = next.validated()
+        next = next.validated()
+        // A preview plays at its own speed: a speed chosen during it (⌥D/⌥S, the menus) changes that read only, never
+        // the saved speed.
+        if let live = liveSession, live === previewSession {
+            sessionInfo.rate = next.speed
+            return live.setRate(next.speed)
+        }
+        settings = next
         applySpeedToLiveRead()
     }
 
