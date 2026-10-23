@@ -52,6 +52,12 @@ public struct Settings: Codable, Equatable, Sendable {
     public var useOCRFallback = true
     public var removeFillers = true
     public var polishWithAppleIntelligence = false
+    /// "parakeet" (default) or "apple" (built in, no download).
+    public var dictationEngine = "parakeet"
+    /// Opt in: read the field for 15 s after dictating to learn corrections.
+    public var learnCorrections = false
+    /// Respell American spellings the British dictionary rejects.
+    public var britishSpelling = true
     public var unloadAfterMinutes = 10
     public var launchAtLogin = true
     public var onboardingDone = false
@@ -76,6 +82,7 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.miniPlayerAutoHideSeconds, &miniPlayerAutoHideSeconds); get(.miniPlayerOrigin, &miniPlayerOrigin)
         get(.subtitlesExpanded, &subtitlesExpanded); get(.useOCRFallback, &useOCRFallback)
         get(.removeFillers, &removeFillers); get(.polishWithAppleIntelligence, &polishWithAppleIntelligence)
+        get(.dictationEngine, &dictationEngine); get(.learnCorrections, &learnCorrections); get(.britishSpelling, &britishSpelling)
         get(.unloadAfterMinutes, &unloadAfterMinutes); get(.launchAtLogin, &launchAtLogin)
         get(.onboardingDone, &onboardingDone); get(.historyLimit, &historyLimit)
     }
@@ -96,6 +103,7 @@ public struct Settings: Codable, Equatable, Sendable {
         if fallbackVoiceID.trimmingCharacters(in: .whitespaces).isEmpty { s.fallbackVoiceID = d.fallbackVoiceID }
         if highlightHex.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) == nil { s.highlightHex = "#FFD21F" }
         if !["box", "outline", "underline"].contains(highlightStyle) { s.highlightStyle = "box" }
+        if !["parakeet", "apple"].contains(dictationEngine) { s.dictationEngine = "parakeet" }
         return s
     }
 
@@ -173,6 +181,13 @@ public struct Settings: Codable, Equatable, Sendable {
         case "useOCRFallback": useOCRFallback = try bool()
         case "removeFillers": removeFillers = try bool()
         case "polishWithAppleIntelligence": polishWithAppleIntelligence = try bool()
+        case "dictationEngine":
+            guard ["parakeet", "apple"].contains(raw) else {
+                throw ControlError("invalid_value", "dictationEngine must be one of: parakeet, apple.")
+            }
+            dictationEngine = raw
+        case "learnCorrections": learnCorrections = try bool()
+        case "britishSpelling": britishSpelling = try bool()
         case "unloadAfterMinutes": unloadAfterMinutes = Int(try number())
         case "launchAtLogin": launchAtLogin = try bool()
         case "onboardingDone": onboardingDone = try bool()

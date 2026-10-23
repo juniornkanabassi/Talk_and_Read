@@ -160,6 +160,21 @@ struct SettingsContent: View {
     private var dictation: some View {
         Form {
             Section {
+                Picker("Recogniser", selection: $model.settings.dictationEngine) {
+                    Text("Parakeet (most accurate, 580 MB)").tag("parakeet")
+                    Text("Apple (built in, no download)").tag("apple")
+                }
+                Picker("Spelling", selection: $model.settings.britishSpelling) {
+                    Text("British").tag(true)
+                    Text("American").tag(false)
+                }
+            }
+            Section {
+                Toggle("Learn from my corrections", isOn: $model.settings.learnCorrections)
+            } footer: {
+                Text("Reads the field for 15 seconds after dictating, never password fields, stays on this Mac.").foregroundStyle(.secondary)
+            }
+            Section {
                 Toggle("Remove filler words (um, uh, er)", isOn: $model.settings.removeFillers)
                 Toggle("Polish with Apple Intelligence", isOn: $model.settings.polishWithAppleIntelligence)
             } footer: {
