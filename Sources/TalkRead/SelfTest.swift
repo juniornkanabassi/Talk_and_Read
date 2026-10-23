@@ -122,10 +122,10 @@ enum SelfTest {
             // Revised R3 (PLAN.md): clock within 20 ms at every rate; WER <= 8 % up to 2x; above 2x, lower than Kokoro
             // speaking natively at that rate (the recogniser's own floor on fast speech).
             var clockOK = true
-            for r in Set<Float>([0.5, 1, 1.5, 2, 2.5, 3, rate]).sorted() {   // offline click trains: cheap, so every rate
+            for r in Set<Float>([0.5, 1, 1.5, 2, 2.5, 3, rate]).sorted() {   // offline burst trains: cheap, so every rate
                 let c = try clockError(rate: r)
                 clockOK = clockOK && c.maxAbs <= 0.020 && c.count >= 10
-                print("clock vs rendered clicks at \(r)x: mean \(Int((c.mean * 1000).rounded())) ms, max |err| \(Int((c.maxAbs * 1000).rounded())) ms (\(c.count) clicks)")
+                print("clock vs rendered bursts at \(r)x (heard time): mean \(String(format: "%.1f", c.mean * 1000)) ms, max |err| \(String(format: "%.1f", c.maxAbs * 1000)) ms (\(c.count) bursts)")
             }
             // The production graph, all chunks queued back to back. The output is cut where the clock reaches each
             // chunk's media start (inside the pause between sentences) and each piece is transcribed on its own, so the
@@ -166,33 +166,39 @@ enum SelfTest {
         return pass ? 0 : 1
     }
 
-    /// Renders a click train through the production graph and compares where each click comes out with what the
-    /// clock said at that output sample. Positive mean = clock ahead of the audio.
+    /// Renders a train of 80 ms voiced bursts (200 Hz, five harmonics; the time-domain stretcher drops 5 ms clicks)
+    /// through the production graph and compares where each burst comes out with what the clock said at that output
+    /// sample. Errors are in heard (output) seconds, the 20 ms bar's unit: media-time error divided by the rate.
+    /// Positive mean = clock ahead of the audio.
     @MainActor static func clockError(rate: Float) throws -> (mean: Double, maxAbs: Double, count: Int) {
         let sr = Player.sampleRate
         let times = stride(from: 0.5, through: 5.5, by: 0.5).map { $0 }
-        var clicks = [Float](repeating: 0, count: Int(6 * sr))
+        var bursts = [Float](repeating: 0, count: Int(6 * sr))
+        let n = Int(0.08 * sr), ramp = 48   // 2 ms raised-cosine edges
         for t in times {
-            for j in 0 ..< 120 {   // 5 ms 2 kHz burst, Hann-windowed
-                let w = 0.5 - 0.5 * cos(2 * Double.pi * Double(j) / 119)
-                clicks[Int(t * sr) + j] = Float(0.8 * w * sin(2 * Double.pi * 2000 * Double(j) / sr))
+            for j in 0 ..< n {
+                let w = j < ramp ? 0.5 - 0.5 * cos(Double.pi * Double(j) / Double(ramp))
+                    : j >= n - ramp ? 0.5 - 0.5 * cos(Double.pi * Double(n - j) / Double(ramp)) : 1
+                bursts[Int(t * sr) + j] = Float(0.12 * w * (1 ... 5).reduce(0.0) { $0 + sin(2 * Double.pi * 200 * Double($1) * Double(j) / sr) })
             }
         }
         let player = Player(manualRendering: true)
         player.rate = rate
-        player.enqueue(SynthChunk(samples: clicks, sampleRate: sr, words: []))
+        player.enqueue(SynthChunk(samples: bursts, sampleRate: sr, words: []))
         player.play()
         let (out, readings) = try renderWithClock(player, seconds: 6 / Double(rate) + 0.3)
-        let peak = out.map(abs).max() ?? 0
+        var envelope: Float = 0
+        let env = out.map { x -> Float in envelope = max(abs(x), envelope * 0.995); return envelope }   // peak hold bridges the 200 Hz zero crossings
+        let peak = env.max() ?? 0
         var onsets: [Int] = []
         var i = 0
-        while i < out.count {
-            if abs(out[i]) > 0.2 * peak { onsets.append(i); i += Int(0.25 * sr / Double(rate)) } else { i += 1 }
+        while i < env.count {
+            if env[i] > 0.2 * peak { onsets.append(i); i += Int(0.25 * sr / Double(rate)) } else { i += 1 }
         }
-        guard onsets.count == times.count else { throw SpeechError.render("found \(onsets.count) clicks, expected \(times.count)") }
+        guard onsets.count == times.count else { throw SpeechError.render("found \(onsets.count) bursts, expected \(times.count)") }
         let errors = zip(onsets, times).map { k, media -> Double in
             let r = readings.last { $0.index <= k }!
-            return r.clock + Double(k - r.index) / sr * Double(rate) - media
+            return (r.clock + Double(k - r.index) / sr * Double(rate) - media) / Double(rate)
         }
         return (errors.reduce(0, +) / Double(errors.count), errors.map(abs).max() ?? 0, errors.count)
     }

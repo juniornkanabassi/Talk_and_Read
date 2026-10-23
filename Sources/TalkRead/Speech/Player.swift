@@ -1,5 +1,7 @@
-// AVAudioEngine playback: AVAudioPlayerNode -> AVAudioUnitTimePitch (rate 0.5-3.0) -> main mixer, 24 kHz mono Float32
-// (PLAN decision 3). The media clock the highlight reads is the player node's sample time minus the graph's latency.
+// AVAudioEngine playback: AVAudioPlayerNode -> Apple's time-domain stretcher 'ipto' (rate 0.5-3.0) -> main mixer,
+// 24 kHz mono Float32 (PLAN decision 3). 'ipto' is the engine AVPlayer and QuickTime use for sped-up speech; unlike
+// AVAudioUnitTimePitch (a phase vocoder) it keeps voices natural at 2-3x, passes 1x through unchanged and costs a
+// tenth of the CPU (spike, 23 Oct: WER at 2.5x 9.4 % vs 11.0 %, at 3x 31.9 % vs 35.4 %). The media clock the highlight reads is the player node's sample time minus the graph's latency.
 // `manualRendering` runs the same graph offline (AVAudioEngine manual mode) for the self-test.
 import AVFoundation
 import FluidAudio
@@ -8,17 +10,13 @@ import TalkReadCore
 
 @MainActor final class Player {
     nonisolated static let sampleRate = 24_000.0
-    // ponytail: how far the node's clock runs ahead of the graph's output, in media seconds: about 43 ms of time-pitch
-    // look-ahead plus 57.5 ms of output-side buffering scaled by the rate. Fitted 21 Oct (macOS 27.2, overlap 16) to a
-    // click train rendered through this exact graph at 0.5-3x (measured 77, 96, 128, 158, 189, 216 ms; residuals
-    // <= 5 ms); `SelfTest.clockError` re-measures it. Re-fit if the graph, the overlap or the time-pitch unit changes.
-    nonisolated static func graphLatency(rate: Float) -> Double { 0.043 + 0.0575 * Double(rate) }
-    /// Time-pitch analysis overlap (default 8). 16 measured better at 2.5x: recogniser WER 13.1 % vs 15.9 % on the
-    /// fixture, and half the clock jitter (10 ms peak to peak instead of 29).
-    static let overlap: Float = 16
+    // ponytail: how far the node's clock runs ahead of the graph's output, in media seconds: a fixed look-ahead plus
+    // output-side buffering scaled by the rate. Fitted 23 Oct (macOS 27.2) to voiced bursts rendered through this
+    // exact graph at 0.5-3x; `SelfTest.clockError` re-measures it. Re-fit if the graph or the stretcher unit changes.
+    nonisolated static func graphLatency(rate: Float) -> Double { 0.022 + 0.017 * Double(rate) }
 
     var rate: Float = 1.0 {
-        didSet { rate = min(max(rate, 0.5), 3.0); timePitch.rate = rate }
+        didSet { rate = min(max(rate, 0.5), 3.0); applyRate() }
     }
     private(set) var isPlaying = false
     private(set) var queuedUntil: Double = 0
@@ -40,7 +38,10 @@ import TalkReadCore
     /// Internal so the self-test can post its configuration-change notification.
     let engine = AVAudioEngine()
     private let node = AVAudioPlayerNode()
-    private let timePitch = AVAudioUnitTimePitch()
+    // 'ipto' (kAudioUnitSubType_AUiPodTimeOther); parameter 0 is the rate. It declares 0.5-2.0 but renders correctly to 3.0.
+    private let timePitch = AVAudioUnitTimeEffect(audioComponentDescription: AudioComponentDescription(
+        componentType: kAudioUnitType_FormatConverter, componentSubType: kAudioUnitSubType_AUiPodTimeOther,
+        componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0))
     private let format = AVAudioFormat(standardFormatWithSampleRate: Player.sampleRate, channels: 1)!
     private let manual: Bool
     private var pending = 0
@@ -74,10 +75,11 @@ import TalkReadCore
     private func connect() {
         engine.connect(node, to: timePitch, format: format)
         engine.connect(timePitch, to: engine.mainMixerNode, format: format)
-        timePitch.rate = rate
-        timePitch.overlap = Self.overlap
+        applyRate()
         engine.prepare()
     }
+
+    private func applyRate() { AudioUnitSetParameter(timePitch.audioUnit, 0, kAudioUnitScope_Global, 0, rate, 0) }
 
     /// Media seconds (1x timeline) of what is being heard now; frozen while paused, never past `queuedUntil`.
     var currentTime: Double {
