@@ -72,8 +72,10 @@ final class MLXQueue: @unchecked Sendable {   // `tail`, `queued` and `idleWaite
     /// Collects a dependency stream's audio and returns only once the dependency's generation has ended (Sol inspection
     /// 4 #1). `generateStream` generates in a task of its own, which ending the stream (our cancellation) cancels but
     /// nothing joins; that task inherits `probe` and releases it when it ends, so waiting for the probe's release joins
-    /// it, whatever our cancellation (were the dependency to start it detached, `--cancel` would fail). `stream` must
-    /// create the stream when called, inside the probe's scope. A cancelled or empty result, or non-finite audio, throws.
+    /// it, whatever our cancellation. Only tasks that inherit task-locals are joined: a producer started detached would
+    /// not be, and nothing here would notice (`--fake-slow` case 9 shows both with a producer that outlives the cancel;
+    /// Qwen3's and Breeze's start ordinary tasks today). `stream` must create the stream when called, inside the
+    /// probe's scope. A cancelled or empty result, or non-finite audio, throws.
     static func collect(_ stream: () -> AsyncThrowingStream<AudioGeneration, Error>) async throws -> (samples: [Float], info: AudioGenerationInfo?) {
         let (released, release) = AsyncStream<Void>.makeStream()
         let joined = Task { for await _ in released {} }   // created outside the binding, and not cancelled with us
