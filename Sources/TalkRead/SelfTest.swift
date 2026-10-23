@@ -827,6 +827,46 @@ enum SelfTest {
         (s, slow, _) = await read(excerpt(250), rate: 1.5, slowRTF: 4, engines: limited())
         describe("7 at the limit", s, slow)
         check("7: at its limit the read starts on the engine as before", whole(s) && s.made.first?.voice == slowVoice.id && slow.prepares == 1)
+        // Sol inspection 5 #3: with no Kokoro installed the same-language system voice reads instead, the engine untouched.
+        system = FakeEngine(kind: .system, realTime: 60)
+        (s, slow, _) = await read(excerpt(250), rate: 2.5, slowRTF: 4, engines: Engines(neural: FakeEngine(kind: .neural, realTime: 60), system: system,
+                                  qwen: FakeEngine(kind: .qwen, realTime: 4, keepsUpTo: 1.5)), fallback: nil)
+        describe("7 above the limit, no Kokoro", s, slow)
+        check("7: with no Kokoro the system voice reads from the start, the engine never prepared or asked", whole(s) && slow.prepares == 0
+              && slow.calls == 0 && !system.voiceIDs.isEmpty && s.fallbackReason == "Qwen3 keeps up to 1.5×; the system voice is reading at 2.5×")
+
+        // 8. Sol inspection 5 #4: restarts check the limit too. Started at 1.5x, the rate goes to 2.5x and the read seeks:
+        // the fallback reads from the seek on; dropping to 1x and seeking again keeps it (sticky). The same after a device
+        // change while playing, resumed above the limit.
+        func from(_ s: ReadSession, _ token: Int) -> Bool { s.state == .finished && s.timings.map(\.token) == Array(token ..< s.tokens.count) }
+        var callsAtSwitch = 0
+        (s, slow, _) = await read(excerpt(450), rate: 1.5, slowRTF: 4, engines: limited()) { s, slow in
+            await until(10) { s.state == .playing && slow.calls >= 2 }
+            s.setRate(2.5)
+            s.seek(token: 20)
+            callsAtSwitch = slow.calls
+            await until(5) { s.state == .playing }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            s.setRate(1)
+            s.seek(token: 30)
+        }
+        describe("8 seek above the limit", s, slow)
+        check("8: a seek above the limit switches to the fallback with the reason, and a later seek at 1x keeps it",
+              from(s, 30) && s.made.allSatisfy { $0.voice == fastVoice.id } && slow.calls == callsAtSwitch
+              && s.fallbackReason == "Qwen3 keeps up to 1.5×; Kokoro is reading at 2.5×")
+        var heldAt = 0
+        (s, slow, _) = await read(excerpt(450), rate: 1.5, slowRTF: 4, engines: limited()) { s, slow in
+            await until(10) { s.state == .playing && slow.calls >= 2 }
+            s.setRate(2.5)
+            NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: s.player.engine)
+            await until(2) { s.state == .paused }
+            heldAt = s.currentToken ?? 0
+            callsAtSwitch = slow.calls
+            s.resume()
+        }
+        describe("8 interruption above the limit", s, slow)
+        check("8: resuming after a device change above the limit continues on the fallback with the reason",
+              from(s, heldAt) && s.made.allSatisfy { $0.voice == fastVoice.id } && slow.calls == callsAtSwitch && s.fallbackReason?.hasPrefix("Qwen3 keeps up to 1.5×") == true)
 
         let pass = checks.allSatisfy(\.1)
         print("fake-engine checks: \(checks.filter(\.1).count)/\(checks.count) passed")
