@@ -599,16 +599,42 @@ struct DictationPane: View {
             } footer: {
                 Text("Polish fixes punctuation and grammar on this Mac. It is off unless you turn it on.").foregroundStyle(.secondary)
             }
-            Section {
-                WordMapEditor(url: Paths.vocabulary, keyPrompt: "Heard as", valuePrompt: "Type instead")
-            } header: {
-                Text("Vocabulary")
-            } footer: {
-                Text("Names and terms the recogniser gets wrong, and what to type instead.").foregroundStyle(.secondary)
-            }
+            VocabularySection(dictation: model.dictation)
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+    }
+}
+
+/// The vocabulary editor with the suggestions learnt from corrections (V-G) listed under it.
+private struct VocabularySection: View {
+    @ObservedObject var dictation: DictationController
+
+    var body: some View {
+        Section {
+            // Rebuilt when a suggestion is added, so the editor re-reads vocabulary.json.
+            WordMapEditor(url: Paths.vocabulary, keyPrompt: "Heard as", valuePrompt: "Type instead")
+                .id(dictation.suggestions.count)
+        } header: {
+            Text("Vocabulary")
+        } footer: {
+            Text("Names and terms the recogniser gets wrong, and what to type instead. Type the same word in both columns to teach its spelling.")
+                .foregroundStyle(.secondary)
+        }
+        if !dictation.suggestions.isEmpty {
+            Section("Suggestions from your corrections") {
+                ForEach(dictation.suggestions, id: \.self) { c in
+                    HStack(spacing: 10) {
+                        Text(c.heard)
+                        Image(systemName: "arrow.right").foregroundStyle(.tertiary).accessibilityHidden(true)
+                        Text(c.typed)
+                        Spacer()
+                        Button("Add") { dictation.acceptSuggestion(c) }
+                        Button("Dismiss") { dictation.dismissSuggestion(c) }
+                    }
+                }
+            }
+        }
     }
 }
 

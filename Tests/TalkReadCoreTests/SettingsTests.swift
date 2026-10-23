@@ -27,6 +27,27 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(s, s.validated(), "defaults are already valid")
     }
 
+    func testDictationSettings() throws {
+        let d = Settings()
+        XCTAssertEqual(d.dictationEngine, "parakeet")
+        XCTAssertFalse(d.learnCorrections)
+        XCTAssertTrue(d.britishSpelling)
+        // An old file without the keys gets the defaults; an unknown engine is clamped.
+        try Data(#"{"voiceID":"bf_emma"}"#.utf8).write(to: file)
+        let old = Settings.load(from: file)
+        XCTAssertEqual(old.dictationEngine, "parakeet"); XCTAssertFalse(old.learnCorrections); XCTAssertTrue(old.britishSpelling)
+        try Data(#"{"dictationEngine":"whisper","learnCorrections":true,"britishSpelling":false}"#.utf8).write(to: file)
+        let s = Settings.load(from: file)
+        XCTAssertEqual(s.dictationEngine, "parakeet"); XCTAssertTrue(s.learnCorrections); XCTAssertFalse(s.britishSpelling)
+        // settings-set
+        var t = Settings()
+        try t.set("dictationEngine", to: "apple"); XCTAssertEqual(t.dictationEngine, "apple")
+        try t.set("learnCorrections", to: "on"); XCTAssertTrue(t.learnCorrections)
+        try t.set("britishSpelling", to: "no"); XCTAssertFalse(t.britishSpelling)
+        XCTAssertThrowsError(try t.set("dictationEngine", to: "whisper"))
+        XCTAssertEqual(t.dictationEngine, "apple", "a rejected engine changes nothing")
+    }
+
     func testSaveAndLoadRoundTrip() throws {
         var s = Settings()
         s.voiceID = "bf_emma"; s.speed = 1.75; s.dictationHoldKey = .fn; s.miniPlayerOrigin = CGPoint(x: 120, y: 340)
@@ -139,7 +160,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃A"))
         XCTAssertEqual(json["skipForwardShortcut"]?.objectValue, ["keyCode": .number(14), "modifiers": .number(524_288), "display": .string("⌥E")])
         XCTAssertNil(json["miniPlayerOrigin"])
-        XCTAssertEqual(Settings.keys.count, 28)
+        XCTAssertEqual(Settings.keys.count, 32)   // + dictationEngine, learnCorrections, britishSpelling (V-G)
         XCTAssertEqual(Set(Settings.chords.map(\.key)).count, 9)
         XCTAssertTrue(Settings.chords.allSatisfy { Settings.keys.contains($0.key) }, "every chord is a settings key")
         XCTAssertTrue(Settings.keys.contains("miniPlayerOrigin"))

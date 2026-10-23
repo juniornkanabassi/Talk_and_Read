@@ -41,6 +41,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var fallbackVoiceID = "af_heart"
     public var speed: Float = 2.5                  // 0.5...3.0, step 0.05; Junior's Speechify speed
     public var highlightHex = "#FFD21F"
+    /// "box" (default), "outline" or "underline" (H1).
+    public var highlightStyle = "box"
     public var tintEnabled = true
     public var opacity = 0.85
     public var showMiniPlayer = true
@@ -50,6 +52,12 @@ public struct Settings: Codable, Equatable, Sendable {
     public var useOCRFallback = true
     public var removeFillers = true
     public var polishWithAppleIntelligence = false
+    /// "parakeet" (default) or "apple" (built in, no download).
+    public var dictationEngine = "parakeet"
+    /// Opt in: read the field for 15 s after dictating to learn corrections.
+    public var learnCorrections = false
+    /// Respell American spellings the British dictionary rejects.
+    public var britishSpelling = true
     public var unloadAfterMinutes = 10
     public var launchAtLogin = true
     public var onboardingDone = false
@@ -69,11 +77,12 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.pasteLastShortcut, &pasteLastShortcut); get(.dictationHoldKey, &dictationHoldKey)
         get(.increaseSpeedShortcut, &increaseSpeedShortcut); get(.decreaseSpeedShortcut, &decreaseSpeedShortcut)
         get(.skipBackwardShortcut, &skipBackwardShortcut); get(.skipForwardShortcut, &skipForwardShortcut)
-        get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.highlightHex, &highlightHex)
+        get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.highlightHex, &highlightHex); get(.highlightStyle, &highlightStyle)
         get(.tintEnabled, &tintEnabled); get(.opacity, &opacity); get(.showMiniPlayer, &showMiniPlayer)
         get(.miniPlayerAutoHideSeconds, &miniPlayerAutoHideSeconds); get(.miniPlayerOrigin, &miniPlayerOrigin)
         get(.subtitlesExpanded, &subtitlesExpanded); get(.useOCRFallback, &useOCRFallback)
         get(.removeFillers, &removeFillers); get(.polishWithAppleIntelligence, &polishWithAppleIntelligence)
+        get(.dictationEngine, &dictationEngine); get(.learnCorrections, &learnCorrections); get(.britishSpelling, &britishSpelling)
         get(.unloadAfterMinutes, &unloadAfterMinutes); get(.launchAtLogin, &launchAtLogin)
         get(.onboardingDone, &onboardingDone); get(.historyLimit, &historyLimit)
     }
@@ -93,6 +102,8 @@ public struct Settings: Codable, Equatable, Sendable {
         if frenchVoiceID.trimmingCharacters(in: .whitespaces).isEmpty { s.frenchVoiceID = d.frenchVoiceID }
         if fallbackVoiceID.trimmingCharacters(in: .whitespaces).isEmpty { s.fallbackVoiceID = d.fallbackVoiceID }
         if highlightHex.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) == nil { s.highlightHex = "#FFD21F" }
+        if !["box", "outline", "underline"].contains(highlightStyle) { s.highlightStyle = "box" }
+        if !["parakeet", "apple"].contains(dictationEngine) { s.dictationEngine = "parakeet" }
         return s
     }
 
@@ -157,6 +168,11 @@ public struct Settings: Codable, Equatable, Sendable {
                 throw ControlError("invalid_value", "highlightHex must look like #FFD21F.")
             }
             highlightHex = raw.uppercased()
+        case "highlightStyle":
+            guard ["box", "outline", "underline"].contains(raw) else {
+                throw ControlError("invalid_value", "highlightStyle must be one of: box, outline, underline.")
+            }
+            highlightStyle = raw
         case "tintEnabled": tintEnabled = try bool()
         case "opacity": opacity = try number()
         case "showMiniPlayer": showMiniPlayer = try bool()
@@ -165,6 +181,13 @@ public struct Settings: Codable, Equatable, Sendable {
         case "useOCRFallback": useOCRFallback = try bool()
         case "removeFillers": removeFillers = try bool()
         case "polishWithAppleIntelligence": polishWithAppleIntelligence = try bool()
+        case "dictationEngine":
+            guard ["parakeet", "apple"].contains(raw) else {
+                throw ControlError("invalid_value", "dictationEngine must be one of: parakeet, apple.")
+            }
+            dictationEngine = raw
+        case "learnCorrections": learnCorrections = try bool()
+        case "britishSpelling": britishSpelling = try bool()
         case "unloadAfterMinutes": unloadAfterMinutes = Int(try number())
         case "launchAtLogin": launchAtLogin = try bool()
         case "onboardingDone": onboardingDone = try bool()

@@ -1,5 +1,6 @@
 // Types text into the focused field by pasting (PLAN decision 7): refuse secure fields, add a leading space when the
-// caret follows a word, paste with a tagged ⌘V, and let PasteboardGate restore the user's clipboard afterwards.
+// caret follows a word, keep text for a terminal on one line, paste with a tagged ⌘V, and let PasteboardGate restore
+// the user's clipboard afterwards.
 import AppKit
 import ApplicationServices
 import Carbon
@@ -22,7 +23,8 @@ enum Inserter {
             if IsSecureEventInputEnabled() { return .refusedSecure }
             let field = focusedField(pid: targetPID)
             if field.secure { return .refusedSecure }
-            let typed = needsLeadingSpace(after: field.previous, text: text) ? " " + text : text
+            let body = field.terminal ? oneLine(text) : text
+            let typed = needsLeadingSpace(after: field.previous, text: body) ? " " + body : body
             guard !Task.isCancelled, isCurrent() else { return .failed("Cancelled") }
             // Refused while quitting: the pasteboard still holds the user's own clipboard, so no ⌘V may go out.
             guard gate.write(typed) != nil else { return .failed("Talk and Read is quitting") }
@@ -33,19 +35,54 @@ enum Inserter {
         }
     }
 
-    /// Whether the focused field is secure, and the UTF-16 unit before its caret (nil = unknown or at the start).
-    @MainActor static func focusedField(pid: pid_t?) -> (secure: Bool, previous: unichar?) {
-        if pid == getpid() { return ownFocusedField() }
+    /// Whether the focused field is secure, whether it is a terminal, and the UTF-16 unit before its caret (nil =
+    /// unknown or at the start).
+    @MainActor static func focusedField(pid: pid_t?) -> (secure: Bool, previous: unichar?, terminal: Bool) {
+        if pid == getpid() { let own = ownFocusedField(); return (own.secure, own.previous, false) }
         let root = pid.map { AXUIElementCreateApplication($0) } ?? AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(root, 0.25)
-        guard let element: AXUIElement = attribute(root, kAXFocusedUIElementAttribute) else { return (false, nil) }
+        guard let element: AXUIElement = attribute(root, kAXFocusedUIElementAttribute) else { return (false, nil, false) }
         let secure = [kAXRoleAttribute, kAXSubroleAttribute].contains { (attribute(element, $0) as String?) == kAXSecureTextFieldSubrole }
-        guard !secure, let value: String = attribute(element, kAXValueAttribute),
-              let rangeValue: AXValue = attribute(element, kAXSelectedTextRangeAttribute) else { return (secure, nil) }
+        let terminal = isTerminal(element)
+        guard !secure, let rangeValue: AXValue = attribute(element, kAXSelectedTextRangeAttribute) else { return (secure, nil, terminal) }
         var range = CFRange()
-        guard AXValueGetValue(rangeValue, .cfRange, &range) else { return (false, nil) }
+        guard AXValueGetValue(rangeValue, .cfRange, &range), range.location > 0 else { return (false, nil, terminal) }
+        // One character before the caret, not the whole text: a long document's value can take most of the timeout.
+        var before = CFRange(location: range.location - 1, length: 1)
+        if let query = AXValueCreate(.cfRange, &before), let character: String = parameterized(element, kAXStringForRangeParameterizedAttribute, query),
+           let unit = character.utf16.first {
+            return (false, unit, terminal)
+        }
+        guard let value: String = attribute(element, kAXValueAttribute) else { return (false, nil, terminal) }
         let string = value as NSString
-        return (false, range.location > 0 && range.location <= string.length ? string.character(at: range.location - 1) : nil)
+        return (false, range.location <= string.length ? string.character(at: range.location - 1) : nil, terminal)
+    }
+
+    /// Terminal apps, and the terminal panel of an editor such as VS Code (its input is described as "Terminal …").
+    static let terminalApps: Set<String> = ["com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "dev.warp.Warp-Stable",
+                                            "net.kovidgoyal.kitty", "org.alacritty", "com.github.wez.wezterm", "co.zeit.hyper"]
+
+    @MainActor private static func isTerminal(_ element: AXUIElement) -> Bool {
+        var pid: pid_t = 0
+        if AXUIElementGetPid(element, &pid) == .success,
+           let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier, terminalApps.contains(id) { return true }
+        return [kAXDescriptionAttribute, kAXTitleAttribute].contains { ((attribute(element, $0) as String?) ?? "").hasPrefix("Terminal") }
+    }
+
+    /// A terminal runs every pasted line as a command when its shell has no bracketed paste (macOS's bash 3.2, ssh, REPLs):
+    /// line breaks become spaces, so a dictation never presses Return.
+    static func oneLine(_ text: String) -> String {
+        text.replacingOccurrences(of: "[ \\t]*\\n+[ \\t]*", with: " ", options: .regularExpression)
+    }
+
+    /// Why typing was refused: a terminal's Secure Keyboard Entry (a setting the user can turn off) or a password field.
+    @MainActor static func refusal() -> String {
+        if IsSecureEventInputEnabled(), let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+           let pid = session["kCGSSessionSecureInputPID"] as? Int, let app = NSRunningApplication(processIdentifier: pid_t(pid)),
+           terminalApps.contains(app.bundleIdentifier ?? "") {
+            return "Not typed: Secure Keyboard Entry is on in \(app.localizedName ?? "the terminal")"
+        }
+        return "Not typed: password field"
     }
 
     /// Our own windows (the reader, onboarding, the self-test): AppKit knows the focus even when the window is not
@@ -106,6 +143,12 @@ enum Inserter {
     private static func attribute<T>(_ element: AXUIElement, _ name: String) -> T? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+        return value as? T
+    }
+
+    private static func parameterized<T>(_ element: AXUIElement, _ name: String, _ parameter: CFTypeRef) -> T? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(element, name as CFString, parameter, &value) == .success else { return nil }
         return value as? T
     }
 }
