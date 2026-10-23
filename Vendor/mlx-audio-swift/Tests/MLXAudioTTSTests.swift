@@ -2123,6 +2123,19 @@ struct BreezeTTSTests {
         }
     }
 
+    @Test func depthRopeUsesLlama3ScalingLikePython() {
+        // Breeze TTS 2's depth_decoder_config.rope_scaling; expected periods from Python mlx-lm's Llama3RoPE.
+        let freqs = breezeLlama3RopeFrequencies(dimensions: 128, base: 500_000, scaling: [
+            "rope_type": .string("llama3"), "factor": .int(32), "low_freq_factor": .float(0.001953125),
+            "high_freq_factor": .float(0.0078125), "original_max_position_embeddings": .int(16),
+        ])!
+        let expected: [(Int, Float)] = [(0, 1), (20, 60.3849), (30, 774.8647), (35, 41857.59), (63, 13_033_876)]
+        for (index, period) in expected {
+            #expect(abs(freqs[index].item(Float.self) / period - 1) < 1e-4)
+        }
+        #expect(breezeLlama3RopeFrequencies(dimensions: 128, base: 500_000, scaling: nil) == nil)
+    }
+
     @Test func promptUsesVoiceAsInstruction() {
         #expect(BreezeTTSModel.promptText(text: "Hello", instruction: nil) == "[S0]Hello")
         #expect(
