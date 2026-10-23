@@ -32,40 +32,66 @@ import WebKit
         let s = Settings()
         var fn = Settings()
         fn.dictationHoldKey = .fn
+        var cmd = Settings()
+        cmd.dictationHoldKey = .rightCommand
         var off = Settings()
-        off.readShortcut = Settings.Shortcut(keyCode: 0, modifiers: 0, display: "")   // turned off in Settings
+        off.readShortcut = .off   // turned off in Settings
         let ropt: UInt64 = Hotkeys.option | Hotkeys.rightOptionDeviceBit
+        let rcmd: UInt64 = Hotkeys.command | Hotkeys.rightCommandDeviceBit
+        let ctrl = Hotkeys.control, opt = Hotkeys.option, command = Hotkeys.command
         let cases: [(String, KeyEvent?, KeyEvent?)] = [
             ("right option down", Hotkeys.keyEvent(.flagsChanged, keyCode: 61, flags: ropt, settings: s), .holdKeyDown),
             ("right option up", Hotkeys.keyEvent(.flagsChanged, keyCode: 61, flags: 0, settings: s), .holdKeyUp),
-            ("right option with cmd held", Hotkeys.keyEvent(.flagsChanged, keyCode: 61, flags: ropt | Hotkeys.command, settings: s),
-             .otherKeyDown(keyCode: 61, modifiers: ropt | Hotkeys.command)),
-            ("left option is not the hold key", Hotkeys.keyEvent(.flagsChanged, keyCode: 58, flags: Hotkeys.option | 0x20, settings: s),
-             .otherKeyDown(keyCode: 58, modifiers: Hotkeys.option | 0x20)),
+            ("right option with cmd held", Hotkeys.keyEvent(.flagsChanged, keyCode: 61, flags: ropt | command, settings: s),
+             .otherKeyDown(keyCode: 61, modifiers: ropt | command)),
+            ("left option is not the hold key", Hotkeys.keyEvent(.flagsChanged, keyCode: 58, flags: opt | 0x20, settings: s),
+             .otherKeyDown(keyCode: 58, modifiers: opt | 0x20)),
             ("shift released", Hotkeys.keyEvent(.flagsChanged, keyCode: 56, flags: 0, settings: s), nil),
-            ("ctrl+opt+R", Hotkeys.keyEvent(.keyDown, keyCode: 15, flags: Hotkeys.control | Hotkeys.option, settings: s), .chord(.read)),
-            ("ctrl+opt+D", Hotkeys.keyEvent(.keyDown, keyCode: 2, flags: Hotkeys.control | Hotkeys.option | 0x100, settings: s),
-             .chord(.toggleRecording)),
-            ("ctrl+opt+V", Hotkeys.keyEvent(.keyDown, keyCode: 9, flags: Hotkeys.control | Hotkeys.option, settings: s), .chord(.pasteLast)),
-            ("opt+V is just a key", Hotkeys.keyEvent(.keyDown, keyCode: 9, flags: Hotkeys.option, settings: s),
-             .otherKeyDown(keyCode: 9, modifiers: Hotkeys.option)),
+            // S1 defaults (Junior's Speechify set).
+            ("ctrl+A", Hotkeys.keyEvent(.keyDown, keyCode: 0, flags: ctrl, settings: s), .chord(.read)),
+            ("ctrl+opt+Q", Hotkeys.keyEvent(.keyDown, keyCode: 12, flags: ctrl | opt, settings: s), .chord(.pause)),
+            ("ctrl+opt+cmd+X", Hotkeys.keyEvent(.keyDown, keyCode: 7, flags: ctrl | opt | command, settings: s), .chord(.screenshot)),
+            ("ctrl+` (device bits ignored)", Hotkeys.keyEvent(.keyDown, keyCode: 50, flags: ctrl | 0x100, settings: s), .chord(.toggleRecording)),
+            ("ctrl+cmd+V", Hotkeys.keyEvent(.keyDown, keyCode: 9, flags: ctrl | command, settings: s), .chord(.pasteLast)),
+            ("opt+D", Hotkeys.keyEvent(.keyDown, keyCode: 2, flags: opt, settings: s), .chord(.increaseSpeed)),
+            ("opt+S", Hotkeys.keyEvent(.keyDown, keyCode: 1, flags: opt, settings: s), .chord(.decreaseSpeed)),
+            ("opt+W", Hotkeys.keyEvent(.keyDown, keyCode: 13, flags: opt, settings: s), .chord(.skipBackward)),
+            ("opt+E", Hotkeys.keyEvent(.keyDown, keyCode: 14, flags: opt, settings: s), .chord(.skipForward)),
+            ("ctrl+shift+A is not ctrl+A", Hotkeys.keyEvent(.keyDown, keyCode: 0, flags: ctrl | Hotkeys.shift, settings: s),
+             .otherKeyDown(keyCode: 0, modifiers: ctrl | Hotkeys.shift)),
+            ("old ctrl+opt+R is just a key", Hotkeys.keyEvent(.keyDown, keyCode: 15, flags: ctrl | opt, settings: s),
+             .otherKeyDown(keyCode: 15, modifiers: ctrl | opt)),
+            ("opt+V is just a key", Hotkeys.keyEvent(.keyDown, keyCode: 9, flags: opt, settings: s),
+             .otherKeyDown(keyCode: 9, modifiers: opt)),
             ("fn down (fn setting)", Hotkeys.keyEvent(.flagsChanged, keyCode: 63, flags: Hotkeys.secondaryFn, settings: fn), .holdKeyDown),
             ("right option ignored (fn setting)", Hotkeys.keyEvent(.flagsChanged, keyCode: 61, flags: ropt, settings: fn),
              .otherKeyDown(keyCode: 61, modifiers: ropt)),
+            ("right command down (right command setting)", Hotkeys.keyEvent(.flagsChanged, keyCode: 54, flags: rcmd, settings: cmd), .holdKeyDown),
+            ("right command up (right command setting)", Hotkeys.keyEvent(.flagsChanged, keyCode: 54, flags: 0, settings: cmd), .holdKeyUp),
+            ("left command is not the hold key", Hotkeys.keyEvent(.flagsChanged, keyCode: 55, flags: command | Hotkeys.leftCommandDeviceBit, settings: cmd),
+             .otherKeyDown(keyCode: 55, modifiers: command | Hotkeys.leftCommandDeviceBit)),
+            ("right command with ctrl held", Hotkeys.keyEvent(.flagsChanged, keyCode: 54, flags: rcmd | ctrl, settings: cmd),
+             .otherKeyDown(keyCode: 54, modifiers: rcmd | ctrl)),
             ("a turned-off shortcut never matches plain A", Hotkeys.keyEvent(.keyDown, keyCode: 0, flags: 0, settings: off),
              .otherKeyDown(keyCode: 0, modifiers: 0)),
+            ("a turned-off ctrl+A is just a key", Hotkeys.keyEvent(.keyDown, keyCode: 0, flags: ctrl, settings: off),
+             .otherKeyDown(keyCode: 0, modifiers: ctrl)),
         ]
         var ok = true
         for (name, got, want) in cases where got != want {
             print("hotkeys: FAIL \(name): got \(String(describing: got)), want \(String(describing: want))")
             ok = false
         }
-        // The tap itself: listen-only, nothing is injected; it is only created and removed.
+        // The tap itself: created as an active (event-swallowing) tap, then removed. Paused while it exists, so it
+        // passes every key through and nothing of Junior's typing is swallowed; nothing is injected.
         let hotkeys = Hotkeys(settings: s)
+        hotkeys.paused = true
         let running = hotkeys.start()
+        let active = Hotkeys.ownTapIsActive()
         hotkeys.stop()
-        print("hotkeys: \(cases.count) mappings \(ok ? "ok" : "FAILED"); event tap \(running ? "created" : "NOT created (Accessibility?)")")
-        return ok && running
+        print("hotkeys: \(cases.count) mappings \(ok ? "ok" : "FAILED"); event tap \(running ? "created" : "NOT created (Accessibility?)"), "
+              + (active ? "active (swallows matched shortcuts)" : "NOT an active tap"))
+        return ok && running && active
     }
 
     // MARK: Ownership (PLAN decision 19) with a fake recorder and recogniser

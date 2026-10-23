@@ -3,6 +3,10 @@ import Foundation
 
 public enum HotkeyAction: Equatable, Sendable {
     case startRecording, stopAndInsert, cancelRecording, toggleRecording, pasteLast, read, pause, screenshot
+    case increaseSpeed, decreaseSpeed, skipBackward, skipForward
+
+    /// Only means something during a read, so its key is taken only while one is playing or paused (S3).
+    public var actsOnRead: Bool { [.increaseSpeed, .decreaseSpeed, .skipBackward, .skipForward].contains(self) }
 }
 
 public enum KeyEvent: Equatable, Sendable {
@@ -63,6 +67,52 @@ public struct HotkeyState: Equatable, Sendable {
         case .pending: hold = .chorded; return []
         case .recording: hold = .chorded; return [.cancelRecording]
         case .up, .chorded: return []
+        }
+    }
+}
+
+/// Which key events the hotkey tap swallows, so the app underneath never sees them (S3): a key-down that matches a
+/// shortcut, with its auto-repeats and its key-up. The speed and skip keys only while a read is playing or paused (they
+/// type ∂ ß ∑ ´ otherwise), Esc only while dictation records. Modifier changes always pass (the hold key works as
+/// before), and so does everything while the shortcut recorder listens. Pure: the tap thread owns one and asks it about
+/// every key event, with a snapshot of the shortcuts and of what is running.
+public struct KeyConsumer: Sendable {
+    public struct Context: Equatable, Sendable {
+        public var settings: Settings
+        /// A read is playing or paused.
+        public var reading: Bool
+        /// Dictation is recording.
+        public var recording: Bool
+        /// The shortcut recorder is listening: everything passes.
+        public var paused: Bool
+        public init(settings: Settings = Settings(), reading: Bool = false, recording: Bool = false, paused: Bool = false) {
+            self.settings = settings; self.reading = reading; self.recording = recording; self.paused = paused
+        }
+    }
+    public enum Event: Sendable { case down, autoRepeat, up, flagsChanged }
+
+    /// Key codes whose key-down was swallowed; their repeats and key-up go the same way.
+    private(set) var swallowing: Set<UInt16> = []
+
+    public init() {}
+
+    /// True = swallow. `ours`: an event Talk and Read posted itself (the insertion ⌘V), which always passes.
+    public mutating func swallow(_ event: Event, keyCode: UInt16, modifiers: UInt64, ours: Bool, in c: Context) -> Bool {
+        guard !ours else { return false }
+        switch event {
+        case .flagsChanged: return false
+        case .autoRepeat: return swallowing.contains(keyCode)
+        case .up: return swallowing.remove(keyCode) != nil
+        case .down:
+            swallowing.remove(keyCode)                 // a fresh press decides afresh (heals a key-up the tap missed)
+            guard !c.paused else { return false }
+            let take = if let action = c.settings.action(keyCode: keyCode, modifiers: modifiers) {
+                !action.actsOnRead || c.reading
+            } else {
+                keyCode == HotkeyState.escapeKeyCode && c.recording
+            }
+            if take { swallowing.insert(keyCode) }
+            return take
         }
     }
 }

@@ -35,12 +35,12 @@ import TalkReadCore
         add("Replay last", enabled: !model.recentReads.isEmpty) { [model] in
             if let text = model.recentReads.first?.text { try? model.speak(text, title: nil, caller: "user") }
         }
-        add("Screenshot to listen", s.screenshotShortcut) { [model] in model.readScreenshot() }
+        add("Screenshot and listen", s.screenshotShortcut) { [model] in model.readScreenshot() }
         menu.addItem(.separator())
 
         let speed = Double(s.speed)
         let speeds = NSMenu()
-        for p in Theme.speedPresets { add(Theme.speed(p), on: abs(p - speed) < 0.001, to: speeds) { [model] in model.setSpeed(Float(p)) } }
+        for p in Theme.quickSpeeds { add(Theme.speed(p), on: abs(p - speed) < 0.001, to: speeds) { [model] in model.setSpeed(Float(p)) } }
         submenu("Speed  \(Theme.speed(speed))", speeds)
 
         if !s.voiceID.isEmpty { recentVoices.removeAll { $0 == s.voiceID }; recentVoices.insert(s.voiceID, at: 0) }
@@ -62,7 +62,7 @@ import TalkReadCore
         add(dictating ? "Stop dictation" : "Dictate", s.dictationToggleShortcut) { [model] in
             if dictating { try? model.dictation.stop(insert: true, caller: "user") } else { try? model.dictation.start(caller: "user") }
         }
-        add("Paste last dictation", s.pasteLastShortcut, enabled: !model.dictation.history.isEmpty) { [model] in model.dictation.pasteLast() }
+        add("Paste last transcript", s.pasteLastShortcut, enabled: !model.dictation.history.isEmpty) { [model] in model.dictation.pasteLast() }
         menu.addItem(.separator())
 
         add("Open Talk and Read…", action: openMain)
