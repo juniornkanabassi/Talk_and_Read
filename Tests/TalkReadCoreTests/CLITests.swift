@@ -99,6 +99,22 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(try cli(["dictation-last"]).out, "Hello, world.\n")
     }
 
+    func testHistoryArgumentsAndListing() throws {
+        let seen = Recorder()
+        let entries: JSONValue = [["kind": "read", "date": "2026-10-24T14:32:00Z", "app": "Safari", "bundleID": "com.apple.Safari", "text": "First line\nsecond line"],
+                                  ["kind": "dictated", "date": "2026-10-24T09:00:00Z", "app": .null, "bundleID": .null, "text": "Hello"]]
+        let server = try startServer(seen, response: ControlResponse(ok: true, data: ["entries": entries, "count": 2, "matching": 2]))
+        defer { server.stop() }
+        XCTAssertEqual(try cli(["history", "--kind", "read", "--limit", "5", "--search", "ferry"]).out,
+                       "2026-10-24T14:32:00Z  read  Safari  First line second line\n2026-10-24T09:00:00Z  dictated  Hello\n")
+        XCTAssertEqual(seen.requests.first?.args, ["kind": "read", "limit": "5", "search": "ferry"])
+        XCTAssertFalse(seen.requests.first?.force ?? true)
+        XCTAssertEqual(try cli(["history", "--kind", "everything"]).code, 2)
+        XCTAssertEqual(try cli(["history", "--limit", "x"]).code, 2)
+        XCTAssertEqual(try cli(["history", "--force"]).code, 2)
+        XCTAssertFalse(ControlServer.mutatingCommands.contains("history"))
+    }
+
     func testVoicesListing() throws {
         let voices: JSONValue = [["id": "af_heart", "name": "Heart", "accent": "American", "installed": true],
                                  ["id": "bf_emma", "name": "Emma", "accent": "British", "installed": false]]
@@ -151,7 +167,7 @@ final class CLITests: XCTestCase {
         let top = try cli(["--help"])
         XCTAssertEqual(top.code, 0)
         for name in ["status", "voices", "speak", "read-selection", "read-file", "pause", "resume", "stop", "skip", "speed", "voice", "mic", "dictate-start",
-                     "dictate-stop", "dictation-last", "dictate-file", "open", "settings-get", "settings-set", "models", "update-check"] {
+                     "dictate-stop", "dictation-last", "history", "dictate-file", "open", "settings-get", "settings-set", "models", "update-check"] {
             XCTAssertTrue(top.out.contains("  \(name) "), name)
             let one = try cli([name, "--help"])
             XCTAssertEqual(one.code, 0, name)
@@ -162,8 +178,10 @@ final class CLITests: XCTestCase {
     func testManifestListsOneToolPerCommand() throws {
         let manifest = try cli(["mcp-manifest"])
         let tools = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(manifest.out.utf8)) as? [[String: Any]])
-        XCTAssertEqual(tools.count, 21)
-        XCTAssertEqual(Set(tools.compactMap { $0["name"] as? String }).count, 21)
+        XCTAssertEqual(tools.count, 22)
+        XCTAssertEqual(Set(tools.compactMap { $0["name"] as? String }).count, 22)
+        let history = try XCTUnwrap(tools.first { $0["name"] as? String == "history" }?["inputSchema"] as? [String: Any])
+        XCTAssertEqual(Set((history["properties"] as? [String: Any])?.keys.map { $0 } ?? []), ["kind", "limit", "search"])   // read-only: no force
         let speak = try XCTUnwrap(tools.first { $0["name"] as? String == "speak" })
         let schema = try XCTUnwrap(speak["inputSchema"] as? [String: Any])
         XCTAssertEqual(schema["required"] as? [String], ["text"])
