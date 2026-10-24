@@ -166,8 +166,9 @@ import WebKit
             ("custom view with a caret", t("AXLayoutArea", nil, true, true, false), true),
             ("terminal without a text role", t("AXGroup", nil, false, false, true), true),
             ("pop-up combo box", t("AXComboBox", nil, false, false, false), false),
-            ("web page, no field focused", t("AXWebArea", nil, false, false, false), false),
-            ("web page with a selection, read only", t("AXWebArea", nil, false, true, false), false),
+            // An editable web document or iframe reports no caret range and no settable value (Sol verification 15 #1).
+            ("web area, editable or not", t("AXWebArea", nil, false, false, false), nil),
+            ("web area with a selection", t("AXWebArea", nil, false, true, false), nil),
             ("file list", t("AXList", nil, false, false, false), false),
             ("outline", t("AXOutline", nil, false, false, false), false),
             ("button", t("AXButton", nil, false, false, false), false),
@@ -236,7 +237,7 @@ import WebKit
         expect("no field: history kept", !said.isEmpty && c.history.first?.text == said)
         expect("no field: Copy offered", c.copyable == said)
         expect("no field: clipboard untouched until Copy", untouched(kept))
-        c.copyResult()
+        await c.copyResult()?.value
         expect("Copy puts the dictation on the clipboard", pb.string(forType: .string) == said && c.copied)
         await settle(500)
         expect("a failure outlasts a result's 0.4 s", c.state == .failed(Inserter.noField))
@@ -268,6 +269,18 @@ import WebKit
 
         answer = .failed(Inserter.noField)
         await dictate()
+        // Copy pressed while a capture waits for an app's copy: it queues behind it, is not taken for that copy and
+        // restored away, and stays (Sol verification 15 #2).
+        let gate = Inserter.gate
+        _ = sentinel()
+        let capture = Task { await gate.transaction { if let from = gate.prepareToChange() { _ = await gate.waitForChange(from: from, timeout: 0.3) } } }
+        await settle(50)
+        let copying = c.copyResult()
+        await settle(50)
+        expect("not \"Copied\" while it waits behind the capture", !c.copied)
+        await capture.value
+        await copying?.value
+        expect("Copy during a capture survives its restore", pb.string(forType: .string) == c.copyable && c.copyable != nil)
         try? c.start(caller: DictationController.user)
         expect("a new dictation drops the old Copy", c.copyable == nil)
         try? c.cancel(caller: DictationController.user)
@@ -277,10 +290,27 @@ import WebKit
         await dictate()
         expect("password field: nothing kept, nothing to copy", c.history.count == entries && c.copyable == nil)
         let count = pb.changeCount
-        c.copyResult()
+        await c.copyResult()?.value
         expect("password field: Copy does nothing", pb.changeCount == count)
-        print("result: no field typed nothing, kept in history, clipboard untouched until Copy; paste last; 5 s / 8 s and hover; ✕; "
-              + "password field \(failures.isEmpty ? "ok" : "FAIL \(failures)")")
+
+        // A file transcription started while a result shows: the result waits for it, then goes (Sol verification 15 #3).
+        let f = DictationController(audio: FakeAudio(), asr: FakeASR(), insert: { _, _, _, _ in .failed(Inserter.noField) },
+                                    decode: { _ in Thread.sleep(forTimeInterval: 0.5); return [Float](repeating: 0, count: 1600) })
+        f.quiet = true
+        f.holdSeconds = (done: 0.2, failed: 0.2, recheck: 0.05)
+        f.pointerOverPill = { false }
+        try? f.start(caller: DictationController.user)
+        await settle(100)
+        try? f.stop(insert: true, caller: DictationController.user)
+        _ = await f.result()
+        let file = Task { try? await f.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "selftest") }
+        await settle(350)
+        expect("a file transcription holds the result", f.state == .failed(Inserter.noField))
+        _ = await file.value
+        await settle(200)
+        expect("the result goes once the file is done", f.state == .idle)
+        print("result: no field typed nothing, kept in history, clipboard untouched until Copy; Copy during a capture; paste last; "
+              + "5 s / 8 s and hover; ✕; password field; held through a file transcription \(failures.isEmpty ? "ok" : "FAIL \(failures)")")
         return failures.isEmpty
     }
 
