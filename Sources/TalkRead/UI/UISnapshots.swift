@@ -91,11 +91,14 @@ import TalkReadCore
             ("mini-player-nothing-selected", CGSize(width: 488, height: 144), false, player(nil, nil, "Select some text first")),
         ]
 
-        // The dictation pill (340 pt wide, one line): newest words shown, meter underneath.
+        // The dictation pill (340 pt wide, one line): newest words shown, meter underneath; Copy and the tip once done.
         let wave: [Float] = [0.1, 0.35, 0.6, 0.9, 0.5, 0.25, 0.7, 1, 0.55, 0.3, 0.45]
         let long = "so what I wanted to say is that the quarterly numbers look much better than anyone expected, and the team has been working very hard to get the new release out of the door before the end of the month, which means we should probably celebrate"
-        func pill(_ message: String, recording: Bool = true, words: Bool = true) -> AnyView {
-            AnyView(DictationPillStatus(message: message, levels: recording ? wave : [], recording: recording, words: words, cancel: {}).fixedSize(horizontal: false, vertical: true).padding(24))
+        func pill(_ message: String, recording: Bool = true, words: Bool = true, copy: Bool = false, copied: Bool = false) -> AnyView {
+            AnyView(DictationPillStatus(message: message, levels: recording ? wave : [], recording: recording, words: words,
+                                        copy: copy ? {} : nil, copied: copied, closes: !recording,
+                                        tip: copy ? DictationPillStatus.pasteTip(TalkReadCore.Settings().pasteLastShortcut) : nil,
+                                        cancel: {}).fixedSize(horizontal: false, vertical: true).padding(24))
         }
         shots += [
             ("pill-listening", CGSize(width: 508, height: 120), false, pill("Listening", words: false)),
@@ -105,6 +108,11 @@ import TalkReadCore
             ("pill-notice", CGSize(width: 508, height: 172), false, pill("Mic not found, using MacBook Pro Microphone", words: false)),
             ("pill-done", CGSize(width: 508, height: 172), false, pill(long, recording: false)),
             ("pill-done-short", CGSize(width: 508, height: 120), false, pill("Hello, this is a short sentence", recording: false)),
+            // P-B: done or not typed, with Copy and the paste-last tip; a failure with nothing to copy has neither.
+            ("pill-done-copy", CGSize(width: 508, height: 120), false, pill(long, recording: false, copy: true)),
+            ("pill-done-copied", CGSize(width: 508, height: 120), false, pill("Hello, this is a short sentence", recording: false, copy: true, copied: true)),
+            ("pill-failed-copy", CGSize(width: 508, height: 120), false, pill(Inserter.noField, recording: false, words: false, copy: true)),
+            ("pill-failed-nothing", CGSize(width: 508, height: 120), false, pill("Didn't catch that", recording: false, words: false)),
         ]
 
         var failures = 0

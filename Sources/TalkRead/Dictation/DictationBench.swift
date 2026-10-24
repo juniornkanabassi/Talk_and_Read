@@ -96,7 +96,7 @@ import TalkReadCore
             tried += 1
             let audio = ClipAudio(samples: samples)
             var pasted: Date?
-            let controller = DictationController(audio: audio, asr: asr, insert: { _, _, _ in pasted = Date(); return .inserted })
+            let controller = DictationController(audio: audio, asr: asr, insert: { _, _, _, _ in pasted = Date(); return .inserted })
             controller.quiet = true
             let fed = AsyncStream<Void>.makeStream()
             audio.done = { fed.continuation.finish() }

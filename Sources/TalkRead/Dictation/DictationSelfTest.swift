@@ -1,9 +1,11 @@
-// `TalkRead --selftest-asr <dir> [--insert | --paragraphs]`: hotkey mapping, the ownership rules (fake recorder and recogniser),
+// `TalkRead --selftest-asr <dir> [--insert | --paragraphs]`: hotkey mapping, the focus rule, Copy and the result pill's
+// timing, the pill's window (outside every display), the ownership rules (fake recorder and recogniser),
 // WER and latency of the real Transcriber over the fixtures (file path and live streaming path), paragraph breaks on a
 // Kokoro-spoken four-paragraph script, and, with --insert, pasting into a test panel on the Prompter XL. Never uses the microphone; events go only to our own pid.
 import AppKit
 import AVFoundation
 import FluidAudio
+import SwiftUI
 import TalkReadCore
 import WebKit
 
@@ -23,7 +25,10 @@ import WebKit
         }
         var ok = checkHotkeys()
         ok = checkTextRules() && ok
+        ok = checkFocusRule() && ok
         if Paths.dataRoot.path.hasPrefix("/private/tmp") {
+            ok = await checkResult() && ok
+            ok = await checkPillWindow() && ok
             ok = await checkMicFallback() && ok
             ok = await checkOwnership(fixture: URL(fileURLWithPath: dir)) && ok
             ok = await checkDrain(fixture: URL(fileURLWithPath: dir)) && ok
@@ -128,17 +133,217 @@ import WebKit
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
         let field = NSTextField(frame: NSRect(x: 0, y: 150, width: 200, height: 24)), combo = NSComboBox(frame: NSRect(x: 0, y: 120, width: 200, height: 24))
         let secure = NSSecureTextField(frame: NSRect(x: 0, y: 90, width: 200, height: 24)), view = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 80))
-        for v in [field, combo, secure, view] as [NSView] { window.contentView?.addSubview(v) }
-        func state(_ responder: NSResponder) -> (secure: Bool, previous: unichar?, singleLine: Bool)? {
+        let readOnly = NSTextView(frame: NSRect(x: 210, y: 0, width: 80, height: 80))
+        readOnly.isEditable = false
+        for v in [field, combo, secure, view, readOnly] as [NSView] { window.contentView?.addSubview(v) }
+        func state(_ responder: NSResponder) -> Inserter.Focus? {
             guard window.makeFirstResponder(responder), let editor = window.firstResponder as? NSTextView else { return nil }
             // The production route: no PID, our own process in front, the focus in `window`.
-            let seen = Inserter.focusedField(pid: nil, frontmost: { getpid() }, ownEditor: { editor })
-            return (seen.secure, seen.previous, seen.singleLine)
+            return Inserter.focusedField(pid: nil, frontmost: { getpid() }, ownEditor: { editor })
         }
         let results = [state(field)?.singleLine, state(combo)?.singleLine, state(view)?.singleLine, state(secure)?.secure]
         let ok = results == [true, true, false, true]
         print("text: own fields (NSTextField, NSComboBox, NSTextView, secure) \(results.map { $0.map(String.init) ?? "none" }) \(ok ? "ok" : "FAIL")")
-        return ok
+        // P-B: which of our own focuses take a paste; none at all (a web view, a button) is unknown.
+        let takes = [state(field)?.takesText, state(combo)?.takesText, state(view)?.takesText, state(readOnly)?.takesText,
+                     Inserter.focusedField(pid: nil, frontmost: { getpid() }, ownEditor: { nil }).takesText]
+        let takesOK = takes == [true, true, true, false, nil]
+        print("text: own fields take text (field, combo, text view, read-only view, none) \(takes.map { $0.map(String.init) ?? "unknown" }) \(takesOK ? "ok" : "FAIL")")
+        return ok && takesOK
+    }
+
+    // MARK: The focus rule, Copy and the result pill (P-B)
+
+    /// Whether the end of a dictation has somewhere to paste, from the focused element's AX role as apps report it.
+    /// Unknown (nil) pastes as before; only a definite false skips the paste.
+    private static func checkFocusRule() -> Bool {
+        let t = Inserter.takesText(role:subrole:editable:caret:terminal:)
+        let cases: [(String, Bool?, Bool?)] = [
+            ("text field", t("AXTextField", nil, true, true, false), true),
+            ("text area that AX cannot set (Terminal's)", t("AXTextArea", nil, false, true, false), true),
+            ("search field", t("AXTextField", "AXSearchField", true, true, false), true),
+            ("editable combo box", t("AXComboBox", nil, true, true, false), true),
+            ("custom view with a caret", t("AXLayoutArea", nil, true, true, false), true),
+            ("terminal without a text role", t("AXGroup", nil, false, false, true), true),
+            ("pop-up combo box", t("AXComboBox", nil, false, false, false), false),
+            ("web page, no field focused", t("AXWebArea", nil, false, false, false), false),
+            ("web page with a selection, read only", t("AXWebArea", nil, false, true, false), false),
+            ("file list", t("AXList", nil, false, false, false), false),
+            ("outline", t("AXOutline", nil, false, false, false), false),
+            ("button", t("AXButton", nil, false, false, false), false),
+            ("static text", t("AXStaticText", nil, false, false, false), false),
+            ("image", t("AXImage", nil, false, false, false), false),
+            ("generic group (an Electron app asleep)", t("AXGroup", nil, false, false, false), nil),
+            ("window", t("AXWindow", nil, false, false, false), nil),
+            ("scroll area", t("AXScrollArea", nil, false, false, false), nil),
+            ("no role", t(nil, nil, false, false, false), nil),
+        ]
+        let failed = cases.filter { $0.1 != $0.2 }.map(\.0)
+        let tips = DictationPillStatus.pasteTip(Settings().pasteLastShortcut) == "Didn't land? Press ⌃⌘V to paste it"
+            && DictationPillStatus.pasteTip(.off) == nil
+        print("focus: \(cases.count) focus cases \(failed.isEmpty ? "ok" : "FAIL \(failed)"); paste-last tip from the shortcut, hidden when off \(tips ? "ok" : "FAIL")")
+        return failed.isEmpty && tips
+    }
+
+    /// With a private pasteboard, a fake recorder and recogniser, and a fake insert that answers like the Inserter: the
+    /// end of a dictation with no field pastes nothing and leaves the clipboard alone, keeps the text in the history and
+    /// offers Copy, which puts it on the (private) clipboard; paste last still pastes; a password field offers nothing;
+    /// the result's hide timing and hover; the ✕ closes it.
+    private static func checkResult() async -> Bool {
+        var failures: [String] = []
+        func expect(_ name: String, _ condition: Bool) { if !condition { failures.append(name) } }
+        func settle(_ ms: Int) async { try? await Task.sleep(for: .milliseconds(ms)) }
+        let pb = NSPasteboard(name: NSPasteboard.Name("com.juniornkanabassi.talkread.selftest.copy.\(getpid())"))
+        let savedGate = Inserter.gate, savedFocus = Inserter.focus
+        Inserter.gate = PasteboardGate(pasteboard: pb)
+        defer { Inserter.gate = savedGate; Inserter.focus = savedFocus; pb.releaseGlobally() }
+        let mark = "talkread-copy-sentinel"
+        func sentinel() -> Int { pb.clearContents(); pb.setString(mark, forType: .string); return pb.changeCount }
+        func untouched(_ count: Int) -> Bool { pb.changeCount == count && pb.string(forType: .string) == mark }
+
+        // The real Inserter, its focus answered by the test: nothing takes text, so nothing is written and no ⌘V goes out
+        // (the paste comes only after the write). Checked before Accessibility, so it runs without it too.
+        Inserter.focus = { _ in (secure: false, previous: nil, terminal: false, singleLine: false, takesText: false) }
+        var kept = sentinel()
+        let refused = await Inserter.insert("hello there", targetPID: getpid(), requireField: true)
+        expect("Inserter: no field refused", refused == .failed(Inserter.noField) || (!CGPreflightPostEventAccess() && refused != .inserted))
+        expect("Inserter: no field leaves the clipboard untouched", untouched(kept))
+
+        var calls: [(text: String, requireField: Bool)] = []
+        var answer = InsertResult.failed(Inserter.noField)
+        let c = DictationController(audio: FakeAudio(), asr: FakeASR()) { text, _, requireField, _ in
+            calls.append((text, requireField))
+            return requireField ? answer : .inserted
+        }
+        c.quiet = true
+        let defaults = (c.holdSeconds.done, c.holdSeconds.failed)
+        expect("result stays 5 s, a failure 8 s", defaults == (5, 8))
+        c.holdSeconds = (done: 0.4, failed: 0.8, recheck: 0.05)
+        var hovering = false
+        c.pointerOverPill = { hovering }
+        func dictate() async {
+            try? c.start(caller: DictationController.user)
+            await settle(100)
+            try? c.stop(insert: true, caller: DictationController.user)
+            _ = await c.result()
+        }
+
+        kept = sentinel()
+        await dictate()
+        let said = calls.last?.text ?? ""
+        expect("the end of a dictation asks for a field", calls.last?.requireField == true)
+        expect("no field: the pill says so", c.state == .failed(Inserter.noField))
+        expect("no field: history kept", !said.isEmpty && c.history.first?.text == said)
+        expect("no field: Copy offered", c.copyable == said)
+        expect("no field: clipboard untouched until Copy", untouched(kept))
+        c.copyResult()
+        expect("Copy puts the dictation on the clipboard", pb.string(forType: .string) == said && c.copied)
+        await settle(500)
+        expect("a failure outlasts a result's 0.4 s", c.state == .failed(Inserter.noField))
+        hovering = true
+        await settle(500)
+        expect("hover holds the failure past its 0.8 s", c.state == .failed(Inserter.noField) && c.copyable == said)
+        hovering = false
+        await settle(250)
+        expect("pointer gone: hidden, nothing left to copy", c.state == .idle && c.copyable == nil)
+
+        // Paste last is deliberate: it pastes whatever the focus (the user put the caret there).
+        let before = calls.count
+        c.pasteLast()
+        await settle(100)
+        expect("paste last pastes without a field check", calls.count == before + 1 && calls.last?.requireField == false && calls.last?.text == said)
+
+        answer = .inserted
+        await dictate()
+        let typed = calls.last?.text ?? ""
+        expect("typed: done with Copy", c.state == .done(typed) && c.copyable == typed)
+        await settle(250)
+        expect("typed: still shown at 0.25 s", c.state == .done(typed))
+        await settle(350)
+        expect("typed: hidden after 0.4 s", c.state == .idle && c.copyable == nil)
+
+        await dictate()
+        c.dismiss()
+        expect("✕ closes the result", c.state == .idle && c.copyable == nil)
+
+        answer = .failed(Inserter.noField)
+        await dictate()
+        try? c.start(caller: DictationController.user)
+        expect("a new dictation drops the old Copy", c.copyable == nil)
+        try? c.cancel(caller: DictationController.user)
+
+        answer = .refusedSecure
+        let entries = c.history.count
+        await dictate()
+        expect("password field: nothing kept, nothing to copy", c.history.count == entries && c.copyable == nil)
+        let count = pb.changeCount
+        c.copyResult()
+        expect("password field: Copy does nothing", pb.changeCount == count)
+        print("result: no field typed nothing, kept in history, clipboard untouched until Copy; paste last; 5 s / 8 s and hover; ✕; "
+              + "password field \(failures.isEmpty ? "ok" : "FAIL \(failures)")")
+        return failures.isEmpty
+    }
+
+    /// The 0.6.0 pill that never reached the screen (P-B): the panel was made once and ordered out and in again, and
+    /// macOS 27.2 kept it off the Space it came back to (Junior's full-screen Spaces: ordered in, on no Space, never on
+    /// screen). Now each appearance is a new panel. Checked on the real pill, placed outside every display so nothing
+    /// shows on Junior's screens: on screen at the status-bar layer, opaque, 340 x 72 where it was put, kept while it
+    /// shows, gone when hidden, a new window the next time; and the content it lays out fits it in every state.
+    private static func checkPillWindow() async -> Bool {
+        var failures: [String] = []
+        func expect(_ name: String, _ condition: Bool) { if !condition { failures.append(name) } }
+        func settle(_ ms: Int) async { try? await Task.sleep(for: .milliseconds(ms)) }
+        func onScreen(_ number: Int?) -> [String: Any]? {
+            guard let number, number > 0 else { return nil }
+            let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+            return list.first { ($0[kCGWindowNumber as String] as? Int) == number }
+        }
+        let away = NSPoint(x: -30000, y: -30000)
+        let c = DictationController(audio: FakeAudio(), asr: FakeASR()) { _, _, _, _ in .failed(Inserter.noField) }
+        c.quiet = true
+        c.holdSeconds = (done: 30, failed: 30, recheck: 1)   // this check hides the pill itself
+        let pill = DictationPill(dictation: c)
+
+        pill.show(at: away)
+        await settle(150)
+        let first = pill.panel?.windowNumber
+        let info = onScreen(first)
+        let bounds = info?[kCGWindowBounds as String] as? [String: Double] ?? [:]
+        expect("shown: on screen", info != nil)
+        expect("shown: status-bar layer", info?[kCGWindowLayer as String] as? Int == Int(CGWindowLevelForKey(.statusWindow)))
+        expect("shown: opaque", info?[kCGWindowAlpha as String] as? Double == 1)
+        expect("shown: 340 x 72 where it was put", bounds["Width"] == 340 && bounds["Height"] == 72 && bounds["X"] == away.x)
+        expect("never key or main", pill.panel.map { !$0.canBecomeKey && !$0.canBecomeMain } == true)
+        pill.show()                                                 // showing already: stays put, same window
+        expect("shown again while showing: same window, same place", pill.panel?.windowNumber == first && pill.panel?.frame.origin == away)
+        pill.hide()
+        for _ in 0..<20 where onScreen(first) != nil { await settle(50) }   // the window server's fade-out
+        expect("hidden: off screen, no panel", onScreen(first) == nil && pill.panel == nil)
+        pill.show(at: away)
+        await settle(150)
+        let second = pill.panel?.windowNumber
+        expect("shown after hiding: a new window, on screen", second != nil && second != first && onScreen(second) != nil)
+
+        // The content in each state: a finite height that fits the 340 pt pill (a NaN, zero or runaway height would hide it).
+        func content() -> CGSize { NSHostingView(rootView: DictationPillView(dictation: c)).fittingSize }
+        var heights: [String: CGFloat] = [:]
+        try? c.start(caller: DictationController.user)
+        await settle(100)
+        heights["recording"] = content().height
+        try? c.stop(insert: true, caller: DictationController.user)
+        heights["transcribing"] = content().height
+        _ = await c.result()
+        heights["failed with Copy"] = content().height
+        let width = content().width
+        let fits = heights.values.allSatisfy { $0.isFinite && $0 >= 72 && $0 <= 80 }
+        expect("content fits in every state \(heights)", fits && width == DictationPill.width)
+        expect("still on screen through the states", onScreen(second) != nil)
+        c.dismiss()
+        pill.hide()
+        print("pill window: on screen at layer 25, opaque, 340 x 72, a new window each time it shows, content "
+              + heights.sorted { $0.key < $1.key }.map { "\($0.key) \(Int($0.value))" }.joined(separator: ", ") + " pt "
+              + (failures.isEmpty ? "ok" : "FAIL \(failures)"))
+        return failures.isEmpty
     }
 
     // MARK: Ownership (PLAN decision 19) with a fake recorder and recogniser
@@ -266,7 +471,7 @@ import WebKit
 
         let audio = FakeAudio()
         audio.fallbackNotice = "Mic not found, using Selftest Default"
-        let c = DictationController(audio: audio, asr: FakeASR()) { _, _, _ in .inserted }
+        let c = DictationController(audio: audio, asr: FakeASR()) { _, _, _, _ in .inserted }
         c.quiet = true
         let saved = Microphone.inputs().first?.uid ?? "talkread-selftest-mic"   // resolves now (read only), fails to open
         c.microphoneUID = saved
@@ -286,7 +491,7 @@ import WebKit
     private static func checkOwnership(fixture dir: URL) async -> Bool {
         var typed: [String] = [], targets: [pid_t?] = []
         let audio = FakeAudio()
-        let c = DictationController(audio: audio, asr: FakeASR()) { text, pid, isCurrent in
+        let c = DictationController(audio: audio, asr: FakeASR()) { text, pid, _, isCurrent in
             guard isCurrent() else { return .failed("Cancelled") }
             typed.append(text)
             targets.append(pid)
@@ -445,7 +650,7 @@ import WebKit
             let saved = Inserter.gate
             Inserter.gate = PasteboardGate(pasteboard: pb)
             var results: [InsertResult] = []
-            let real = DictationController(audio: FakeAudio(), asr: FakeASR()) { text, _, isCurrent in
+            let real = DictationController(audio: FakeAudio(), asr: FakeASR()) { text, _, _, isCurrent in
                 let r = await Inserter.insert(text, targetPID: getpid(), isCurrent: isCurrent)
                 results.append(r)
                 return r
@@ -497,7 +702,7 @@ import WebKit
         asr.log = { events.append($0) }
         asr.work = .milliseconds(100)
         // A decode that takes 300 ms, so a takeover can land inside it.
-        let c = DictationController(audio: audio, asr: asr, insert: { text, _, _ in typed.append(text); return .inserted },
+        let c = DictationController(audio: audio, asr: asr, insert: { text, _, _, _ in typed.append(text); return .inserted },
                                     decode: { Thread.sleep(forTimeInterval: 0.3); return try Transcriber.samples(of: $0) })
         c.quiet = true
         let user = DictationController.user
@@ -601,7 +806,7 @@ import WebKit
         let api = refusedLoading && quit && refusedInUse && cancelledRun
         print(String(format: "asr: unload refused while loading %@, while in use %@; cancelled load waiter returned in %.0f ms with the load carrying on %@; cancelled run ended %@",
                      "\(refusedLoading)", "\(refusedInUse)", waiterMs, "\(quit)", "\(cancelledRun)"))
-        let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _, _, _ in .inserted })
+        let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _, _, _, _ in .inserted })
         controller.quiet = true
         var fileErrors = 0, liveErrors = 0, words = 0
         var latencies: [Double] = []
@@ -698,7 +903,7 @@ import WebKit
         do { samples = try await speak(script, with: kokoro) } catch { print("paragraphs: could not speak the script: \(error)"); return false }
         kokoro.unload()
         func dictate(_ samples: [Float]) async throws -> String {
-            let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _, _, _ in .inserted }, decode: { _ in samples })
+            let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _, _, _, _ in .inserted }, decode: { _ in samples })
             controller.quiet = true
             return try await controller.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "selftest")
         }
