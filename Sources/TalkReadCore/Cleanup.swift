@@ -33,6 +33,7 @@ public enum Cleanup {
 
         text = replaceVocabulary(in: text, vocabulary: vocabulary, hold: hold)
         text = correctTerms(in: text, terms: terms(vocabulary), isWord: isWord, hold: hold)
+        text = text.replacingOccurrences(of: "<unk>", with: "")   // the recogniser's tag for a letter it cannot spell; never typed
         text = capitalised(text)
 
         text = text.replacingOccurrences(of: "[ \\t]{2,}", with: " ", options: .regularExpression)
