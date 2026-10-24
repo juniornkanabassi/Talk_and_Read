@@ -215,6 +215,23 @@ import WebKit
         let opened = tried == ["talkread-selftest-unplugged"] && notice == Microphone.fallbackNotice(Microphone.inputs())
             && recorder.microphoneUID == "talkread-selftest-unplugged"
 
+        // Sol verification 8: selected, then gone before it started. The attempt is cleaned up and the opening runs once
+        // more on a fresh default engine, with the notice; once only, and never for the system default itself.
+        let late = Recorder()
+        late.microphoneUID = "talkread-selftest-late"
+        late.selectDevice = { _, _ in true }
+        var engines: [ObjectIdentifier] = []
+        late.startInput = { engine, _ in engines.append(ObjectIdentifier(engine)); if engines.count == 1 { throw RecorderError.noDevice } }
+        let retried = (try? late.openInput(session: 1)) != nil && engines.count == 2 && engines[0] != engines[1]
+            && late.fallbackNotice == Microphone.fallbackNotice(Microphone.inputs()) && late.microphoneUID == "talkread-selftest-late"
+        engines = []
+        late.startInput = { engine, _ in engines.append(ObjectIdentifier(engine)); throw RecorderError.noDevice }
+        let once = (try? late.openInput(session: 2)) == nil && engines.count == 2
+        engines = []
+        late.microphoneUID = nil
+        let defaultOnce = (try? late.openInput(session: 3)) == nil && engines.count == 1 && late.fallbackNotice == nil
+        let lateOK = retried && once && defaultOnce
+
         let audio = FakeAudio()
         audio.fallbackNotice = "Mic not found, using Selftest Default"
         let c = DictationController(audio: audio, asr: FakeASR()) { _, _, _ in .inserted }
@@ -228,8 +245,10 @@ import WebKit
         try? c.cancel(caller: "A")
         _ = await c.result()
         print("mic fallback: Recorder tried the saved mic and fell back with \"\(notice ?? "no notice")\" \(opened ? "ok" : "FAIL"); "
+              + "selected then gone before starting: retried once on a fresh default engine \(retried ? "ok" : "FAIL"), "
+              + "never twice \(once ? "ok" : "FAIL"), not for the default \(defaultOnce ? "ok" : "FAIL"); "
               + "pill shows \"\(c.micNotice ?? audio.fallbackNotice ?? "")\" while recording, saved choice kept \(shown ? "ok" : "FAIL")")
-        return opened && shown
+        return opened && lateOK && shown
     }
 
     private static func checkOwnership(fixture dir: URL) async -> Bool {

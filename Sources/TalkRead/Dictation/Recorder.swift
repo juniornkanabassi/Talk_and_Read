@@ -90,9 +90,56 @@ final class Recorder: DictationAudio {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { throw RecorderError.noPermission }
         _ = stop()
         let id = lock.withLock { session += 1; first = nil; return session }
-        let onBuffer = onBuffer, onLevel = onLevel                // this session's consumers
-        let (engine, notice) = makeEngine()           // before the format is read: it is the chosen device's
+        try openInput(session: id)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.finishWait(.failure(RecorderError.noAudio), session: id)
+        }
+        do {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                let done: Result<Void, Error>? = lock.withLock {
+                    if first == nil { firstWaiter = c }
+                    return first
+                }
+                if let done { c.resume(with: done) }
+            }
+        } catch {
+            if lock.withLock({ session == id }) { _ = stop() }   // its own timeout; after a stop or newer start, not ours
+            throw error
+        }
+    }
+
+    /// Starts the input for recording `id`: the chosen device, else the system default with the notice. That includes a
+    /// chosen device that was selected and then went away before it started (format, converter or start failing): that
+    /// attempt is cleaned up and the whole opening runs once more on a fresh default engine (Sol verification 8). The
+    /// saved choice is never changed. Throws `noDevice` when nothing starts.
+    @MainActor func openInput(session id: Int) throws {
+        let (engine, notice) = makeEngine()
         fallbackNotice = notice
+        do {
+            try (startInput ?? begin)(engine, id)
+        } catch {
+            guard notice == nil, microphoneUID != nil else { _ = stop(); throw RecorderError.noDevice }
+            fallbackNotice = Microphone.fallbackNotice(Microphone.inputs())
+            do { try (startInput ?? begin)(AVAudioEngine(), id) } catch { _ = stop(); throw RecorderError.noDevice }
+        }
+    }
+
+    /// Replaces `begin` in the self-test, which fails it after a successful selection without opening a device.
+    var startInput: ((AVAudioEngine, Int) throws -> Void)?
+
+    /// The engine for one recording: on the chosen input, else (it went away after the controller resolved it, or will
+    /// not open) a fresh engine on the system default and the notice; the saved choice is kept for next time (Sol 0.5.0
+    /// #2). Nothing is captured here.
+    func makeEngine() -> (engine: AVAudioEngine, notice: String?) {
+        let engine = AVAudioEngine()
+        guard let uid = microphoneUID, !selectDevice(uid, engine) else { return (engine, nil) }
+        return (AVAudioEngine(), Microphone.fallbackNotice(Microphone.inputs()))
+    }
+
+    /// Reads the input's format, installs the tap and starts `engine` for recording `id`. A failure leaves nothing behind
+    /// (the tap removed, the engine stopped), so `openInput` can try again on another engine.
+    @MainActor private func begin(_ engine: AVAudioEngine, _ id: Int) throws {
+        let onBuffer = onBuffer, onLevel = onLevel                // this session's consumers
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)   // the chosen input, else the system default
         guard format.sampleRate > 0, format.channelCount > 0, let converter = StreamConverter(from: format) else {
@@ -118,31 +165,12 @@ final class Recorder: DictationAudio {
         }
         self.engine = engine
         engine.prepare()
-        do { try engine.start() } catch { _ = stop(); throw RecorderError.noDevice }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            self?.finishWait(.failure(RecorderError.noAudio), session: id)
+        do { try engine.start() } catch {
+            input.removeTap(onBus: 0)
+            engine.stop()
+            self.engine = nil
+            throw RecorderError.noDevice
         }
-        do {
-            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-                let done: Result<Void, Error>? = lock.withLock {
-                    if first == nil { firstWaiter = c }
-                    return first
-                }
-                if let done { c.resume(with: done) }
-            }
-        } catch {
-            if lock.withLock({ session == id }) { _ = stop() }   // its own timeout; after a stop or newer start, not ours
-            throw error
-        }
-    }
-
-    /// The engine for one recording: on the chosen input, else (it went away after the controller resolved it, or will
-    /// not open) a fresh engine on the system default and the notice; the saved choice is kept for next time (Sol 0.5.0
-    /// #2). Nothing is captured here.
-    func makeEngine() -> (engine: AVAudioEngine, notice: String?) {
-        let engine = AVAudioEngine()
-        guard let uid = microphoneUID, !selectDevice(uid, engine) else { return (engine, nil) }
-        return (AVAudioEngine(), Microphone.fallbackNotice(Microphone.inputs()))
     }
 
     @MainActor func stop() -> [Float] {
