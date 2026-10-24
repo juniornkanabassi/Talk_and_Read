@@ -109,7 +109,10 @@ has rel-attr "build $NEW_B must be greater than every build in the appcast \\(hi
 hand_feed 'sparkle:version="3"' "<sparkle:version>$(( NEW_B + 1 ))</sparkle:version>"
 if release rel-ambiguous "$E2E/site/Talk_and_Read_$NEW_V.zip"; then no "an item with two build numbers was accepted"; fi
 has rel-ambiguous 'an appcast item has two version values'
-ok "build numbers: a lower and an equal build refused, equal accepted only with --resume for the same version; the enclosure attribute counts; an item with two build numbers stops it"
+hand_feed '' "<sparkle:version xml:lang=\"fr\">3</sparkle:version><sparkle:version xml:lang=\"en\">$(( NEW_B + 1 ))</sparkle:version>"
+if release rel-languages "$E2E/site/Talk_and_Read_$NEW_V.zip"; then no "an item with a French and an English build number was accepted"; fi
+has rel-languages 'an appcast item has two version values'
+ok "build numbers: a lower and an equal build refused, equal accepted only with --resume for the same version; the enclosure attribute counts; an item with two build numbers (element and attribute, or French 3 and English $(( NEW_B + 1 ))) stops it"
 rm -rf "$E2E/website/public"
 release rel-down "$E2E/site/Talk_and_Read_$DOWN_V.zip" || no "release.sh --dry-run for the older build"
 local_feed "$E2E/rel-down/appcast.xml" "$E2E/site/down.xml"
