@@ -17,6 +17,12 @@ export CLANG_MODULE_CACHE_PATH="$BUILD_ROOT/ClangModuleCache"
 export SWIFT_MODULECACHE_PATH="$BUILD_ROOT/SwiftModuleCache"
 BUILD_ARGS=(--package-path "$ROOT" --configuration release --scratch-path "$BUILD_ROOT"
             --cache-path "$BUILD_ROOT/Cache" --config-path "$BUILD_ROOT/Config" --security-path "$BUILD_ROOT/Security")
+# The commit this builds, taken before compiling ("-dirty" with uncommitted changes). release.sh publishes only a
+# clean HEAD's build; packaging stops below if HEAD or the worktree moves while it runs.
+tree_state() { git -C "$ROOT" rev-parse HEAD; git -C "$ROOT" status --porcelain; }
+STATE=$(tree_state)
+COMMIT=$(git -C "$ROOT" rev-parse HEAD)
+[[ -z $(git -C "$ROOT" status --porcelain) ]] || COMMIT+="-dirty"
 swift build "${BUILD_ARGS[@]}"
 BIN_DIR=$(swift build "${BUILD_ARGS[@]}" --show-bin-path)
 # MLX's GPU kernels: SwiftPM compiles them only when the Metal Toolchain is installed (`xcodebuild -downloadComponent
@@ -28,9 +34,6 @@ cp "$BIN_DIR/TalkRead" "$APP/Contents/MacOS/TalkRead"
 cp "$BIN_DIR/TalkReadCLI" "$APP/Contents/Helpers/talkread"
 cp "$ROOT/mcp/talkread-mcp.mjs" "$APP/Contents/Resources/mcp/talkread-mcp.mjs"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
-# The commit this was built from ("-dirty" with uncommitted changes): release.sh publishes only a build of a clean HEAD.
-COMMIT=$(git -C "$ROOT" rev-parse HEAD)
-[[ -z $(git -C "$ROOT" status --porcelain) ]] || COMMIT+="-dirty"
 /usr/libexec/PlistBuddy -c "Add :TRSourceCommit string $COMMIT" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/Resources/MenuBarIcon.png" "$ROOT/Resources/MenuBarIcon@2x.png" "$APP/Contents/Resources/"
@@ -86,6 +89,7 @@ if [[ "$SIGN_ID" != "-" && "${TALKREAD_NOTARISE:-1}" == 1 ]]; then
   /usr/sbin/spctl --assess --type execute -vv "$APP"
   print "Notarised and stapled"
 fi
+[[ $(tree_state) == $STATE ]] || { print -u2 "The source changed while packaging (HEAD or the worktree), so $COMMIT may not be what was built. Build again."; exit 1; }
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$TMP_ARCHIVE"
 mkdir -p "$OUTPUT_ROOT"
 /usr/bin/ditto "$TMP_ARCHIVE" "$OUTPUT_TMP"
