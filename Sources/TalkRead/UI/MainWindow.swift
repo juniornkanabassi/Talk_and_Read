@@ -108,14 +108,8 @@ struct MainWindowView: View {
 
     var body: some View {
         let data = model.viewData
+        // Permission ticks and the setup banner stay current through AppDelegate's 2 s poll while a window is open.
         MainWindowContent(model: model, data: data, router: router)
-            // Keep permission ticks and the setup banner current while something is waiting on them.
-            .task(id: router.pane == .settings || data.setupIssue != nil) {
-                while !Task.isCancelled, router.pane == .settings || model.needsSetup {
-                    model.refreshPermissions()
-                    try? await Task.sleep(for: .seconds(2))
-                }
-            }
     }
 }
 

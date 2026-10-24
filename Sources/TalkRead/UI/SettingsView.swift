@@ -4,19 +4,13 @@ import AppKit
 import SwiftUI
 import TalkReadCore
 
-/// Root for the Settings window. Keeps permission ticks current while it is open.
+/// Root for the Settings window. Its permission ticks stay current through AppDelegate's 2 s poll while it is open.
 struct SettingsView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
         SettingsContent(model: model, data: model.viewData)
             .frame(minWidth: 720, minHeight: 500)
-            .task {
-                while !Task.isCancelled {
-                    model.refreshPermissions()
-                    try? await Task.sleep(for: .seconds(2))
-                }
-            }
     }
 }
 
