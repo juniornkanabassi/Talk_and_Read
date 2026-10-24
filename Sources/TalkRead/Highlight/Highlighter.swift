@@ -35,6 +35,10 @@ import TalkReadCore
     private var requery = true
     private var scrollTickedAt: TimeInterval = 0
     private var scrollTickQueued = false
+    /// Whether the scroll gesture in progress (momentum included) moves the source window; decided at its start.
+    private var scrollingSource = false
+    /// A paused read keeps asking until then after a scroll over it (the app and OCR settle a moment after the event).
+    private var settleUntil: TimeInterval = 0
     private let debug = ProcessInfo.processInfo.environment["TALKREAD_DEBUG"] == "1"
 
     init(session: ReadSession, style: Overlay.Style) {
@@ -48,9 +52,10 @@ import TalkReadCore
         locator = Locator(capture: capture, useOCR: useOCRFallback)
         resolveSource()
         stateObserver = session.$state.sink { [weak self] state in self?.stateChanged(state) }
-        scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] _ in
+        scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             // Re-query at once rather than at the next tick: the box should feel glued to the text (Junior, 12 Sep).
-            MainActor.assumeIsolated { self?.scrolled() }
+            let (phase, momentum) = (event.phase, event.momentumPhase)
+            MainActor.assumeIsolated { self?.scrolled(phase: phase, momentum: momentum) }
         }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
@@ -103,11 +108,15 @@ import TalkReadCore
         }
     }
 
-    /// A wheel scroll over the window being read re-queries at once, at most once per display frame (16 ms; trackpad
-    /// momentum sends up to about 120 events a second); scrolls over other windows change nothing (efficiency fix 4).
-    private func scrolled() {
-        guard overlay.panel?.frame.contains(NSEvent.mouseLocation) == true else { return }
+    /// A scroll of the window being read re-queries at once, at most once per display frame (16 ms; trackpad momentum
+    /// sends up to about 120 events a second); scrolls of other windows change nothing (efficiency fix 4). The window
+    /// receiving the scroll is the one under the pointer when the gesture starts; its momentum keeps that answer (Sol
+    /// 0.5.0 #3).
+    private func scrolled(phase: NSEvent.Phase, momentum: NSEvent.Phase) {
+        scrollingSource = Self.scrollTargetsSource(phase: phase, momentum: momentum, previous: scrollingSource, hit: pointerOverSource)
+        guard scrollingSource else { return }
         invalidate()
+        settleUntil = ProcessInfo.processInfo.systemUptime + 2
         let wait = scrollTickedAt + 0.016 - ProcessInfo.processInfo.systemUptime
         if wait <= 0 {
             scrollTickedAt = ProcessInfo.processInfo.systemUptime
@@ -123,6 +132,23 @@ import TalkReadCore
                 self.tick()
             }
         }
+    }
+
+    /// The window under the pointer, looking through our own click-through panel, is the source window.
+    private func pointerOverSource() -> Bool {
+        guard let source = overlay.source else { return false }
+        let point = NSEvent.mouseLocation
+        var number = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: 0)
+        if let panel = overlay.panel, number == panel.windowNumber {
+            number = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: panel.windowNumber)
+        }
+        return number > 0 && CGWindowID(number) == source
+    }
+
+    /// Whether a scroll event moves the source window (pure; checked by the TTS self-test): a plain wheel event and the
+    /// start of a gesture are hit-tested, its later phases and its momentum keep that answer.
+    nonisolated static func scrollTargetsSource(phase: NSEvent.Phase, momentum: NSEvent.Phase, previous: Bool, hit: () -> Bool) -> Bool {
+        !momentum.isEmpty || !phase.isDisjoint(with: [.changed, .stationary, .ended, .cancelled]) ? previous : hit()
     }
 
     private func invalidate() {
@@ -144,9 +170,11 @@ import TalkReadCore
     /// Paused: follow the window only; a resize may have reflowed the text, so locate again then.
     private func pausedTick() {
         let size = overlay.panel?.frame.size
-        guard overlay.follow(), overlay.panel?.frame.size != size else { return }
-        invalidate()
-        tick()
+        guard overlay.follow() else { return }
+        if overlay.panel?.frame.size != size { invalidate(); return tick() }
+        // After a scroll over the paused read, keep asking for 2 s: the app may still be moving the text when the event
+        // arrives, and OCR recognises the window again a moment later (Sol 0.5.0 #3).
+        if ProcessInfo.processInfo.systemUptime < settleUntil { requery = true; tick() }
     }
 
     private func tick() {
