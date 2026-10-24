@@ -1,8 +1,9 @@
 // `TalkRead --selftest-asr <dir> [--insert]`: hotkey mapping, the ownership rules (fake recorder and recogniser),
-// WER and latency of the real Transcriber over the fixtures (file path and live streaming path), and, with --insert,
-// pasting into a test panel on the Prompter XL. Never uses the microphone; events go only to our own pid.
+// WER and latency of the real Transcriber over the fixtures (file path and live streaming path), paragraph breaks on a
+// Kokoro-spoken four-paragraph script, and, with --insert, pasting into a test panel on the Prompter XL. Never uses the microphone; events go only to our own pid.
 import AppKit
 import AVFoundation
+import FluidAudio
 import TalkReadCore
 import WebKit
 
@@ -105,8 +106,11 @@ import WebKit
         let ok = flat == "Hi Jon, Thanks. 1. Trim the intro. 2. Send it" && !flat.contains("\n")
             && british == "The neighbour's colour, centre and organiser; email footballco.com or Footballco. Realise it."
             && Inserter.terminalApps.isSuperset(of: ["com.apple.Terminal", "com.googlecode.iterm2"])
-        print("text: terminal paste one line \"\(flat)\"; British \"\(british)\" \(ok ? "ok" : "FAIL")")
-        return ok
+        // Single-line fields (F-A) get no paragraph breaks; a text area keeps them.
+        let single = Inserter.isSingleLine(role: "AXTextField", subrole: nil) && Inserter.isSingleLine(role: "AXTextField", subrole: "AXSearchField")
+            && !Inserter.isSingleLine(role: "AXTextArea", subrole: nil) && !Inserter.isSingleLine(role: nil, subrole: nil)
+        print("text: terminal paste one line \"\(flat)\"; British \"\(british)\"; single-line field rule \(single) \(ok && single ? "ok" : "FAIL")")
+        return ok && single
     }
 
     // MARK: Ownership (PLAN decision 19) with a fake recorder and recogniser
@@ -184,7 +188,7 @@ import WebKit
             return true
         }
 
-        func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> String {
+        func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> Transcript {
             try await queue.exclusive {
                 try await load(progress: nil)
                 entered += 1
@@ -196,7 +200,7 @@ import WebKit
                 }
                 try Task.checkCancellation()
                 count += 1
-                return "utterance \(count)"
+                return Transcript(text: "utterance \(count)")
             }
         }
 
@@ -600,9 +604,94 @@ import WebKit
         let sorted = latencies.sorted()
         print(String(format: "asr: %d clips, %d words; total WER file %.2f%%, live %.2f%% (limit 6%%); latency after last sample median %.0f ms, max %.0f ms",
                      clips.count, words, 100 * fileWER, 100 * liveWER, sorted[sorted.count / 2], sorted.last!))
+        let paragraphs = await checkParagraphs(transcriber)
         let unloaded = controller.unloadModel() && !transcriber.isLoaded
         print("asr: unloaded when idle \(unloaded)")
-        return fileWER <= 0.06 && liveWER <= 0.06 && api && unloaded
+        return fileWER <= 0.06 && liveWER <= 0.06 && api && unloaded && paragraphs
+    }
+
+    // MARK: Paragraphs (F-A)
+
+    /// Four paragraphs of five sentences, about 250 words, for Kokoro to speak. No spoken list words or commands in it.
+    private static let script = [
+        ["Welcome back to the channel and thanks for joining me today.",
+         "I want to talk about why this season's title race is much closer than anyone expected.",
+         "At the start of the year, almost every pundit picked one club to run away with it.",
+         "Ten games later, the gap at the top is only two points.",
+         "That changes how the rest of the season will feel for everyone watching."],
+        ["One reason is the fixture list, which has been far kinder to the chasing pack.",
+         "The leaders have already played most of the toughest away games on their calendar.",
+         "Meanwhile their rivals have enjoyed a run of home matches against teams in the bottom half.",
+         "Over time those easier weeks will balance out, but right now they matter.",
+         "Points banked early are worth just as much as points won in May."],
+        ["Injuries have also played a huge part in the story.",
+         "The champions lost their captain for six weeks after a clumsy tackle in training.",
+         "Their main rivals, on the other hand, have barely lost a single starter.",
+         "Squad depth is usually what decides a long campaign like this one.",
+         "I think that is why the table looks so tight at the moment."],
+        ["So where does that leave us as we head into the winter break?",
+         "I expect at least three clubs to stay in contention until the final weeks.",
+         "The pressure will build, and that is when mistakes start to appear.",
+         "If you enjoyed this video, please subscribe and leave a comment with your prediction.",
+         "Thanks for watching, and I will see you in the next one."]
+    ]
+
+    /// `script` spoken by Kokoro at 1x, one sentence at a time with its silent edges trimmed, 0.4 s between sentences and
+    /// 1.2 s between paragraphs (known gaps), as 16 kHz samples.
+    private static func speak(_ script: [[String]], with kokoro: NeuralEngine) async throws -> [Float] {
+        try await kokoro.prepare(voice: "af_heart")
+        var out: [Float] = []
+        for paragraph in script {
+            for (s, sentence) in paragraph.enumerated() {
+                let chunk = try await kokoro.synthesize(sentence, voice: "af_heart")
+                let (rms, floor, hop) = Aligner.frames(chunk.samples, sampleRate: chunk.sampleRate)
+                let from = (rms.firstIndex { $0 >= floor } ?? 0) * hop, to = min(((rms.lastIndex { $0 >= floor } ?? 0) + 1) * hop, chunk.samples.count)
+                let speech = try AudioConverter().resample(Array(chunk.samples[from..<max(from, to)]), from: chunk.sampleRate)
+                if !out.isEmpty { out += [Float](repeating: 0, count: Int(16_000 * (s == 0 ? 1.2 : 0.4))) }
+                out += speech
+            }
+        }
+        return out
+    }
+
+    /// The Parakeet dictation path (file route, no microphone) on a Kokoro-spoken script: the paragraph breaks land at the
+    /// script's paragraph starts (one mistake allowed, a miss or an extra break), a short dictation is untouched, and the
+    /// split costs milliseconds at most.
+    private static func checkParagraphs(_ transcriber: Transcriber) async -> Bool {
+        guard NeuralEngine.modelInstalled() else { print("paragraphs: NOT RUN (the Kokoro voice is not installed)"); return false }
+        let kokoro = NeuralEngine()
+        let samples: [Float]
+        do { samples = try await speak(script, with: kokoro) } catch { print("paragraphs: could not speak the script: \(error)"); return false }
+        kokoro.unload()
+        func dictate(_ samples: [Float]) async throws -> String {
+            let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _, _, _ in .inserted }, decode: { _ in samples })
+            controller.quiet = true
+            return try await controller.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "selftest")
+        }
+        do {
+            let raw = try await transcriber.transcribe(samples: samples)
+            let text = try await dictate(samples)
+            let short = try await dictate(Array(samples.prefix(16_000 * 8)))
+            let starts = { (paragraphs: [String]) in paragraphs.map { normalised($0).prefix(3).joined(separator: " ") } }
+            let expected = starts(script.map { $0[0] }), found = starts(text.components(separatedBy: "\n\n"))
+            let missed = expected.dropFirst().filter { !found.contains($0) }.count, extra = found.dropFirst().filter { !expected.contains($0) }.count
+            let clean = Cleanup.apply(raw.text, vocabulary: [:], removeFillers: true)
+            let began = Date()
+            for _ in 0..<200 { _ = Paragraphs.split(clean, pauses: raw.pauses) }
+            let splitMs = Date().timeIntervalSince(began) * 1000 / 200
+            let at = script.reduce(into: [0]) { $0.append($0.last! + $1.count) }.dropFirst().dropLast()   // sentence index of paragraphs 2 to 4
+            print("paragraphs: \(script.joined().joined(separator: " ").split(separator: " ").count) words spoken, \(raw.pauses.count) sentence pauses heard; at the paragraph starts " +
+                  at.map { raw.pauses.indices.contains($0 - 1) ? String(format: "%.2f s", raw.pauses[$0 - 1].seconds) : "?" }.joined(separator: ", ") +
+                  " (spoken 1.2 s); inside paragraphs max " + String(format: "%.2f s", raw.pauses.enumerated().filter { !at.contains($0.offset + 1) }.map(\.element.seconds).max() ?? 0))
+            print("paragraphs: \(text.components(separatedBy: "\n\n").count) paragraphs, missed \(missed), extra \(extra); Paragraphs.split \(String(format: "%.3f", splitMs)) ms on \(clean.count) characters")
+            print("paragraphs output: " + text.replacingOccurrences(of: "\n\n", with: " ⏎⏎ "))
+            let untouched = !short.contains("\n") && short.split(separator: " ").count < 60
+            print("paragraphs: short dictation (8 s) \"\(short)\" untouched \(untouched)")
+            return missed + extra <= 1 && untouched && text.hasSuffix(".")
+        } catch {
+            print("paragraphs: failed: \(error)")
+            return false
+        }
     }
 
     /// The live path: the clip re-sampled to a typical 48 kHz stereo input format, through the Recorder's converter in
@@ -619,7 +708,7 @@ import WebKit
             fed = true; status.pointee = .haveData; return source
         }
         let (stream, feed) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
-        let result = Task { try await transcriber.run(stream, partial: { _ in }) }
+        let result = Task { try await transcriber.run(stream, partial: { _ in }).text }
         let total = Int(input.frameLength)
         for start in stride(from: 0, to: total, by: 4800) {
             if start > 0 { try await Task.sleep(for: .milliseconds(100)) }   // the next 100 ms being "spoken"

@@ -1,6 +1,6 @@
 // Types text into the focused field by pasting (PLAN decision 7): refuse secure fields, add a leading space when the
-// caret follows a word, keep text for a terminal on one line, paste with a tagged ⌘V, and let PasteboardGate restore
-// the user's clipboard afterwards.
+// caret follows a word, keep text for a terminal or a single-line field on one line, paste with a tagged ⌘V, and let
+// PasteboardGate restore the user's clipboard afterwards.
 import AppKit
 import ApplicationServices
 import Carbon
@@ -23,7 +23,7 @@ enum Inserter {
             if IsSecureEventInputEnabled() { return .refusedSecure }
             let field = focusedField(pid: targetPID)
             if field.secure { return .refusedSecure }
-            let body = field.terminal ? oneLine(text) : text
+            let body = field.terminal || field.singleLine ? oneLine(text) : text
             let typed = needsLeadingSpace(after: field.previous, text: body) ? " " + body : body
             guard !Task.isCancelled, isCurrent() else { return .failed("Cancelled") }
             // Refused while quitting: the pasteboard still holds the user's own clipboard, so no ⌘V may go out.
@@ -35,27 +35,33 @@ enum Inserter {
         }
     }
 
-    /// Whether the focused field is secure, whether it is a terminal, and the UTF-16 unit before its caret (nil =
-    /// unknown or at the start).
-    @MainActor static func focusedField(pid: pid_t?) -> (secure: Bool, previous: unichar?, terminal: Bool) {
-        if pid == getpid() { let own = ownFocusedField(); return (own.secure, own.previous, false) }
+    /// Whether the focused field is secure, whether it is a terminal, whether it is a single-line field, and the UTF-16
+    /// unit before its caret (nil = unknown or at the start).
+    @MainActor static func focusedField(pid: pid_t?) -> (secure: Bool, previous: unichar?, terminal: Bool, singleLine: Bool) {
+        if pid == getpid() { let own = ownFocusedField(); return (own.secure, own.previous, false, false) }
         let root = pid.map { AXUIElementCreateApplication($0) } ?? AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(root, 0.25)
-        guard let element: AXUIElement = attribute(root, kAXFocusedUIElementAttribute) else { return (false, nil, false) }
+        guard let element: AXUIElement = attribute(root, kAXFocusedUIElementAttribute) else { return (false, nil, false, false) }
         let secure = [kAXRoleAttribute, kAXSubroleAttribute].contains { (attribute(element, $0) as String?) == kAXSecureTextFieldSubrole }
         let terminal = isTerminal(element)
-        guard !secure, let rangeValue: AXValue = attribute(element, kAXSelectedTextRangeAttribute) else { return (secure, nil, terminal) }
+        let single = isSingleLine(role: attribute(element, kAXRoleAttribute), subrole: attribute(element, kAXSubroleAttribute))
+        guard !secure, let rangeValue: AXValue = attribute(element, kAXSelectedTextRangeAttribute) else { return (secure, nil, terminal, single) }
         var range = CFRange()
-        guard AXValueGetValue(rangeValue, .cfRange, &range), range.location > 0 else { return (false, nil, terminal) }
+        guard AXValueGetValue(rangeValue, .cfRange, &range), range.location > 0 else { return (false, nil, terminal, single) }
         // One character before the caret, not the whole text: a long document's value can take most of the timeout.
         var before = CFRange(location: range.location - 1, length: 1)
         if let query = AXValueCreate(.cfRange, &before), let character: String = parameterized(element, kAXStringForRangeParameterizedAttribute, query),
            let unit = character.utf16.first {
-            return (false, unit, terminal)
+            return (false, unit, terminal, single)
         }
-        guard let value: String = attribute(element, kAXValueAttribute) else { return (false, nil, terminal) }
+        guard let value: String = attribute(element, kAXValueAttribute) else { return (false, nil, terminal, single) }
         let string = value as NSString
-        return (false, range.location <= string.length ? string.character(at: range.location - 1) : nil, terminal)
+        return (false, range.location <= string.length ? string.character(at: range.location - 1) : nil, terminal, single)
+    }
+
+    /// A text field or search field takes one line: a paragraph break would press Return in it (search, submit).
+    static func isSingleLine(role: String?, subrole: String?) -> Bool {
+        role == kAXTextFieldRole || subrole == kAXSearchFieldSubrole || role == "AXSearchField"
     }
 
     /// Terminal apps, and the terminal panel of an editor such as VS Code (its input is described as "Terminal …").
@@ -69,8 +75,8 @@ enum Inserter {
         return [kAXDescriptionAttribute, kAXTitleAttribute].contains { ((attribute(element, $0) as String?) ?? "").hasPrefix("Terminal") }
     }
 
-    /// A terminal runs every pasted line as a command when its shell has no bracketed paste (macOS's bash 3.2, ssh, REPLs):
-    /// line breaks become spaces, so a dictation never presses Return.
+    /// A terminal runs every pasted line as a command when its shell has no bracketed paste (macOS's bash 3.2, ssh, REPLs),
+    /// and a single-line field submits on one: line breaks become spaces, so a dictation never presses Return.
     static func oneLine(_ text: String) -> String {
         text.replacingOccurrences(of: "[ \\t]*\\n+[ \\t]*", with: " ", options: .regularExpression)
     }

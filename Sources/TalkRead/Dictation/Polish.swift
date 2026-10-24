@@ -4,7 +4,7 @@ import Foundation
 import FoundationModels
 
 enum Polish {
-    static let instructions = "Fix punctuation, capitalisation and obvious grammar slips in the user's dictated text. Keep their words, meaning, tone and British spelling. Do not add, remove or summarise content. Return only the text."
+    static let instructions = "Fix punctuation, capitalisation and obvious grammar slips in the user's dictated text. Keep their words, meaning, tone and British spelling. Do not add, remove or summarise content. Keep every blank line between paragraphs as it is. Return only the text."
 
     static var isAvailable: Bool { SystemLanguageModel.default.availability == .available }
 
@@ -24,6 +24,7 @@ enum Polish {
         guard let polished = answer?.trimmingCharacters(in: .whitespacesAndNewlines), !polished.isEmpty else { return text }
         // ponytail: length guard only; a rewrite of similar length still gets through.
         let ratio = Double(polished.count) / Double(text.count)
-        return (0.7...1.3).contains(ratio) ? polished : text
+        guard (0.7...1.3).contains(ratio), polished.contains("\n\n") == text.contains("\n\n") else { return text }   // paragraphs survive
+        return polished
     }
 }

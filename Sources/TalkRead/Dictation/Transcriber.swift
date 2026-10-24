@@ -2,11 +2,19 @@
 // at a time, live partials, and file transcription through the same path.
 import AVFoundation
 import FluidAudio
+import TalkReadCore
+
+/// What a recogniser returns: the text, and the silence before each sentence after the first when it knows (Parakeet;
+/// Apple's recogniser has none). The streaming partials stay plain text.
+struct Transcript: Sendable {
+    var text: String
+    var pauses: [Paragraphs.Pause] = []
+}
 
 /// What the dictation controller needs from a recogniser (the real `Transcriber`, or a fake in the self-test).
 @MainActor protocol DictationASR: AnyObject {
     /// Transcribes one utterance: every buffer of `audio` (16 kHz mono Float32) until the stream finishes.
-    func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> String
+    func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> Transcript
     /// Downloads and loads the model once; a cancelled caller stops waiting at once while the load carries on.
     func load(progress: ((Double) -> Void)?) async throws
     /// Frees the model. False, freeing nothing, while it is in use or loading; true once nothing is resident (Sol #24).
@@ -20,7 +28,7 @@ import FluidAudio
 
 extension DictationASR {
     /// Whole-clip transcription (dictate-file, self-test): fed in 1 s buffers, then finished.
-    func transcribe(samples: [Float]) async throws -> String {
+    func transcribe(samples: [Float]) async throws -> Transcript {
         let (stream, feed) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
         for start in stride(from: 0, to: samples.count, by: 16_000) {
             feed.yield(Transcriber.buffer(samples[start..<min(start + 16_000, samples.count)]))
@@ -106,24 +114,28 @@ extension DictationASR {
         return true
     }
 
-    func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> String {
+    func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> Transcript {
         try await queue.exclusive {
             try await load()
             guard let m = manager else { throw ASRError.notInitialized }
             try await m.reset()
             await m.setPartialTranscriptCallback { text in Task { @MainActor in partial(text) } }
             var frames = 0
+            var tokens: [TokenTiming] = []                    // kept whole: a word can span two drains
             for await buffer in audio {
                 try Task.checkCancellation()
                 try await m.appendAudio(buffer)
                 frames += Int(buffer.frameLength)
                 try await m.processBufferedAudio()
+                tokens += await m.consumeTokenTimings()
             }
             try Task.checkCancellation()
             if frames < 16_000 { try await m.appendAudio(Self.buffer(ArraySlice(repeating: 0, count: 16_000 - frames))) }
             let text = try await m.finish()
+            tokens += await m.consumeTokenTimings()
             await m.setPartialTranscriptCallback { _ in }
-            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let words = buildWordTimings(from: tokens).map { (text: $0.word, start: $0.startTime, end: $0.endTime) }
+            return Transcript(text: text.trimmingCharacters(in: .whitespacesAndNewlines), pauses: Paragraphs.pauses(of: words))
         }
     }
 

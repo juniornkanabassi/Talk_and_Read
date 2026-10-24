@@ -171,9 +171,10 @@ struct SettingsContent: View {
             }
             Section {
                 Toggle("Remove filler words (um, uh, er)", isOn: $model.settings.removeFillers)
+                Toggle("Split long dictations into paragraphs", isOn: $model.settings.paragraphs)
                 Toggle("Polish with Apple Intelligence", isOn: $model.settings.polishWithAppleIntelligence)
             } footer: {
-                Text("Polish fixes punctuation and grammar on this Mac. Custom words live in the Dictation section of the main window.")
+                Text("Long dictations break into paragraphs where you pause. Polish fixes punctuation and grammar on this Mac. Custom words live in the Dictation section of the main window.")
                     .foregroundStyle(.secondary)
             }
         }

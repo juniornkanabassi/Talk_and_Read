@@ -32,6 +32,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(d.dictationEngine, "parakeet")
         XCTAssertFalse(d.learnCorrections)
         XCTAssertTrue(d.britishSpelling)
+        XCTAssertTrue(d.paragraphs)
         // An old file without the keys gets the defaults; an unknown engine is clamped.
         try Data(#"{"voiceID":"bf_emma"}"#.utf8).write(to: file)
         let old = Settings.load(from: file)
@@ -44,6 +45,7 @@ final class SettingsTests: XCTestCase {
         try t.set("dictationEngine", to: "apple"); XCTAssertEqual(t.dictationEngine, "apple")
         try t.set("learnCorrections", to: "on"); XCTAssertTrue(t.learnCorrections)
         try t.set("britishSpelling", to: "no"); XCTAssertFalse(t.britishSpelling)
+        try t.set("paragraphs", to: "off"); XCTAssertFalse(t.paragraphs)
         XCTAssertThrowsError(try t.set("dictationEngine", to: "whisper"))
         XCTAssertEqual(t.dictationEngine, "apple", "a rejected engine changes nothing")
     }
@@ -160,7 +162,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃A"))
         XCTAssertEqual(json["skipForwardShortcut"]?.objectValue, ["keyCode": .number(14), "modifiers": .number(524_288), "display": .string("⌥E")])
         XCTAssertNil(json["miniPlayerOrigin"])
-        XCTAssertEqual(Settings.keys.count, 33)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G)
+        XCTAssertEqual(Settings.keys.count, 34)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0)
         XCTAssertEqual(Set(Settings.chords.map(\.key)).count, 9)
         XCTAssertTrue(Settings.chords.allSatisfy { Settings.keys.contains($0.key) }, "every chord is a settings key")
         XCTAssertTrue(Settings.keys.contains("miniPlayerOrigin"))

@@ -53,6 +53,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var subtitlesExpanded = false
     public var useOCRFallback = true
     public var removeFillers = true
+    /// Break a long dictation (60 words or more) into paragraphs at its pauses (PLAN 0.6.0).
+    public var paragraphs = true
     public var polishWithAppleIntelligence = false
     /// "parakeet" (default) or "apple" (built in, no download).
     public var dictationEngine = "parakeet"
@@ -83,7 +85,7 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.tintEnabled, &tintEnabled); get(.opacity, &opacity); get(.showMiniPlayer, &showMiniPlayer)
         get(.miniPlayerAutoHideSeconds, &miniPlayerAutoHideSeconds); get(.miniPlayerOrigin, &miniPlayerOrigin)
         get(.subtitlesExpanded, &subtitlesExpanded); get(.useOCRFallback, &useOCRFallback)
-        get(.removeFillers, &removeFillers); get(.polishWithAppleIntelligence, &polishWithAppleIntelligence)
+        get(.removeFillers, &removeFillers); get(.paragraphs, &paragraphs); get(.polishWithAppleIntelligence, &polishWithAppleIntelligence)
         get(.dictationEngine, &dictationEngine); get(.learnCorrections, &learnCorrections); get(.britishSpelling, &britishSpelling)
         get(.unloadAfterMinutes, &unloadAfterMinutes); get(.launchAtLogin, &launchAtLogin)
         get(.onboardingDone, &onboardingDone); get(.historyLimit, &historyLimit)
@@ -184,6 +186,7 @@ public struct Settings: Codable, Equatable, Sendable {
         case "subtitlesExpanded": subtitlesExpanded = try bool()
         case "useOCRFallback": useOCRFallback = try bool()
         case "removeFillers": removeFillers = try bool()
+        case "paragraphs": paragraphs = try bool()
         case "polishWithAppleIntelligence": polishWithAppleIntelligence = try bool()
         case "dictationEngine":
             guard ["parakeet", "apple"].contains(raw) else {
