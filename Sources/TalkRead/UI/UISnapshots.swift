@@ -148,6 +148,8 @@ import TalkReadCore
         let menuBar = MenuBarMenu(model: model, openMain: {}, openSettings: {}, openOnboarding: {})
         print("\nMenu bar menu (stub model state):")
         for row in menuBar.dump() { print("  " + row) }
+        print("\nMicrophone submenu (this Mac's inputs, system default chosen):")
+        for row in menuBar.dump(menuBar.microphoneMenu(Microphone.inputs(), chosen: nil)) { print("  " + row) }
         print("\nVoice submenu (sample voices, English af_heart, French ff_siwis):")
         for row in menuBar.dump(menuBar.voiceMenu(data.voices, english: "af_heart", french: "ff_siwis")) { print("  " + row) }
         print(failures == 0 ? "PASS ui self-test" : "FAIL ui self-test: \(failures) failing")

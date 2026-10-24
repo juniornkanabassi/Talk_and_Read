@@ -160,6 +160,7 @@ struct SettingsContent: View {
     private var dictation: some View {
         Form {
             Section {
+                MicrophonePicker(model: model)
                 Picker("Recogniser", selection: $model.settings.dictationEngine) {
                     Text("Parakeet (most accurate, 580 MB)").tag("parakeet")
                     Text("Apple (built in, no download)").tag("apple")

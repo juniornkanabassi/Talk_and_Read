@@ -85,7 +85,7 @@ struct DictationPillView: View {
             }
             Text(message)
                 .font(.system(size: 13, weight: .medium))
-                .lineLimit(1)
+                .lineLimit(dictation.micNotice == nil ? 1 : 2)   // room for "Mic not found, using …"
                 .truncationMode(.head)
                 .minimumScaleFactor(0.85)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -106,7 +106,7 @@ struct DictationPillView: View {
     private var message: String {
         switch dictation.state {
         case .idle: ""
-        case .recording(_, let partial): dictation.preparing && partial.isEmpty ? "Preparing…" : partial.isEmpty ? "Listening" : partial
+        case .recording(_, let partial): dictation.preparing && partial.isEmpty ? "Preparing…" : partial.isEmpty ? dictation.micNotice ?? "Listening" : partial
         case .transcribing: dictation.lastPartial.isEmpty ? "Transcribing…" : dictation.lastPartial
         case .done(let text): text
         case .failed(let reason): reason

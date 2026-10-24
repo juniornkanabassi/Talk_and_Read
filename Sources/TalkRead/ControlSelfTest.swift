@@ -59,6 +59,7 @@ enum ControlSelfTest {
         await step("voices", ["voices"], .ok)
         await step("settings-get", ["settings-get"], .ok)
         await step("settings-set speed 1.5", ["settings-set", "speed", "1.5"], .ok)
+        await microphoneSteps(cli, model, &results)
         await step("a speak", ["speak", "Hello from the control test.", "--caller", "a"], .audio)
         await step("b speak while a reads", ["speak", "Interrupting.", "--caller", "b"], .busy)
         await step("b pause", ["pause", "--caller", "b"], .busy)
@@ -175,6 +176,31 @@ enum ControlSelfTest {
         let passed = results.filter { $0 }.count
         print("control self-test: \(passed)/\(results.count) passed")
         return passed == results.count ? 0 : 1
+    }
+
+    /// `mic` lists, chooses and refuses an unknown UID; `status` reports the choice. Nothing records.
+    @MainActor private static func microphoneSteps(_ cli: URL, _ model: AppModel, _ results: inout [Bool]) async {
+        func record(_ label: String, _ pass: Bool, _ detail: String) { results.append(pass); print("\(pass ? "PASS" : "FAIL")  \(label.padding(toLength: 36, withPad: " ", startingAt: 0)) \(detail)") }
+        func choice(_ o: Outcome) -> String? { o.response?.data?["choice"]?.stringValue }
+        func statusChoice() async -> String? {
+            await call(cli, ["status"]).response?.data?["dictation"]?.objectValue?["microphone"]?.objectValue?["choice"]?.stringValue
+        }
+        let list = await call(cli, ["mic"])
+        let inputs = list.response?.data?["inputs"]?.arrayValue ?? []
+        record("mic lists the inputs", list.response?.ok == true && !inputs.isEmpty && choice(list) == "default", "\(inputs.count) inputs, choice \(choice(list) ?? "-")")
+        if let uid = inputs.first?.objectValue?["uid"]?.stringValue {
+            let set = await call(cli, ["mic", uid])
+            let saved = model.settings.dictationMicrophone, status = await statusChoice()
+            record("mic <uid> chooses it", set.response?.ok == true && choice(set) == uid && saved == uid && status == uid, "settings \(saved ?? "nil"), status \(status ?? "-")")
+        } else {
+            print("SKIP  mic <uid>: this Mac has no input device")
+        }
+        let before = model.settings.dictationMicrophone
+        let unknown = await call(cli, ["mic", "no-such-device"])
+        record("mic refuses an unknown UID", unknown.response?.code == "bad_args" && model.settings.dictationMicrophone == before, unknown.text)
+        let reset = await call(cli, ["mic", "default"])
+        let status = await statusChoice()
+        record("mic default clears the choice", reset.response?.ok == true && model.settings.dictationMicrophone == nil && status == "default", "status \(status ?? "-")")
     }
 
     private static func check(_ label: String, _ o: Outcome, _ expect: Expect) -> Bool {

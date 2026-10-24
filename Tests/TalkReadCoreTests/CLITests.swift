@@ -150,7 +150,7 @@ final class CLITests: XCTestCase {
     func testHelp() throws {
         let top = try cli(["--help"])
         XCTAssertEqual(top.code, 0)
-        for name in ["status", "voices", "speak", "read-selection", "read-file", "pause", "resume", "stop", "skip", "speed", "voice", "dictate-start",
+        for name in ["status", "voices", "speak", "read-selection", "read-file", "pause", "resume", "stop", "skip", "speed", "voice", "mic", "dictate-start",
                      "dictate-stop", "dictation-last", "dictate-file", "open", "settings-get", "settings-set", "models"] {
             XCTAssertTrue(top.out.contains("  \(name) "), name)
             let one = try cli([name, "--help"])
@@ -162,8 +162,8 @@ final class CLITests: XCTestCase {
     func testManifestListsOneToolPerCommand() throws {
         let manifest = try cli(["mcp-manifest"])
         let tools = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(manifest.out.utf8)) as? [[String: Any]])
-        XCTAssertEqual(tools.count, 19)
-        XCTAssertEqual(Set(tools.compactMap { $0["name"] as? String }).count, 19)
+        XCTAssertEqual(tools.count, 20)
+        XCTAssertEqual(Set(tools.compactMap { $0["name"] as? String }).count, 20)
         let speak = try XCTUnwrap(tools.first { $0["name"] as? String == "speak" })
         let schema = try XCTUnwrap(speak["inputSchema"] as? [String: Any])
         XCTAssertEqual(schema["required"] as? [String], ["text"])
@@ -185,11 +185,11 @@ final class CLITests: XCTestCase {
         _ = try cli(["speak", "-"], stdin: "text from stdin\n")
         _ = try cli(["read-file", "docs/a.pdf"], cwd: cwd)
         _ = try cli(["dictate-file", "../b.wav"], cwd: cwd)
-        _ = try cli(["skip"]); _ = try cli(["skip", "-2"]); _ = try cli(["speed", "1.5"]); _ = try cli(["voice", "bf_emma"])
+        _ = try cli(["skip"]); _ = try cli(["skip", "-2"]); _ = try cli(["speed", "1.5"]); _ = try cli(["voice", "bf_emma"]); _ = try cli(["mic"]); _ = try cli(["mic", "default"])
         _ = try cli(["settings-set", "speed", "1.25"]); _ = try cli(["settings-get"]); _ = try cli(["settings-get", "voiceID"])
         _ = try cli(["models"]); _ = try cli(["models", "download"])
         let r = seen.requests
-        XCTAssertEqual(r.count, 14)
+        XCTAssertEqual(r.count, 16)
         XCTAssertEqual(r[0].command, "speak")
         XCTAssertEqual(r[0].args, ["text": "Hello there world", "voice": "bf_emma", "speed": "1.2"])
         XCTAssertEqual(r[0].caller, "agent-7"); XCTAssertEqual(r[0].id, "req-1"); XCTAssertTrue(r[0].force)
@@ -202,9 +202,10 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(r[4].args, ["path": home.appendingPathComponent("b.wav").standardizedFileURL.path])
         XCTAssertEqual(r[5].args, ["sentences": "1"]); XCTAssertEqual(r[6].args, ["sentences": "-2"])
         XCTAssertEqual(r[7].args, ["value": "1.5"]); XCTAssertEqual(r[8].args, ["id": "bf_emma"])
-        XCTAssertEqual(r[9].command, "settings-set"); XCTAssertEqual(r[9].args, ["key": "speed", "value": "1.25"])
-        XCTAssertEqual(r[10].args, [:]); XCTAssertEqual(r[11].args, ["key": "voiceID"])
-        XCTAssertEqual(r[12].args, ["action": "status"]); XCTAssertEqual(r[13].args, ["action": "download"])
+        XCTAssertEqual(r[9].command, "mic"); XCTAssertEqual(r[9].args, [:]); XCTAssertEqual(r[10].args, ["uid": "default"])
+        XCTAssertEqual(r[11].command, "settings-set"); XCTAssertEqual(r[11].args, ["key": "speed", "value": "1.25"])
+        XCTAssertEqual(r[12].args, [:]); XCTAssertEqual(r[13].args, ["key": "voiceID"])
+        XCTAssertEqual(r[14].args, ["action": "status"]); XCTAssertEqual(r[15].args, ["action": "download"])
     }
 
     func testOpenShowAndReadFlags() throws {

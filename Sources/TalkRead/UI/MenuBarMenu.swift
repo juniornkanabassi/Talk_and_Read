@@ -54,6 +54,8 @@ import TalkReadCore
             if dictating { try? model.dictation.stop(insert: true, caller: "user") } else { try? model.dictation.start(caller: "user") }
         }
         add("Paste last transcript", s.pasteLastShortcut, enabled: !model.dictation.history.isEmpty) { [model] in model.dictation.pasteLast() }
+        let inputs = Microphone.inputs()
+        submenu("Microphone  \(inputs.first { $0.uid == s.dictationMicrophone }?.name ?? "System default")", microphoneMenu(inputs, chosen: s.dictationMicrophone))
         menu.addItem(.separator())
 
         add("Open Talk and Read…", action: openMain)
@@ -61,6 +63,17 @@ import TalkReadCore
         if model.needsSetup { add("⚠︎ Finish setup…", action: openOnboarding) }
         menu.addItem(.separator())
         add("Quit Talk and Read", key: "q") { NSApp.terminate(nil) }
+    }
+
+    /// The default input, then every input; a tick on the chosen one (a saved microphone that is unplugged shows as such).
+    func microphoneMenu(_ inputs: [InputDevice], chosen: String?) -> NSMenu {
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+        func pick(_ uid: String?) { model.settings.dictationMicrophone = uid }
+        add(Microphone.defaultLabel(inputs), on: chosen == nil, to: sub) { pick(nil) }
+        for d in inputs { add(d.name, on: d.uid == chosen, to: sub) { pick(d.uid) } }
+        if let chosen, !inputs.contains(where: { $0.uid == chosen }) { add("Not connected", enabled: false, on: true, to: sub) {} }
+        return sub
     }
 
     /// Female voices grouped by model (V5), then the French voices; ticks on the English and the French voice.

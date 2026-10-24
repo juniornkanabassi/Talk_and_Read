@@ -33,6 +33,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var skipBackwardShortcut = Shortcut(keyCode: 13, modifiers: Shortcut.option, display: "⌥W")
     public var skipForwardShortcut = Shortcut(keyCode: 14, modifiers: Shortcut.option, display: "⌥E")
     public var dictationHoldKey = HoldKey.rightOption
+    /// CoreAudio UID of the microphone dictation records from; nil = the system default input (`Microphone`).
+    public var dictationMicrophone: String?
     /// The English voice (and any text not detected as French). Ids carry the model: `af_heart` (Kokoro), `qwen.us_warm` (Qwen3).
     public var voiceID = "af_heart"
     /// The voice for text detected as French (PLAN 0.3.0 decision 2).
@@ -74,7 +76,7 @@ public struct Settings: Codable, Equatable, Sendable {
         }
         get(.readShortcut, &readShortcut); get(.pauseShortcut, &pauseShortcut)
         get(.screenshotShortcut, &screenshotShortcut); get(.dictationToggleShortcut, &dictationToggleShortcut)
-        get(.pasteLastShortcut, &pasteLastShortcut); get(.dictationHoldKey, &dictationHoldKey)
+        get(.pasteLastShortcut, &pasteLastShortcut); get(.dictationHoldKey, &dictationHoldKey); get(.dictationMicrophone, &dictationMicrophone)
         get(.increaseSpeedShortcut, &increaseSpeedShortcut); get(.decreaseSpeedShortcut, &decreaseSpeedShortcut)
         get(.skipBackwardShortcut, &skipBackwardShortcut); get(.skipForwardShortcut, &skipForwardShortcut)
         get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.highlightHex, &highlightHex); get(.highlightStyle, &highlightStyle)
@@ -104,6 +106,7 @@ public struct Settings: Codable, Equatable, Sendable {
         if highlightHex.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) == nil { s.highlightHex = "#FFD21F" }
         if !["box", "outline", "underline"].contains(highlightStyle) { s.highlightStyle = "box" }
         if !["parakeet", "apple"].contains(dictationEngine) { s.dictationEngine = "parakeet" }
+        if dictationMicrophone?.isEmpty == true { s.dictationMicrophone = nil }
         return s
     }
 
@@ -159,6 +162,7 @@ public struct Settings: Codable, Equatable, Sendable {
                 throw ControlError("invalid_value", "dictationHoldKey must be one of: \(HoldKey.allCases.map(\.rawValue).joined(separator: ", ")).")
             }
             dictationHoldKey = v
+        case "dictationMicrophone": throw ControlError("read_only_setting", "dictationMicrophone is changed with `talkread mic`.")
         case "voiceID": voiceID = raw
         case "frenchVoiceID": frenchVoiceID = raw
         case "fallbackVoiceID": fallbackVoiceID = raw

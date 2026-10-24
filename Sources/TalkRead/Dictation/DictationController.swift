@@ -29,6 +29,10 @@ enum DictationError: LocalizedError, Equatable {
     @Published private(set) var levels = [Float](repeating: 0, count: 11)
     /// The latest partial transcript, kept through `.transcribing`.
     private(set) var lastPartial = ""
+    /// Settings.dictationMicrophone: the input for the next recording (nil = system default).
+    var microphoneUID: String?
+    /// Set while recording when the saved microphone is not connected and the default is used instead (the pill shows it).
+    @Published private(set) var micNotice: String?
 
     static let user = "user"
     /// The one admission slot for live dictation and file transcription: one owner at a time; other control callers
@@ -110,6 +114,7 @@ enum DictationError: LocalizedError, Equatable {
         let gen = generation
         watcher?.cancel()                                         // a new dictation ends the last one's watch
         offering = nil
+        micNotice = nil
         insertOnStop = true
         levels = levels.map { _ in 0 }
         lastPartial = ""
@@ -139,6 +144,7 @@ enum DictationError: LocalizedError, Equatable {
         feed?.finish()                                            // the recogniser finishes while the input stops
         feed = nil
         _ = audio.stop()
+        micNotice = nil
         state = .transcribing
         play("Pop")
     }
@@ -218,6 +224,9 @@ enum DictationError: LocalizedError, Equatable {
         guard gen == generation else { return nil }
         guard case .recording = state else { return released() }
         play("Tink")                                              // the microphone starts now, after any drain
+        let mic = Microphone.resolve(microphoneUID, in: Microphone.inputs())   // decided per recording, never mid-recording
+        micNotice = mic.notice
+        (audio as? Recorder)?.microphoneUID = mic.device?.uid
         do {
             try await audio.start()
         } catch {
@@ -329,6 +338,7 @@ enum DictationError: LocalizedError, Equatable {
     /// The cancelled backend work drains: the next recording and the idle unload wait until it has exited (Sol #23).
     private func discard() {
         generation += 1
+        micNotice = nil
         work?.cancel()
         _ = audio.stop()
         feed?.finish()
