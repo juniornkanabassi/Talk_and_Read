@@ -5,7 +5,7 @@ import SwiftUI
 import TalkReadCore
 
 @MainActor final class DictationPill {
-    static let width: CGFloat = 460
+    static let width: CGFloat = 340   // Junior, 24 Oct: narrower, one line of words
     private let panel: NSPanel
 
     private final class Panel: NSPanel {
@@ -96,9 +96,14 @@ struct DictationPillView: View {
     }
 
     private var status: some View {
-        var recording = false
-        if case .recording = dictation.state { recording = true }
-        return DictationPillStatus(message: message, levels: dictation.levels, recording: recording) {
+        var recording = false, words = false   // `words`: the message is what was said (its newest end shows)
+        switch dictation.state {
+        case .recording(_, let partial): recording = true; words = !partial.isEmpty
+        case .transcribing: words = !dictation.lastPartial.isEmpty
+        case .done: words = true
+        default: break
+        }
+        return DictationPillStatus(message: message, levels: dictation.levels, recording: recording, words: words) {
             try? dictation.cancel(caller: DictationController.user)
         }
     }
@@ -120,19 +125,22 @@ struct DictationPillStatus: View {
     let message: String
     let levels: [Float]
     let recording: Bool
+    /// Spoken words keep their newest end; notices and errors ("Mic not found, using …") keep their start.
+    var words = true
     let cancel: () -> Void
 
     private static let accent = Color(red: 1, green: 0xD2 / 255, blue: 0x1F / 255)   // #FFD21F
-    private static let keep = 96   // characters: about three lines at this size; the end of the text, never the start
-    private static let bars = 48    // 4 pt wide, 5 pt apart: the 11 levels spread over the pill's width
+    private static let keep = 44   // characters: one line at this size; the end of the text, never the start
+    private static let bars = 34    // 4 pt wide, 5 pt apart: the 11 levels spread over the pill's width
 
     var body: some View {
         VStack(spacing: 8) {
             HStack(alignment: .top, spacing: 10) {
-                Text(Self.tail(message))
+                Text(words ? Self.tail(message) : message)
                     .font(.system(size: 18, weight: .medium))
-                    .lineLimit(3)
-                    .truncationMode(.head)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)   // a mic notice fits before it is cut
+                    .truncationMode(words ? .head : .tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityLabel("Dictation: \(message)")
                 Button(action: cancel) {
