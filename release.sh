@@ -105,6 +105,7 @@ mkdir "$MNT"
 MOUNTED=1
 DAPP="$MNT/Talk & Read.app"
 [[ -d $DAPP ]] || die "no Talk & Read.app inside $DMG"
+/usr/bin/codesign --verify --deep --strict "$DAPP" 2>/dev/null || problems+=("the app in the disk image does not verify")
 cdhash() { /usr/bin/codesign -dv --verbose=4 "$1" 2>&1 | sed -n 's/^CDHash=//p'; }
 dplist() { /usr/libexec/PlistBuddy -c "Print $1" "$DAPP/Contents/Info.plist" 2>/dev/null || true; }
 for k in CFBundleShortVersionString CFBundleVersion TRSourceCommit; do
