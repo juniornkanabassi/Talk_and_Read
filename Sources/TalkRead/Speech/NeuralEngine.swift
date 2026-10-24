@@ -6,6 +6,7 @@
 // reproduced 21 Oct), while legacy routes noise and tail to the CPU on macOS 27 and is about 80 MB instead of 380 MB.
 import FluidAudio
 import Foundation
+import os
 import TalkReadCore
 
 final class NeuralEngine: SpeechEngine {
@@ -86,10 +87,22 @@ final class NeuralEngine: SpeechEngine {
         if groups.count != words.count {
             // The phonemiser is per word, so phonemising each word alone tells how many groups it produced
             // (an unlisted hyphenated compound gives one group per part, an unpronounceable token gives none).
-            var c: [Int] = []
-            for w in words {
+            // Each lookup re-runs FluidAudio's text normaliser (10-20 ms), so a plain word counts one without it and the
+            // rest are cached; only if that does not add up is every word looked up (efficiency fix 2, 24 Oct).
+            let language = Self.isFrench(voice) ? "fr" : "en"
+            func lookup(_ w: String) async -> Int {
+                let key = language + " " + w
+                if let n = groupCounts.withLock({ $0[key] }) { return n }
                 let ipa = (try? await manager.phonemes(for: w)) ?? ""
-                c.append(ipa.split(separator: " ").filter { $0.contains(where: \.isLetter) }.count)
+                let n = ipa.split(separator: " ").filter { $0.contains(where: \.isLetter) }.count
+                groupCounts.withLock { $0[key] = n }
+                return n
+            }
+            var c: [Int] = []
+            for w in words { c.append(Self.isPlainWord(w) ? 1 : await lookup(w)) }
+            if c.reduce(0, +) != groups.count {
+                c = []
+                for w in words { c.append(await lookup(w)) }
             }
             counts = c
         }
@@ -99,11 +112,20 @@ final class NeuralEngine: SpeechEngine {
     }
 
     func unload() {
+        groupCounts.withLock { $0 = [:] }
         Task { await loader.drop() }
         Task { await frenchLoader.drop() }
     }
 
+    /// Phoneme groups per word ("en word" / "fr word"), from `synthesize`'s recount; cleared by `unload()`.
+    private let groupCounts = OSAllocatedUnfairLock<[String: Int]>(initialState: [:])
+
     // MARK: - Pure helpers (checked by `--selftest-tts`)
+
+    /// Letters only (inner apostrophes allowed) and not an all-capitals initialism: phonemised as one group.
+    static func isPlainWord(_ w: String) -> Bool {
+        w.allSatisfy { $0.isLetter || $0 == "'" } && !(w.count > 1 && w.allSatisfy { !$0.isLetter || $0.isUppercase })
+    }
 
     /// Word spans in seconds: runs of ids between boundaries (space, BOS/EOS), trimmed of punctuation.
     /// Time accumulates over every id, BOS/EOS included.
