@@ -66,7 +66,7 @@ let commands: [Command] = [
     Command(name: "models", summary: "Show speech model status, including the optional Qwen3, word timing and French downloads, or download the Kokoro voice and dictation models (about 1 GB). The optional ones download only from the Models page, after a click.", example: "models download",
             params: [Param(name: "action", kind: .string, help: "status or download; default status.", positional: true,
                            choices: ["status", "download"], defaultValue: "status")]),
-    Command(name: "update-check", summary: "Check for a newer Talk & Read now, as the menu's Check for Updates… does. Sparkle's window shows the result; installing still needs the user's click.",
+    Command(name: "update-check", summary: "Check for a newer Talk & Read now, as the menu's Check for Updates… does. Replies with a checkID; `status` then shows the result under updates (upToDate, available <version> or error). Sparkle's window asks the user before anything installs.",
             example: "update-check")
 ]
 

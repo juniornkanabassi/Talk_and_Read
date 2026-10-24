@@ -28,6 +28,11 @@ import TalkReadCore
         let state = model.session?.state
         let reading = state == .playing || state == .preparing
 
+        // Gentle reminder: an update Sparkle found in the background; choosing it brings Sparkle's alert forward.
+        if let version = Updates.shared.reminder {
+            add("Update available: \(version)…") { _ = try? Updates.shared.check() }
+            menu.addItem(.separator())
+        }
         add("Read selection", s.readShortcut) { [model] in model.readSelection() }
         add(state == .paused ? "Resume" : "Pause", s.pauseShortcut, enabled: reading || state == .paused) { [model] in model.togglePause() }
         add("Replay last", enabled: !model.recentReads.isEmpty) { [model] in
@@ -61,7 +66,7 @@ import TalkReadCore
         add("Open Talk & Read…", action: openMain)
         add("Settings…", key: ",", action: openSettings)
         if model.needsSetup { add("⚠︎ Finish setup…", action: openOnboarding) }
-        add("Check for Updates…", enabled: Updates.canCheck) { try? Updates.check() }
+        if Updates.shared.isEnabled { add("Check for Updates…", enabled: Updates.shared.canCheck) { _ = try? Updates.shared.check() } }
         menu.addItem(.separator())
         add("Quit Talk & Read", key: "q") { NSApp.terminate(nil) }
     }

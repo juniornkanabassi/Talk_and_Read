@@ -194,8 +194,9 @@ extension AppModel {
             return modelsJSON()
 
         case "update-check":
-            try Updates.check()   // Sparkle's own window shows the result; installing still needs the user's click
-            return ["started": .bool(true)]
+            // Sparkle's own window shows the outcome and asks before installing; `status` reports it under updates.
+            let r = try Updates.shared.check()
+            return ["started": .bool(r.started), "checkID": r.checkID.map { .string($0) } ?? .null]
 
         default:
             throw AppError(code: "unknown_command", message: "Unknown command '\(r.command)'.")
@@ -241,7 +242,8 @@ extension AppModel {
                                   "microphone": .object(microphoneJSON())]),
             "permissions": .object(["accessibility": .bool(permissions.accessibility), "microphone": .bool(permissions.microphone),
                                     "screenRecording": .bool(permissions.screenRecording)]),
-            "models": .object(modelsJSON())
+            "models": .object(modelsJSON()),
+            "updates": .object(Updates.shared.json())
         ]
     }
 
