@@ -58,6 +58,12 @@ final class VocabularyTests: XCTestCase {
         XCTAssertEqual(clean("Ligue 2 starts."), "Ligue 2 starts.", "a different digit is not the term's")
     }
 
+    func testARepeatedWordIsNotSwallowed() {
+        let club = ["Manchester United Football Club": "Manchester United Football Club"]
+        XCTAssertEqual(clean("ManchesterUnitedFootball Club club.", vocabulary: club), "ManchesterUnitedFootball Club club.")
+        XCTAssertEqual(clean("Manchester United Footbal Club.", vocabulary: club), "Manchester United Football Club.")
+    }
+
     func testKnownMishearingsAreFixed() {
         XCTAssertTrue(clean("Is PHG bigger than Juve?").contains("PSG"))
         XCTAssertTrue(clean("If Mbappe is not French").contains("Mbappé is"))
