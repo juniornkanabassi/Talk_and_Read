@@ -117,12 +117,14 @@ else
 fi
 # DMG end
 mkdir -p "$OUTPUT_ROOT"
+# Both are copied in before either is promoted; if the disk image cannot be promoted, the zip this run promoted is
+# taken back out, so Outputs never keeps one without the other (Sol inspection 9 #3).
 /usr/bin/ditto "$TMP_ARCHIVE" "$OUTPUT_TMP"
+(( ! NOTARISED )) || /bin/cp "$TMP_DMG" "$DMG_TMP"
 /bin/mv -f "$OUTPUT_TMP" "$ARCHIVE"
 if (( NOTARISED )); then
-  /bin/cp "$TMP_DMG" "$DMG_TMP"
   /bin/mv -n "$DMG_TMP" "$DMG"
-  [[ ! -e "$DMG_TMP" ]] || { print -u2 "Could not write $DMG without overwriting an existing file"; exit 1; }
+  [[ ! -e "$DMG_TMP" ]] || { /bin/rm -f "$ARCHIVE"; print -u2 "Could not write $DMG without overwriting an existing file; $ARCHIVE removed again"; exit 1; }
 fi
 print "Built and verified $APP"
 print "Archive: ${ARCHIVE:A}"

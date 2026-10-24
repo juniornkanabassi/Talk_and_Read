@@ -71,8 +71,13 @@ else
 fi
 WORK=$(mktemp -d /private/tmp/talkread-release.XXXXXX)
 MNT="$WORK/mnt" MOUNTED=0
-detach() { (( MOUNTED )) || return 0; /usr/bin/hdiutil detach -quiet "$MNT" || /usr/bin/hdiutil detach -quiet -force "$MNT" || true; MOUNTED=0; }
-trap 'detach; rm -rf "$WORK"' EXIT
+# A detach that fails keeps MOUNTED set and stops the run; the work folder (and the mount in it) is then left and named.
+detach() {
+  (( MOUNTED )) || return 0
+  /usr/bin/hdiutil detach -quiet "$MNT" || /usr/bin/hdiutil detach -quiet -force "$MNT" || { print -u2 "release.sh: could not detach $MNT"; return 1; }
+  MOUNTED=0
+}
+trap 'detach && rm -rf "$WORK"' EXIT
 
 step "1. Build"
 if [[ -z $ZIP ]]; then
@@ -113,7 +118,7 @@ for k in CFBundleShortVersionString CFBundleVersion TRSourceCommit; do
 done
 CDHASH=$(cdhash "$APP")
 [[ -n $CDHASH && $(cdhash "$DAPP") == $CDHASH ]] || problems+=("the app in the disk image has CDHash '$(cdhash "$DAPP")', the zipped app '$CDHASH'")
-detach
+detach || die "the disk image is still mounted at $MNT"
 for k in CFBundleIdentifier CFBundleShortVersionString CFBundleVersion SUPublicEDKey; do
   [[ $(plist $k) == $(src $k) ]] || problems+=("$k is '$(plist $k)' in the zip but '$(src $k)' in the source")
 done
@@ -227,7 +232,7 @@ print(f"{'Replaced' if resumed else 'Added'} the item for {version} (build {buil
 PY
 
 step "4. Release object for lib/apps.json (newest first in the app's releases)"
-cat <<JSON
+release_object() { cat <<JSON
 {
   "version": "$VERSION",
   "date": "$(date +%Y-%m-%d)",
@@ -241,6 +246,8 @@ cat <<JSON
   "notes": []
 }
 JSON
+}
+if (( DRY )); then release_object; else print "Printed after step 5, once both assets are verified on the release"; fi
 
 # The files are copied under their asset names for gh; WANT maps each name to its sha256.
 NAMES=("Talk_and_Read_$VERSION.zip" "Talk_and_Read_$VERSION.dmg")
@@ -255,13 +262,18 @@ if (( DRY )); then
 else
   if (( EXISTS )); then
     HAVE=$(gh release view "v$VERSION" --repo $REPO --json assets --jq '.assets[].name')
-    for name in $NAMES; do
+    missing=()
+    for name in $NAMES; do   # every asset already there is checked first; only then is a missing one uploaded
       if print -r -- "$HAVE" | grep -qx "$name"; then
         print "v$VERSION already has $name; checking it is this file"
+        gh release download "v$VERSION" --repo $REPO --pattern "$name" --dir "$WORK/existing" || die "could not download the existing $name"
+        [[ $(shasum -a 256 "$WORK/existing/$name" | cut -d' ' -f1) == $WANT[$name] ]] \
+          || die "v$VERSION on $REPO already holds a different $name: refusing a conflicting release; nothing uploaded, the website appcast is unchanged"
       else
-        gh release upload "v$VERSION" "$WORK/$name" --repo $REPO || die "gh release upload $name failed"
+        missing+=($name)
       fi
     done
+    for name in $missing; do gh release upload "v$VERSION" "$WORK/$name" --repo $REPO || die "gh release upload $name failed"; done
   else
     gh release create "v$VERSION" "$WORK/Talk_and_Read_$VERSION.zip" "$WORK/Talk_and_Read_$VERSION.dmg" --repo $REPO --title "Talk & Read $VERSION" --notes-file "$NOTES" || die "gh release create failed (rerun with --resume)"
   fi
@@ -273,6 +285,8 @@ else
   done
   print "Zip (appcast): $URL"
   print "DMG (website): $DMG_URL"
+  print "\nRelease object for lib/apps.json:"
+  release_object
 fi
 
 step "6. Website appcast"
