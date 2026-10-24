@@ -79,12 +79,24 @@ public enum Paragraphs {
         guard text.split(whereSeparator: \.isWhitespace).count >= minWords else { return text }
         let spans = sentenceRanges(text)
         let known = pauses.count == spans.count
+        // A spoken list ("First, … Second, …") becomes numbered lines in Cleanup: no automatic break inside it. The last item may
+        // run on, up to the next sentence that follows a clear pause.
+        var listed = Set<Int>()
+        let markers = Cleanup.listRun(text).compactMap { m -> Int? in
+            let at = String.Index(utf16Offset: m.0.range(at: 2).location, in: text)
+            return spans.lastIndex { $0.lowerBound <= at }
+        }
+        if let firstItem = markers.first, let lastItem = markers.last {
+            listed.formUnion(firstItem...lastItem)
+            var k = lastItem + 1
+            while k < spans.count, (known ? (pauses[k] ?? 0) : 0) < pauseBreak { listed.insert(k); k += 1 }
+        }
         var cuts: [Int] = [], first = 0
         while first < spans.count {
             var end = first + 1                                       // a stretch: sentences with no line break between them
             while end < spans.count, !text[spans[end - 1].upperBound..<spans[end].lowerBound].contains("\n") { end += 1 }
             let spoken = (first..<end).filter { text[spans[$0]].range(of: "\\bnew (?:paragraph|line)\\b", options: [.regularExpression, .caseInsensitive]) != nil }
-            let blocked = Set(spoken.flatMap { [$0 - 1 - first, $0 - first, $0 + 1 - first] })
+            let blocked = Set(spoken.flatMap { [$0 - 1 - first, $0 - first, $0 + 1 - first] } + listed.map { $0 - first })
             cuts += breaks((first..<end).map { known ? (pauses[$0] ?? 0) : 0 }, blocked: blocked).map { $0 + first }
             first = end
         }
@@ -124,7 +136,16 @@ public enum Paragraphs {
             while lo < hi, text[lo].isWhitespace { lo = text.index(after: lo) }
             while hi > lo, text[text.index(before: hi)].isWhitespace { hi = text.index(before: hi) }
             guard lo < hi else { return true }
-            if let previous = out.last, "»”’)]".contains(text[lo]) { out[out.count - 1] = previous.lowerBound..<hi } else { out.append(lo..<hi) }
+            // A leading closing quote or bracket (French « oui ! » Ensuite) belongs to the sentence before; the rest stays a sentence.
+            var closers = lo
+            while let previous = out.last, closers < hi, "»”’)]".contains(text[closers]) {
+                closers = text.index(after: closers)
+                out[out.count - 1] = previous.lowerBound..<closers
+                lo = closers
+                while lo < hi, text[lo].isWhitespace { lo = text.index(after: lo) }
+                closers = lo
+            }
+            if lo < hi { out.append(lo..<hi) }
             return true
         }
         return out
@@ -134,25 +155,26 @@ public enum Paragraphs {
 
     private static let item = "^\\s*(?:\\d{1,3}[.)]|[-•*])\\s+\\S"
 
-    /// For 60 words or more: no blank line inside a list (a line starting `1.`, `1)`, `-`, `•` or `*`, indented or not; a
-    /// stray break inside an item joins it back, one between items becomes a plain line break), and a full stop after the
-    /// last word when it has no sentence end, outside any closing quote or bracket ("yes". (probably tomorrow).).
+    /// For 60 words or more: no blank line between list items (lines starting `1.`, `1)`, `-`, `•` or `*`, indented or not),
+    /// and a full stop after the last word when it has no sentence end, outside any closing quote, bracket or space
+    /// ("yes". (probably tomorrow). « oui »).
     public static func tidy(_ text: String) -> String {
         guard text.split(whereSeparator: \.isWhitespace).count >= minWords else { return text }
-        var lines = text.components(separatedBy: "\n")
+        let lines = text.components(separatedBy: "\n")
         let isItem = { (line: String) in line.range(of: item, options: .regularExpression) != nil }
-        if let first = lines.firstIndex(where: isItem), let last = lines.lastIndex(where: isItem), first < last {
-            var block: [String] = [], blank = false
-            for line in lines[first...last] {
-                if line.trimmingCharacters(in: .whitespaces).isEmpty { blank = true; continue }
-                if blank, !isItem(line), !block.isEmpty { block[block.count - 1] += " " + line.trimmingCharacters(in: .whitespaces) }
-                else { block.append(line) }
-                blank = false
-            }
-            lines.replaceSubrange(first...last, with: block)
+        let isBlank = { (line: String) in line.trimmingCharacters(in: .whitespaces).isEmpty }
+        // Blank lines between two list items go. Prose between lists is never pulled into an item, and an item that runs
+        // on after a blank line (or a one-item list) is left as it is.
+        var kept: [String] = [], i = 0
+        while i < lines.count {
+            guard isBlank(lines[i]) else { kept.append(lines[i]); i += 1; continue }
+            var j = i
+            while j < lines.count, isBlank(lines[j]) { j += 1 }
+            if !((kept.last.map(isItem) ?? false) && j < lines.count && isItem(lines[j])) { kept += lines[i..<j] }
+            i = j
         }
-        var out = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        if let word = out.last(where: { !"\"'”’)]»".contains($0) }), word.isLetter || word.isNumber { out += "." }
+        var out = kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let word = out.last(where: { !"\"'”’)]»".contains($0) && !$0.isWhitespace }), word.isLetter || word.isNumber { out += "." }
         return out
     }
 }
