@@ -394,7 +394,7 @@ import WebKit
             let kept = pb.changeCount
             let quitting = await Inserter.insert("said while quitting", targetPID: getpid())
             expect("quit: insert refused, pasteboard untouched",
-                   quitting == .failed("Talk and Read is quitting") && pb.changeCount == kept && pb.string(forType: .string) == "talkread-quit-sentinel")
+                   quitting == .failed("Talk & Read is quitting") && pb.changeCount == kept && pb.string(forType: .string) == "talkread-quit-sentinel")
             Inserter.gate = saved
             pb.releaseGlobally()
         } else {
@@ -741,7 +741,7 @@ import WebKit
             let (r4, restored4) = await attempt("said while quitting")
             try? await Task.sleep(for: .milliseconds(500))           // time for a stray ⌘V to arrive
             print("insert: gate closed for quit \(r4) -> pastes \(forwarder.pastes - pastes), field unchanged \(field.stringValue == before4), pasteboard kept \(restored4)")
-            if r4 != .failed("Talk and Read is quitting") || forwarder.pastes != pastes || field.stringValue != before4 || !restored4 {
+            if r4 != .failed("Talk & Read is quitting") || forwarder.pastes != pastes || field.stringValue != before4 || !restored4 {
                 failures.append("closed gate")
             }
         }

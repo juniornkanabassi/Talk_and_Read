@@ -4,12 +4,12 @@ ROOT="${0:A:h}"
 BUILD_ROOT="${TALKREAD_BUILD_ROOT:-$HOME/Library/Caches/TalkRead-release-cache}"
 OUTPUT_ROOT="${TALKREAD_OUTPUT_ROOT:-$ROOT/../Outputs}"
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$ROOT/Resources/Info.plist")
-ARCHIVE="$OUTPUT_ROOT/Talk and Read $VERSION.zip"
+ARCHIVE="$OUTPUT_ROOT/Talk & Read $VERSION.zip"
 [[ ! -e "$ARCHIVE" ]] || { print -u2 "Refusing to overwrite $ARCHIVE"; exit 1; }
 WORK=$(mktemp -d /private/tmp/talkread-package.XXXXXX)
-APP="$WORK/Talk and Read.app"
-TMP_ARCHIVE="$WORK/Talk and Read $VERSION.zip"
-OUTPUT_TMP="$OUTPUT_ROOT/.Talk and Read $VERSION.zip.$$"
+APP="$WORK/Talk & Read.app"
+TMP_ARCHIVE="$WORK/Talk & Read $VERSION.zip"
+OUTPUT_TMP="$OUTPUT_ROOT/.Talk & Read $VERSION.zip.$$"
 cleanup() { rm -rf "$WORK"; rm -f "$OUTPUT_TMP"; }
 trap cleanup EXIT
 export MODULE_CACHE_PATH="$BUILD_ROOT/ModuleCache"
@@ -43,6 +43,7 @@ DEV_ID_SHA="AD9C29D9DAA8406609281158C2F4DF1B23260AD2"
 if /usr/bin/security find-identity -v -p codesigning 2>/dev/null | grep -q "$DEV_ID_SHA"; then SIGN_ID="$DEV_ID_SHA"; fi
 SIGN_OPTS=(--force --sign "$SIGN_ID")
 [[ "$SIGN_ID" == "-" ]] || SIGN_OPTS+=(--timestamp=none)
+# The identifiers keep the old "TalkAndRead" spelling: changing them would wipe the app's permissions and settings.
 /usr/bin/codesign "${SIGN_OPTS[@]}" --options runtime --identifier com.juniornkanabassi.TalkAndRead.cli "$APP/Contents/Helpers/talkread"
 # No --deep: it would re-sign the helper and drop its identifier.
 /usr/bin/codesign "${SIGN_OPTS[@]}" --options runtime --entitlements "$ROOT/Resources/TalkRead.entitlements" "$APP"

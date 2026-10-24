@@ -27,8 +27,8 @@ enum SelfTestWindow {
     }
 
     static let phrase = "The highlight follows every spoken word without guessing."
-    static let textParagraph = "Talk and Read draws a yellow box on each word as the voice reads it aloud. \(phrase) Some sentences repeat on purpose, so the locator has to choose the right copy. \(phrase) When it cannot be sure, it hides the box instead."
-    static let webParagraph = "Talk and Read draws a yellow box on each word as the voice reads it aloud. \(phrase) When it cannot be sure, it hides the box instead."
+    static let textParagraph = "Talk & Read draws a yellow box on each word as the voice reads it aloud. \(phrase) Some sentences repeat on purpose, so the locator has to choose the right copy. \(phrase) When it cannot be sure, it hides the box instead."
+    static let webParagraph = "Talk & Read draws a yellow box on each word as the voice reads it aloud. \(phrase) When it cannot be sure, it hides the box instead."
     static let ocrSentence = "Reading aloud keeps the eye and the ear together on every line."
     static let ocrText = "\(ocrSentence) A different sentence sits between the two copies. \(ocrSentence)"
     static let turned = "Sideways pages keep their boxes."
@@ -107,7 +107,7 @@ enum SelfTestWindow {
         record("No focus change", frontAfter == frontBefore && !NSApp.isActive, "frontmost pid \(frontBefore.map(String.init) ?? "-") -> \(frontAfter.map(String.init) ?? "-"), our app active: \(NSApp.isActive)")
         NSPasteboard(name: NSPasteboard.Name(pasteboardName)).releaseGlobally()
 
-        print("\nTalk and Read --selftest-window")
+        print("\nTalk & Read --selftest-window")
         for r in results { print("\(r.status.padding(toLength: 5, withPad: " ", startingAt: 0)) \(r.name.padding(toLength: 38, withPad: " ", startingAt: 0)) \(r.detail)") }
         let failed = results.filter { $0.status == "FAIL" }.count
         print("\(results.filter { $0.status == "PASS" }.count) passed, \(failed) failed, \(results.filter { $0.status == "SKIP" }.count) skipped")
@@ -341,7 +341,7 @@ enum SelfTestWindow {
         let queuedPastes = (0..<8).map { n in
             Task { @MainActor in
                 await quitting.transaction { () -> Bool in
-                    guard quitting.write("queued paste \(n)") != nil else { return false }   // "Talk and Read is quitting"
+                    guard quitting.write("queued paste \(n)") != nil else { return false }   // "Talk & Read is quitting"
                     try? await Task.sleep(for: .milliseconds(500))
                     return true
                 }
@@ -475,7 +475,7 @@ enum SelfTestWindow {
         let frame = NSRect(x: screen.visibleFrame.minX + 40, y: screen.visibleFrame.maxY - 1000, width: 1100, height: 960)
         let window = Panel(contentRect: frame, styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: true)
         window.setFrame(frame, display: false)   // a titled panel's init moves a frame on a second screen onto the main one
-        window.title = "Talk and Read self-test"
+        window.title = "Talk & Read self-test"
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
         window.contentView = content

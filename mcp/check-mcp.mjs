@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // Lists the MCP tools and round-trips `status` and `voices` against an installed app (the app must be running).
-// Usage: node mcp/check-mcp.mjs "/Applications/JuniorOS Apps/Talk and Read.app"
+// Usage: node mcp/check-mcp.mjs "/Applications/JuniorOS Apps/Talk & Read.app"
 // Exit 0 when every step passes, 1 otherwise. Uses the adapter inside the given app bundle.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const app = process.argv[2];
-if (!app) { console.error('usage: node check-mcp.mjs "/path/to/Talk and Read.app"'); process.exit(1); }
+if (!app) { console.error('usage: node check-mcp.mjs "/path/to/Talk & Read.app"'); process.exit(1); }
 const adapter = join(app, 'Contents', 'Resources', 'mcp', 'talkread-mcp.mjs');
 if (!existsSync(adapter)) { console.error(`FAIL no adapter at ${adapter}`); process.exit(1); }
 

@@ -118,7 +118,7 @@ import TalkReadCore
         panel.isReleasedWhenClosed = false
         panel.delegate = self
         panel.onCancel = { [weak self] in self?.close() }
-        panel.setAccessibilityLabel("Talk and Read player")
+        panel.setAccessibilityLabel("Talk & Read player")
         self.panel = panel
         return panel
     }

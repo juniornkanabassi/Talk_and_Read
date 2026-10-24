@@ -61,7 +61,7 @@ final class CLITests: XCTestCase {
         let human = try cli(["status"])
         XCTAssertEqual(human.code, 3)
         XCTAssertTrue(human.err.hasPrefix("app_not_running: "), human.err)
-        XCTAssertTrue(human.err.contains("Open Talk and Read first"))
+        XCTAssertTrue(human.err.contains("Open Talk & Read first"))
         let machine = try cli(["status", "--json"])
         XCTAssertEqual(machine.code, 3)
         XCTAssertEqual(machine.json["code"] as? String, "app_not_running")

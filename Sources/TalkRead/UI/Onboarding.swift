@@ -26,7 +26,7 @@ struct OnboardingContent: View {
     @State var step = 0
     @State private var tryText = ""
 
-    static let sample = "Talk and Read follows along as it reads. Each word lights up as you hear it, so your eyes and ears stay together."
+    static let sample = "Talk & Read follows along as it reads. Each word lights up as you hear it, so your eyes and ears stay together."
 
     var body: some View {
         VStack(spacing: 0) {
@@ -50,7 +50,7 @@ struct OnboardingContent: View {
                 .accessibilityElement().accessibilityLabel("Step \(step + 1) of 4")
                 Spacer()
                 if step > 0 { Button("Back") { step -= 1 } }
-                Button(step == 3 ? "Start using Talk and Read" : "Continue", action: next)
+                Button(step == 3 ? "Start using Talk & Read" : "Continue", action: next)
                     .buttonStyle(AccentButtonStyle())
                     .keyboardShortcut(.defaultAction)
             }
@@ -70,7 +70,7 @@ struct OnboardingContent: View {
     private var welcome: some View {
         VStack(spacing: 18) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 116, height: 116).accessibilityHidden(true)
-            Text("Welcome to Talk and Read").font(.largeTitle.weight(.semibold))
+            Text("Welcome to Talk & Read").font(.largeTitle.weight(.semibold))
             VStack(spacing: 8) {
                 Text("Select text anywhere and hear it read aloud, each word highlighted as it is spoken.")
                 Text("Hold a key, speak, and your words are typed where your cursor is.")

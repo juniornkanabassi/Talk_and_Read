@@ -19,10 +19,10 @@ enum Importer {
         case unsupported(String), noText, empty(String), unreadable(String), http(Int)
         var errorDescription: String? {
             switch self {
-            case .unsupported(let ext): "Talk and Read can't open .\(ext) files."
+            case .unsupported(let ext): "Talk & Read can't open .\(ext) files."
             case .noText: "This PDF has no selectable text."
             case .empty(let name): "\(name) has no readable text."
-            case .unreadable(let name): "Talk and Read couldn't read \(name)."
+            case .unreadable(let name): "Talk & Read couldn't read \(name)."
             case .http(let code): "The page couldn't be loaded (HTTP \(code))."
             }
         }

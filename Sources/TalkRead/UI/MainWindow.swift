@@ -22,7 +22,7 @@ struct ViewData {
 
     /// The first thing still missing, for the Home banner and the menu's "Finish setup…" row.
     var setupIssue: String? {
-        if !permissions.accessibility { return "Allow Accessibility so Talk and Read can read selected text and highlight each word." }
+        if !permissions.accessibility { return "Allow Accessibility so Talk & Read can read selected text and highlight each word." }
         if !permissions.microphone { return "Allow the microphone so you can dictate." }
         switch dictationModel {
         case .missing, .failed: return "Download the dictation model to type with your voice."
@@ -497,7 +497,7 @@ struct WebPageSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Open a web page").font(.title3.weight(.semibold))
-            Text("Talk and Read fetches the page once and keeps only its text on this Mac.").font(.callout).foregroundStyle(.secondary)
+            Text("Talk & Read fetches the page once and keeps only its text on this Mac.").font(.callout).foregroundStyle(.secondary)
             TextField("Address", text: $address, prompt: Text("https://"))
                 .textFieldStyle(.roundedBorder)
                 .onSubmit(open)
@@ -876,7 +876,7 @@ struct BreezeLicence: View {
     static var text: String {
         let url = Bundle.main.url(forResource: "Breeze-TTS-2-LICENSE", withExtension: "txt", subdirectory: "Licences")
             ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../../Resources/Licences/Breeze-TTS-2-LICENSE.txt").standardized
-        return (try? String(contentsOf: url, encoding: .utf8)) ?? "The licence text is missing from this copy of Talk and Read; it is the LICENSE file beside the Breeze model."
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? "The licence text is missing from this copy of Talk & Read; it is the LICENSE file beside the Breeze model."
     }
 }
 

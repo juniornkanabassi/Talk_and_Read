@@ -549,7 +549,7 @@ extension EngineKind {
     /// Additive: the Dictation pane's delete. The history belongs to DictationController (WP5).
     func deleteDictation(_ id: UUID) { dictation.delete(id) }
 
-    /// Additive: the Dictation history's "Insert again" (Sol #17). Hides Talk and Read so the app the user came from is
+    /// Additive: the Dictation history's "Insert again" (Sol #17). Hides Talk & Read so the app the user came from is
     /// frontmost again, then types the entry there through the guarded Inserter (secure fields refused, clipboard restored).
     func insertAgain(_ id: UUID) {
         NSApp.hide(nil)
@@ -565,7 +565,7 @@ extension EngineKind {
         }
     }
 
-    /// The frontmost app once it is not Talk and Read, waiting up to `seconds`; nil if none comes forward.
+    /// The frontmost app once it is not Talk & Read, waiting up to `seconds`; nil if none comes forward.
     static func otherFrontmostApp(within seconds: Double) async -> NSRunningApplication? {
         let deadline = Date().addingTimeInterval(seconds)
         while true {

@@ -1,5 +1,5 @@
 // `talkread` helper (Contents/Helpers/talkread): one subcommand per control command. Owned by WP2.
-// Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk and Read is not running.
+// Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk & Read is not running.
 import Foundation
 import TalkReadCore
 
@@ -54,7 +54,7 @@ let commands: [Command] = [
     Command(name: "dictation-last", summary: "Print the most recent dictation.", example: "dictation-last"),
     Command(name: "dictate-file", summary: "Transcribe an audio file (WAV, M4A) without the microphone.", example: "dictate-file ~/Desktop/note.m4a",
             params: [Param(name: "path", kind: .path, help: "Audio file to transcribe.", required: true, positional: true)], forceable: true, timeout: 600),
-    Command(name: "open", summary: "Open a document in the Talk and Read reader.", example: "open ~/Documents/notes.pdf --show 1 --read 1",
+    Command(name: "open", summary: "Open a document in the Talk & Read reader.", example: "open ~/Documents/notes.pdf --show 1 --read 1",
             params: [Param(name: "path", kind: .path, help: "Document to open.", required: true, positional: true),
                      Param(name: "show", kind: .string, help: "1 brings the main window forward; default 0 (no focus change).", choices: ["0", "1"]),
                      Param(name: "read", kind: .string, help: "1 also starts reading it aloud; default 0.", choices: ["0", "1"])], forceable: true),
@@ -133,10 +133,10 @@ func render(_ response: ControlResponse, command: String) {
 
 func help(_ command: Command? = nil) {
     guard let command else {
-        print("talkread <command> [options]   Control Talk and Read from the shell. The app must be open.")
+        print("talkread <command> [options]   Control Talk & Read from the shell. The app must be open.")
         for c in commands { print("  \(c.name.padding(toLength: 15, withPad: " ", startingAt: 0)) \(c.summary)") }
         print("Global options: --json  --force  --caller <name>  --request-id <uuid>  --timeout <seconds>  --help")
-        print("Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk and Read is not running.")
+        print("Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk & Read is not running.")
         print("Run `talkread <command> --help` for one command with an example.")
         return
     }

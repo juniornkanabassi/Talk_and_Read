@@ -35,7 +35,7 @@ import TalkReadCore
         try? FileManager.default.removeItem(at: Paths.documents.appendingPathComponent("sample.pdf"))
         try? FileManager.default.copyItem(at: pdfFixture, to: Paths.documents.appendingPathComponent("sample.pdf"))
         WordMapEditor.save([.init(key: "Okafor", value: "oh-KAH-for"), .init(key: "Nguyen", value: "win")], to: Paths.pronunciations)
-        WordMapEditor.save([.init(key: "talk and read", value: "Talk and Read"), .init(key: "marlow key", value: "Marlowe Quay")], to: Paths.vocabulary)
+        WordMapEditor.save([.init(key: "talk and read", value: "Talk & Read"), .init(key: "marlow key", value: "Marlowe Quay")], to: Paths.vocabulary)
 
         let model = AppModel.shared
         model.settings.voiceID = "bf_emma"

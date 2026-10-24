@@ -268,7 +268,7 @@ public final class ControlServer: @unchecked Sendable {
             let live = connectSocket(address, length, fd: probe)
             let reason = errno
             close(probe)
-            if live { throw ControlError("already_running", "A Talk and Read control server is already listening at \(path).") }
+            if live { throw ControlError("already_running", "A Talk & Read control server is already listening at \(path).") }
             if reason != ECONNREFUSED && reason != ENOENT {
                 throw ControlError("socket_probe_error", "Cannot tell whether the socket is stale: \(String(cString: strerror(reason))).")
             }
@@ -363,19 +363,19 @@ public enum ControlClient {
         _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
         guard connectSocket(address, length, fd: fd) else {
             if errno == ENOENT || errno == ECONNREFUSED {
-                throw ControlError("app_not_running", "Nothing is listening on \(socketPath). Open Talk and Read first.")
+                throw ControlError("app_not_running", "Nothing is listening on \(socketPath). Open Talk & Read first.")
             }
             throw errnoError("socket_connect_error", socketPath)
         }
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
         let deadline = now() + timeout
         guard writeAll(fd, payload, until: deadline) else {
-            throw ControlError("timeout", "Could not send the request to Talk and Read within \(Int(timeout)) s.")
+            throw ControlError("timeout", "Could not send the request to Talk & Read within \(Int(timeout)) s.")
         }
         switch readLine(fd, limit: ControlServer.maxResponse, until: deadline) {
         case .success(let line):
             guard let response = try? JSONDecoder().decode(ControlResponse.self, from: line) else {
-                throw ControlError("bad_response", "Talk and Read returned invalid JSON.")
+                throw ControlError("bad_response", "Talk & Read returned invalid JSON.")
             }
             return response
         case .failure(let e):
@@ -383,7 +383,7 @@ public enum ControlClient {
             case "timeout":
                 throw ControlError("timeout", "No reply within \(Int(timeout)) s. The request may still be running; retry with the same request id to get its result.")
             case "too_large": throw ControlError("response_too_large", "Reply exceeds \(ControlServer.maxResponse) bytes.")
-            default: throw ControlError("socket_read_error", "Talk and Read closed the connection before replying.")
+            default: throw ControlError("socket_read_error", "Talk & Read closed the connection before replying.")
             }
         }
     }

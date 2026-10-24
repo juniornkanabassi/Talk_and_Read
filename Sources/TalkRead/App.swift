@@ -62,7 +62,7 @@ enum TalkReadMain {
                                openSettings: { [weak self] in self?.show("settings") },
                                openOnboarding: { [weak self] in self?.show("onboarding") })
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.setAccessibilityLabel("Talk and Read")
+        item.button?.setAccessibilityLabel("Talk & Read")
         item.menu = menu.menu
         statusItem = item
         statusMenu = menu
@@ -138,9 +138,14 @@ enum TalkReadMain {
     private func updateLoginItem(_ on: Bool) {
         guard Bundle.main.bundleURL.path.hasPrefix("/Applications/JuniorOS Apps/") else { return }
         let service = SMAppService.mainApp
+        let path = Bundle.main.bundleURL.path, key = "loginItemRegisteredPath"
         do {
-            if on, service.status != .enabled { try service.register() }
-            if !on, service.status == .enabled { try service.unregister() }
+            if on {
+                // 0.5.0 renamed the bundle: a registration made at the old path is dropped and made again here, once.
+                if service.status == .enabled, UserDefaults.standard.string(forKey: key) != path { try service.unregister() }
+                if service.status != .enabled { try service.register() }
+                UserDefaults.standard.set(path, forKey: key)
+            } else if service.status == .enabled { try service.unregister() }
         } catch {
             Log.write("login item \(on ? "register" : "unregister") failed: \(error)")
         }
@@ -213,7 +218,7 @@ enum TalkReadMain {
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = dot ? "Talk and Read, setup incomplete" : "Talk and Read"
+        image.accessibilityDescription = dot ? "Talk & Read, setup incomplete" : "Talk & Read"
         button.image = image
     }
 
@@ -236,11 +241,11 @@ enum TalkReadMain {
         switch kind {
         case "onboarding":
             let done: () -> Void = { [weak self] in self?.windows["onboarding"]?.close() }
-            (title, view, size) = ("Welcome to Talk and Read", AnyView(OnboardingView(model: model, onFinish: done)), NSSize(width: 600, height: 540))
+            (title, view, size) = ("Welcome to Talk & Read", AnyView(OnboardingView(model: model, onFinish: done)), NSSize(width: 600, height: 540))
         case "settings":
             (title, view, size) = ("Settings", AnyView(SettingsView(model: model)), NSSize(width: 720, height: 520))
         default:
-            (title, view, size) = ("Talk and Read", AnyView(MainWindowView(model: model)), NSSize(width: 980, height: 680))
+            (title, view, size) = ("Talk & Read", AnyView(MainWindowView(model: model)), NSSize(width: 980, height: 680))
         }
         let window = NSWindow(contentViewController: NSHostingController(rootView: view))
         window.title = title
@@ -277,10 +282,10 @@ enum TalkReadMain {
             holder.submenu = menu
             main.addItem(holder)
         }
-        add("Talk and Read", [item("About Talk and Read", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""), .separator(),
+        add("Talk & Read", [item("About Talk & Read", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""), .separator(),
                               item("Settings…", #selector(AppDelegate.openSettings(_:)), ","), .separator(),
-                              item("Hide Talk and Read", #selector(NSApplication.hide(_:)), "h"),
-                              item("Quit Talk and Read", #selector(NSApplication.terminate(_:)), "q")])
+                              item("Hide Talk & Read", #selector(NSApplication.hide(_:)), "h"),
+                              item("Quit Talk & Read", #selector(NSApplication.terminate(_:)), "q")])
         add("Edit", [item("Undo", Selector(("undo:")), "z"), item("Redo", Selector(("redo:")), "z", [.command, .shift]), .separator(),
                      item("Cut", #selector(NSText.cut(_:)), "x"), item("Copy", #selector(NSText.copy(_:)), "c"),
                      item("Paste", #selector(NSText.paste(_:)), "v"), item("Select All", #selector(NSText.selectAll(_:)), "a")])

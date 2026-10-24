@@ -60,7 +60,7 @@ final class Hotkeys {
             health.invalidate()
             removeTap()
         }
-        t.name = "Talk and Read hotkeys"
+        t.name = "Talk & Read hotkeys"
         t.qualityOfService = .userInteractive
         thread = t
         t.start()

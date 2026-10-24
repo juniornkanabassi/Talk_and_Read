@@ -21,7 +21,7 @@ enum RecorderError: LocalizedError {
     case noPermission, noDevice, noAudio, stopped
     var errorDescription: String? {
         switch self {
-        case .noPermission: "Microphone access is off for Talk and Read"
+        case .noPermission: "Microphone access is off for Talk & Read"
         case .noDevice: "No microphone found"
         case .noAudio: "The microphone sent no audio"
         case .stopped: "Recording stopped"
