@@ -97,8 +97,10 @@ import TalkReadCore
     func show(word: CGRect?, sentence: [CGRect]) {
         guard let frame = panel?.frame else { return }
         func relative(_ r: CGRect) -> CGRect { CGRect(x: r.minX - frame.minX, y: frame.maxY - r.maxY, width: r.width, height: r.height) }
-        self.word = word.map(relative)
-        self.sentence = style.tintEnabled ? sentence.map(relative) : []
+        let (word, sentence) = (word.map(relative), style.tintEnabled ? sentence.map(relative) : [])
+        // Unchanged: no layer writes and no transaction for the window server to composite (efficiency fix 5).
+        guard word != self.word || sentence != self.sentence else { return }
+        (self.word, self.sentence) = (word, sentence)
         layout(animated: true)
     }
 
