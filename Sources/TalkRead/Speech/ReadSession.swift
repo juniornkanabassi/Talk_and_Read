@@ -102,6 +102,7 @@ import TalkReadCore
             guard let self, [State.playing, .preparing, .paused].contains(self.state) else { return }
             self.generation += 1
             self.producer?.cancel()
+            self.ticker?.cancel()
             self.needsRestart = true
             self.userPaused = true
             self.state = .paused
@@ -121,6 +122,7 @@ import TalkReadCore
         guard state == .playing || state == .preparing else { return }
         userPaused = true
         player.pause()
+        ticker?.cancel()   // nothing to tick while paused; startPlayback starts it again
         state = .paused
     }
 
@@ -194,13 +196,16 @@ import TalkReadCore
         state = userPaused ? .paused : .preparing
         player.moreComing = true
         producer = Task { [weak self] in await self?.produce(chunks, gen) }
-        if ticker == nil || ticker!.isCancelled {
-            ticker = Task { [weak self] in
-                while !Task.isCancelled {
-                    guard let self else { return }
-                    self.tick()
-                    try? await Task.sleep(nanoseconds: 33_000_000)
-                }
+    }
+
+    /// The 30 Hz clock-to-token tick runs only while playing (efficiency fix 6: a paused read woke 30 times a second).
+    private func startTicker() {
+        guard ticker == nil || ticker!.isCancelled else { return }
+        ticker = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                self.tick()
+                try? await Task.sleep(nanoseconds: 33_000_000)
             }
         }
     }
@@ -212,12 +217,12 @@ import TalkReadCore
         var next = plan.first!.tokens.lowerBound
         var k = 0
         while next < tokens.count {
-            // ponytail: polls the clock every 50 ms to keep at most three chunks queued (a slow engine: `slowAhead` seconds,
-            // since its early chunks are small and three of them would stop the buffer growing); a completion-driven
-            // wait if 50 ms ever matters (chunks are seconds long).
+            // ponytail: polls the clock every 50 ms (500 ms while paused, when nothing drains) to keep at most three chunks
+            // queued (a slow engine: `slowAhead` seconds, since its early chunks are small and three of them would stop the
+            // buffer growing); a completion-driven wait if 50 ms ever matters (chunks are seconds long).
             while gen == generation, engines.engine(for: effectiveVoice).isSlow ? player.queuedUntil - player.currentTime >= Self.slowAhead
                     : chunkEnds.filter({ $0 > player.currentTime }).count >= 3 {
-                try? await Task.sleep(nanoseconds: 50_000_000)
+                try? await Task.sleep(nanoseconds: state == .paused ? 500_000_000 : 50_000_000)
             }
             guard gen == generation, !Task.isCancelled else { return }
             var chunk: Chunk?, said: Speakable?, synth: SynthChunk?
@@ -428,6 +433,7 @@ import TalkReadCore
         player.play()
         guard player.isPlaying else { return fail("The audio output did not start.") }
         if firstAudioMs == nil, let startedAt { firstAudioMs = Int(Date().timeIntervalSince(startedAt) * 1000) }
+        startTicker()
         state = .playing
     }
 
