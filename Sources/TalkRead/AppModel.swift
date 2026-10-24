@@ -22,6 +22,22 @@ struct ReadEntry: Codable, Identifiable {
     let app: String?
     /// First 5,000 characters.
     let text: String
+    /// The app's bundle identifier when it was read (nil in older histories and for reads started inside Talk & Read).
+    var bundleID: String? = nil
+}
+
+/// Reads started inside Talk & Read (the Home editor) carry no app name; the history shows these.
+let ownAppName = "Talk & Read"
+
+extension ReadEntry {
+    var historyItem: HistoryItem {
+        HistoryItem(id: id, kind: .read, date: date, app: app ?? ownAppName,
+                    bundleID: app == nil ? Bundle.main.bundleIdentifier : bundleID, text: text)
+    }
+}
+
+extension DictationEntry {
+    var historyItem: HistoryItem { HistoryItem(id: id, kind: .dictated, date: date, app: app, bundleID: bundleID, text: text) }
 }
 
 enum PermissionKind: String { case accessibility, microphone, screenRecording }
@@ -382,12 +398,13 @@ extension EngineKind {
             return nil
         }
         let s = startSession(capture.text, capture: capture, id: id)   // the player says "Reading clipboard" itself
-        appendRead(capture.text, app: app?.localizedName)
+        appendRead(capture.text, app: app?.localizedName, bundleID: app?.bundleIdentifier)
         return s
     }
 
     func readScreenshot() {
         let id = reserve("user")
+        let app = NSWorkspace.shared.frontmostApplication   // the app the picture is of, as for a selection
         Task {
             let text = await ScreenshotCapture.capture()
             guard owner?.sessionID == id else { return }
@@ -397,7 +414,7 @@ extension EngineKind {
                 return
             }
             startSession(text, capture: nil, id: id, source: "screenshot")
-            appendRead(text, app: nil)
+            appendRead(text, app: app?.localizedName, bundleID: app?.bundleIdentifier)
         }
     }
 
@@ -489,6 +506,8 @@ extension EngineKind {
 
     /// The control route refuses a larger skip; every other path clamps to it (Sol #5).
     nonisolated static let maxSkip = 10_000
+    /// `talkread history`: most rows per call, and the text it may carry (the socket reply is capped at 8 MB).
+    nonisolated static let maxHistoryLimit = 500, maxHistoryBytes = 6_000_000
 
     func skip(_ sentences: Int) {
         guard let s = liveSession else { return }
@@ -687,9 +706,19 @@ extension EngineKind {
         if let item = sessionInfo.item, let token = liveSession?.currentToken { setPosition(item, token) }
     }
 
-    private func appendRead(_ text: String, app: String?) {
-        recentReads.insert(ReadEntry(id: UUID(), date: Date(), app: app, text: String(text.prefix(5000))), at: 0)
-        if recentReads.count > 100 { recentReads.removeLast(recentReads.count - 100) }
+    private func appendRead(_ text: String, app: String?, bundleID: String?) {
+        recentReads.insert(ReadEntry(id: UUID(), date: Date(), app: app, text: String(text.prefix(5000)), bundleID: bundleID), at: 0)
+        if recentReads.count > settings.historyLimit { recentReads.removeLast(recentReads.count - settings.historyLimit) }   // as for dictations
+        Self.saveJSON(recentReads, to: Paths.reads)
+    }
+
+    /// Home's "paste and listen": text typed into Talk & Read itself, kept in the history as read in Talk & Read.
+    /// (Read again, the CLI's `speak` and library documents are not recorded: they would fill the history with repeats.)
+    func recordOwnRead(_ text: String) { appendRead(text, app: nil, bundleID: nil) }
+
+    /// The Home history's Delete.
+    func deleteRead(_ id: UUID) {
+        recentReads.removeAll { $0.id == id }
         Self.saveJSON(recentReads, to: Paths.reads)
     }
 
