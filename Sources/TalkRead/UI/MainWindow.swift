@@ -723,7 +723,7 @@ struct VoicesPane: View {
         .navigationTitle("Voices")
     }
 
-    private var speed: Double { Double(model.settings.speed) }
+    private var speed: Double { Double(model.activeSpeed) }   // a preview shows its own speed
 
     private var speedCard: some View {
         VStack(alignment: .leading, spacing: 12) {

@@ -96,11 +96,8 @@ extension AppModel {
             guard let raw = a["value"] else { throw AppError.badArgs("speed needs a value from 0.5 to 3.0.") }
             let v = try validSpeed(raw)
             try claim(r)
-            var next = settings
-            next.speed = v
-            settings = next.validated()
-            applySpeedToLiveRead()
-            return ["speed": .number(Double(settings.speed))]
+            changeSpeed(v)   // as the GUI's: during a preview only the preview changes (Sol verification 7 #3)
+            return ["speed": .number(Double(activeSpeed))]
 
         case "voice":
             guard let raw = a["id"] else { throw AppError.badArgs("voice needs an id; see `talkread voices`.") }
