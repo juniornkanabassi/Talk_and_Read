@@ -273,17 +273,19 @@ import WebKit
         expect("confirmed: done with no Copy", c.state == .done(sure) && c.copyable == nil && c.history.first?.text == sure)
         expect("a new entry carries the frontmost app's bundle id", c.history.first?.bundleID == front)
         expect("confirmed: Copy does nothing", c.copyResult() == nil)
+        c.holdSeconds.confirmed = 0.3   // roomy enough for a loaded machine; the default 1.5 s is checked above
         hovering = true
-        await settle(350)
-        expect("confirmed: hover holds it past its 0.2 s", c.state == .done(sure))
+        await settle(450)
+        expect("confirmed: hover holds it past its hold", c.state == .done(sure))
         hovering = false
-        await settle(120)
+        await settle(150)
         expect("confirmed: gone once the pointer leaves", c.state == .idle)
         await dictate()
+        let next = calls.last?.text ?? ""
         await settle(100)
-        expect("confirmed: still shown at 0.1 s", c.state == .done(sure))
-        await settle(250)
-        expect("confirmed: hidden after 0.2 s, long before an unconfirmed result", c.state == .idle)
+        expect("confirmed: still shown at 0.1 s", c.state == .done(next) && next != sure)
+        await settle(350)
+        expect("confirmed: hidden by itself, Copy never offered", c.state == .idle && c.copyable == nil)
 
         await dictate()
         c.dismiss()
