@@ -5,7 +5,13 @@ import AppKit
 import ApplicationServices
 import Carbon
 
-enum InsertResult: Equatable { case inserted, refusedSecure, failed(String) }
+/// `inserted(confirmed:)`: the paste went out; `confirmed` is true when the focus was known to take text, false when the
+/// app did not say (a web area, an Electron app whose AX tree is asleep), so the pill still offers Copy.
+enum InsertResult: Equatable {
+    case inserted(confirmed: Bool), refusedSecure, failed(String)
+    /// The text was pasted, confirmed or not.
+    var landed: Bool { if case .inserted = self { true } else { false } }
+}
 
 enum Inserter {
     /// What the inserter knows about the focus (see `focusedField`).
@@ -21,7 +27,8 @@ enum Inserter {
     /// into another app. Task cancellation and `isCurrent` are checked inside the pasteboard transaction with nothing
     /// awaited between them and the paste, so text whose utterance was cancelled meanwhile is never typed; once ⌘V is
     /// out, the 500 ms wait before the restore runs in full even if the task is cancelled. With `requireField`, a focus
-    /// that cannot take text (`takesText == false`) fails with `noField`: no ⌘V, the clipboard untouched.
+    /// that cannot take text (`takesText == false`) fails with `noField`: no ⌘V, the clipboard untouched. A paste into a focus
+    /// that takes text (`takesText == true`) is `confirmed`; into an unknown one (nil) it still goes out, unconfirmed.
     @MainActor static func insert(_ text: String, targetPID: pid_t? = nil, requireField: Bool = false,
                                   isCurrent: @MainActor () -> Bool = { true }) async -> InsertResult {
         guard !text.isEmpty else { return .failed("Nothing to type") }
@@ -40,7 +47,7 @@ enum Inserter {
             guard postPaste(to: targetPID) else { return .failed("Could not send the paste keystroke") }
             // Let the app read the pasteboard before it is restored. Not `Task.sleep`: cancellation would end it at once.
             await withCheckedContinuation { done in DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { done.resume() } }
-            return .inserted
+            return .inserted(confirmed: field.takesText == true)
         }
     }
 

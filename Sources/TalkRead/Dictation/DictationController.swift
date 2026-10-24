@@ -15,6 +15,8 @@ struct DictationEntry: Codable, Identifiable {
     let date: Date
     let text: String
     let app: String?
+    /// The frontmost app's bundle identifier when it was said (nil in older histories; the Home list uses it for the app icon).
+    var bundleID: String? = nil
 }
 
 enum DictationError: LocalizedError, Equatable {
@@ -32,14 +34,14 @@ enum DictationError: LocalizedError, Equatable {
     @Published private(set) var history: [DictationEntry] = []
     /// The model is loading, or cancelled work is still leaving the recogniser (the pill says "Preparing…").
     @Published private(set) var preparing = false
-    /// What the pill's Copy button copies: the dictation it shows once done, or not typed but kept in the history. nil
-    /// otherwise, and never for a password field.
+    /// What the pill's Copy button copies: the dictation it shows once done but not confirmed to have landed, or not typed
+    /// but kept in the history. nil otherwise (a confirmed paste needs no Copy), and never for a password field.
     @Published private(set) var copyable: String?
     /// Copy was just pressed (the button says "Copied" for a moment).
     @Published private(set) var copied = false
-    /// How long the done and the failed pill stay, and how often a hovered pill checks again (seconds; the self-test
+    /// How long a confirmed, an unconfirmed (`done`) and a failed pill stay, and how often a hovered pill checks again (seconds; the self-test
     /// shortens them). The pointer over the pill holds it.
-    var holdSeconds = (done: 5.0, failed: 8.0, recheck: 0.5)
+    var holdSeconds = (confirmed: 1.5, done: 5.0, failed: 8.0, recheck: 0.5)
     /// The pointer is over the pill (hover pauses its hide); the self-test swaps it.
     lazy var pointerOverPill: () -> Bool = { [weak self] in self?.pill?.containsPointer ?? false }
     /// The last 11 input levels, newest last (the pill's meter).
@@ -231,7 +233,7 @@ enum DictationError: LocalizedError, Equatable {
         guard let last = history.first else { return }
         Task {
             let result = await reinsert(last.id, targetPID: nil)
-            if state == .idle, result != .inserted { show(failure: result, text: last.text) }
+            if state == .idle, !result.landed { show(failure: result, text: last.text) }
         }
     }
 
@@ -302,20 +304,21 @@ enum DictationError: LocalizedError, Equatable {
             show(failure: .failed("Didn't catch that"))
             return nil
         }
-        let app = NSWorkspace.shared.frontmostApplication?.localizedName
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let app = frontmost?.localizedName, bundleID = frontmost?.bundleIdentifier
         // Re-checked inside the pasteboard transaction right before the paste: a cancelled utterance is never typed.
-        let result = insertOnStop ? await insert(text, nil, true, { [weak self] in self?.generation == gen }) : .inserted
+        let result = insertOnStop ? await insert(text, nil, true, { [weak self] in self?.generation == gen }) : .inserted(confirmed: false)
         guard gen == generation else { return nil }
         owner = nil
-        if result != .refusedSecure { remember(text, app: app) }   // never keep what was said into a password field
-        if result == .inserted { show(done: text) } else { show(failure: result, text: text) }
-        if result == .inserted, insertOnStop, learnCorrections {
+        if result != .refusedSecure { remember(text, app: app, bundleID: bundleID) }   // never keep what was said into a password field
+        if case .inserted(let confirmed) = result { show(done: text, confirmed: confirmed) } else { show(failure: result, text: text) }
+        if result.landed, insertOnStop, learnCorrections {
             watcher = Task { [weak self] in
                 let found = await CorrectionWatcher.watch(text: text)
                 self?.learn(found)
             }
         }
-        return result == .inserted ? text : nil
+        return result.landed ? text : nil
     }
 
     private func clean(_ raw: Transcript) async -> String {
@@ -441,8 +444,8 @@ enum DictationError: LocalizedError, Equatable {
         saveHistory()
     }
 
-    private func remember(_ text: String, app: String?) {
-        history.insert(DictationEntry(id: UUID(), date: Date(), text: text, app: app), at: 0)
+    private func remember(_ text: String, app: String?, bundleID: String?) {
+        history.insert(DictationEntry(id: UUID(), date: Date(), text: text, app: app, bundleID: bundleID), at: 0)
         history = Array(history.prefix(Settings.load().historyLimit))
         saveHistory()
     }
@@ -454,10 +457,12 @@ enum DictationError: LocalizedError, Equatable {
 
     // MARK: Pill and sounds
 
-    private func show(done text: String) {
+    /// `confirmed`: the focus was known to take the text, so the pill shows the words briefly with no Copy and no tip;
+    /// otherwise (the app did not say, or nothing was typed) Copy and the tip stay for longer.
+    private func show(done text: String, confirmed: Bool) {
         state = .done(text)
-        copyable = text
-        hideLater(after: holdSeconds.done)
+        copyable = confirmed ? nil : text
+        hideLater(after: confirmed ? holdSeconds.confirmed : holdSeconds.done)
     }
 
     /// `text`: what was said, kept in the history, so Copy offers it (never after a password field refused it).
