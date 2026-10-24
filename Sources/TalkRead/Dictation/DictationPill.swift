@@ -6,50 +6,59 @@ import TalkReadCore
 
 @MainActor final class DictationPill {
     static let width: CGFloat = 340   // Junior, 24 Oct: narrower, one line of words
-    private let panel: NSPanel
+    private let dictation: DictationController
+    /// The panel on screen; nil while hidden. Internal for the self-test's window checks.
+    private(set) var panel: NSPanel?
 
     private final class Panel: NSPanel {
         override var canBecomeKey: Bool { false }
         override var canBecomeMain: Bool { false }
     }
 
-    init(dictation: DictationController) {
-        panel = Panel(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 72), styleMask: [.borderless, .nonactivatingPanel],
-                      backing: .buffered, defer: true)
+    init(dictation: DictationController) { self.dictation = dictation }
+
+    /// The content height changed: the bottom edge and the centre stay put, so the pill grows upwards.
+    private func resize(to height: CGFloat) {
+        DispatchQueue.main.async { [weak self] in
+            guard let panel = self?.panel, abs(panel.frame.height - height) > 0.5 else { return }
+            var frame = panel.frame
+            frame.size.height = height
+            panel.setFrame(frame, display: true)
+        }
+    }
+
+    /// Bottom centre of the screen with the pointer; `origin` places it there instead (the self-test: outside every
+    /// display). Already showing: it stays where it is. Hidden: a new panel, made where it shows. A panel ordered out and
+    /// in again is kept off the Space it comes back to (a full-screen app's, another display's) on macOS 27.2: ordered in,
+    /// never on screen, which hid the pill in 0.6.0 (P-B, 24 Oct). The highlight overlay makes a new panel for the same reason.
+    func show(at origin: NSPoint? = nil) {
+        if let panel, panel.isVisible { return panel.orderFrontRegardless() }
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+        let area = screen?.visibleFrame ?? .zero
+        let at = origin ?? NSPoint(x: area.midX - Self.width / 2, y: area.minY + 64)
+        let panel = Panel(contentRect: NSRect(origin: at, size: NSSize(width: Self.width, height: 72)),
+                          styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
-        panel.isReleasedWhenClosed = false
+        panel.isReleasedWhenClosed = false   // ARC owns it; close() frees the window server side
         // ponytail: the whole panel takes clicks (only the ✕ acts on them); per-region pass-through needs a
         // mouse-tracking monitor, add it if clicks on the pill body are ever missed underneath.
         let host = NSHostingView(rootView: DictationPillView(dictation: dictation) { [weak self] in self?.resize(to: $0) })
         host.sizingOptions = []   // the panel follows the content through `resize`, not the other way round
         panel.contentView = host
-    }
-
-    /// The content height changed: the bottom edge and the centre stay put, so the pill grows upwards.
-    private func resize(to height: CGFloat) {
-        DispatchQueue.main.async { [panel] in
-            var frame = panel.frame
-            guard abs(frame.height - height) > 0.5 else { return }
-            frame.size.height = height
-            panel.setFrame(frame, display: true)
-        }
-    }
-
-    func show() {
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
-        if let area = screen?.visibleFrame {
-            panel.setFrameOrigin(NSPoint(x: area.midX - panel.frame.width / 2, y: area.minY + 64))
-        }
+        self.panel = panel
         panel.orderFrontRegardless()
     }
 
-    func hide() { panel.orderOut(nil) }
+    func hide() {
+        panel?.close()
+        panel = nil
+    }
 }
 
 /// Reports the pill's laid-out height so the panel can follow it.
