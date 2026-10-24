@@ -136,8 +136,6 @@ extension Cleanup {
                     let piece = ns.substring(with: range)
                     let joined = words[start..<start + width].map { ns.substring(with: $0) }.joined(separator: " ")
                     guard piece != term, piece == joined, !touchesPlaceholder(range, in: ns) else { continue }
-                    // A wider window only joins pieces of the term; it never takes in a neighbouring word ("Yamal is", "Bayern 2–0").
-                    if width > size, isWord(ns.substring(with: first)) || isWord(ns.substring(with: last)) { continue }
                     // A possessive keeps its ending: "Mbappe's" -> "Mbappé's", while "Mbappé's" itself is left alone.
                     let suffix = ["'s", "’s", "'", "’"].first { piece.hasSuffix($0) } ?? ""
                     let stem = String(piece.dropLast(suffix.count))
@@ -148,16 +146,15 @@ extension Cleanup {
                     // Real words are left alone even when only an accent or the case differs ("desire" for "Désiré"); "Mbappe" is
                     // not a word, so it gets its accent.
                     guard d <= target.count / 4, !words[start..<start + width].allSatisfy({ isWord(ns.substring(with: $0)) }) else { continue }
-                    // Whatever the window's width, no real word or digit may be swallowed: each must line up with the term's
-                    // letters ("LamineYama is" is not "Lamine Yamal"; "Joan Neves" still is "João Neves").
-                    let lined = matched(key, target)
-                    var at = 0, dropped = false
-                    for word in stem.split(separator: " ") {
-                        let n = folded(String(word)).count
-                        if isWord(String(word)) || word.contains(where: \.isNumber), lined[at..<at + n].filter({ $0 }).count * 2 <= n { dropped = true }
-                        at += n
+                    // Nothing may be swallowed, whatever the window's width: a digit must be one of the term's, and a real word
+                    // (`isWord`) must be one the term accounts for ("Joan" for "João"), not a neighbour ("LamineYama all").
+                    let own = term.split(separator: " ").map { folded(String($0)) }
+                    let swallowed = stem.split(separator: " ").contains { word in
+                        let letters = folded(String(word))
+                        return isWord(String(word)) && !own.contains { AutoLearn.distance(letters, $0) <= ($0.count >= 4 ? 1 : 0) }
                     }
-                    if !dropped { found.append((range, term + suffix, d)) }
+                    if swallowed || stem.filter(\.isNumber) != term.filter(\.isNumber) { continue }
+                    found.append((range, term + suffix, d))
                 }
             }
         }
@@ -172,24 +169,6 @@ extension Cleanup {
             out = out.replacingCharacters(in: range, with: hold(term)) as NSString
         }
         return out as String
-    }
-
-    /// Which characters of `a` an optimal edit alignment with `b` pairs with an equal character.
-    static func matched(_ a: [Character], _ b: [Character]) -> [Bool] {
-        var d = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1), count: a.count + 1)
-        for i in 0...a.count { d[i][0] = i }
-        for j in 0...b.count { d[0][j] = j }
-        for i in a.indices {
-            for j in b.indices { d[i + 1][j + 1] = a[i] == b[j] ? d[i][j] : 1 + min(d[i][j], d[i][j + 1], d[i + 1][j]) }
-        }
-        var hit = [Bool](repeating: false, count: a.count), i = a.count, j = b.count
-        while i > 0, j > 0 {
-            if a[i - 1] == b[j - 1], d[i][j] == d[i - 1][j - 1] { hit[i - 1] = true; i -= 1; j -= 1 }
-            else if d[i][j] == d[i - 1][j - 1] + 1 { i -= 1; j -= 1 }
-            else if d[i][j] == d[i - 1][j] + 1 { i -= 1 }
-            else { j -= 1 }
-        }
-        return hit
     }
 
     /// A held text's placeholder ("\u{E000}3\u{E001}") is next to or inside the range: its digit is not a word.
