@@ -33,6 +33,8 @@ import TalkReadCore
     private var shownIndex: Int?
     private var queriedAt: TimeInterval = 0
     private var requery = true
+    private var scrollTickedAt: TimeInterval = 0
+    private var scrollTickQueued = false
     private let debug = ProcessInfo.processInfo.environment["TALKREAD_DEBUG"] == "1"
 
     init(session: ReadSession, style: Overlay.Style) {
@@ -48,7 +50,7 @@ import TalkReadCore
         stateObserver = session.$state.sink { [weak self] state in self?.stateChanged(state) }
         scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] _ in
             // Re-query at once rather than at the next tick: the box should feel glued to the text (Junior, 12 Sep).
-            MainActor.assumeIsolated { self?.invalidate(); self?.tick() }
+            MainActor.assumeIsolated { self?.scrolled() }
         }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
@@ -98,6 +100,28 @@ import TalkReadCore
             break
         case .finished, .failed:
             stop()
+        }
+    }
+
+    /// A wheel scroll over the window being read re-queries at once, at most once per display frame (16 ms; trackpad
+    /// momentum sends up to about 120 events a second); scrolls over other windows change nothing (efficiency fix 4).
+    private func scrolled() {
+        guard overlay.panel?.frame.contains(NSEvent.mouseLocation) == true else { return }
+        invalidate()
+        let wait = scrollTickedAt + 0.016 - ProcessInfo.processInfo.systemUptime
+        if wait <= 0 {
+            scrollTickedAt = ProcessInfo.processInfo.systemUptime
+            return tick()
+        }
+        guard !scrollTickQueued else { return }
+        scrollTickQueued = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.scrollTickQueued = false
+                self.scrollTickedAt = ProcessInfo.processInfo.systemUptime
+                self.tick()
+            }
         }
     }
 
