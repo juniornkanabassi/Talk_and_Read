@@ -22,7 +22,6 @@ enum TalkReadMain {
         if args.contains("--selftest-ui-snapshots") { exit(MainActor.assumeIsolated { UISnapshots.run() }) }
         if args.contains("--selftest-control") { exitAfter { await ControlSelfTest.run(clip: value(after: "--selftest-control")) } }
         if let feed = value(after: "--selftest-update") { exitAfter { await UpdateSelfTest.run(feed: feed, args: args) } }
-        if args.contains("--selftest-update-launch") { exit(MainActor.assumeIsolated { UpdateSelfTest.launch() }) }
 
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -60,7 +59,6 @@ enum TalkReadMain {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Sparkle: checks at launch and daily; installs only after the user agrees in its window. Off without SUFeedURL.
-        Updates.clearCacheAfterUpdate()   // nothing of the previous version stays after an update
         Updates.shared.start()
         NSApp.mainMenu = Self.mainMenu()
         let menu = MenuBarMenu(model: model, openMain: { [weak self] in self?.show("main") },

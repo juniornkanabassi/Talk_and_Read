@@ -36,28 +36,6 @@ import TalkReadCore
         if begin(c.updater), c.updater.automaticallyChecksForUpdates { c.updater.checkForUpdatesInBackground() }
     }
 
-    /// Junior: nothing of a previous version stays after an update. On the first launch of a different build this removes
-    /// ~/Library/Caches/<bundle id>/org.sparkle-project.Sparkle (the downloaded and extracted update) and nothing else
-    /// (UpdateCache.clear refuses an odd bundle id or a symlinked folder), logs only its size, then records the build.
-    /// A refusal or failure is logged and leaves the build unrecorded, so the next launch tries again.
-    @discardableResult static func clearCacheAfterUpdate(_ defaults: UserDefaults = .standard) -> String {
-        let key = "lastLaunchedBuild", running = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
-        let last = defaults.string(forKey: key)
-        guard UpdateCache.shouldClear(lastLaunched: last, running: running) else { return "build \(running) as last launch: nothing to clear" }
-        let caches = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches", isDirectory: true)
-        let note: String
-        do {
-            let bytes = try UpdateCache.clear(bundleID: Bundle.main.bundleIdentifier ?? "", caches: caches)
-            note = "build \(last ?? "none") to \(running): " + (bytes.map { "removed Sparkle's update cache, \($0) bytes" } ?? "no update cache")
-        } catch {
-            Log.write("update cache: refused or failed, nothing more removed (\(error))")
-            return "FAIL \(error)"
-        }
-        defaults.set(running, forKey: key)
-        Log.write("update cache: \(note)")
-        return note
-    }
-
     /// No system profile, then start. The self-test passes its own updater (a windowless user driver).
     @discardableResult func begin(_ u: SPUUpdater) -> Bool {
         u.sendsSystemProfile = false
@@ -143,8 +121,7 @@ import TalkReadCore
     func standardUserDriverWillFinishUpdateSession() { reminder = nil }
 }
 
-/// `--selftest-update <feed URL> [--reminder | --sequence <feed that never answers>]` and `--selftest-update-launch`,
-/// on a test copy with its own bundle id (it may update the bundle it runs
+/// `--selftest-update <feed URL> [--reminder | --sequence <feed that never answers>]`, on a test copy with its own bundle id (it may update the bundle it runs
 /// from, and it writes Sparkle's defaults), so Junior's installed app and its defaults are never touched. The feed
 /// replaces SUFeedURL. Prints structured lines that `Tools/update-e2e.sh` asserts:
 /// - default: two callers send `update-check` through the control path (one starts, one is busy with the same id);
@@ -154,15 +131,7 @@ import TalkReadCore
 ///   background app here, so Sparkle never shows its alert; the test proves the gentle reminder reaches the menu.
 /// - `--sequence`: three checks in a row (found and dismissed, cancelled while checking, found again), each with its
 ///   own checkID and its own result.
-/// - `--selftest-update-launch`: what launch does first, the post-update cache clean-up.
 @MainActor enum UpdateSelfTest {
-    static func launch() -> Int32 {
-        guard Bundle.main.bundleIdentifier != Updates.productionID else { print("update-cleanup: refused under the production bundle id"); return 2 }
-        let note = Updates.clearCacheAfterUpdate()
-        print("update-cleanup: \(note)")
-        return note.hasPrefix("FAIL") ? 1 : 0
-    }
-
     static func run(feed: String, args: [String]) async -> Int32 {
         setvbuf(stdout, nil, _IOLBF, 0)
         let bundle = Bundle.main
