@@ -148,10 +148,16 @@ extension Cleanup {
                     guard d <= target.count / 4, !words[start..<start + width].allSatisfy({ isWord(ns.substring(with: $0)) }) else { continue }
                     // Nothing may be swallowed, whatever the window's width: a digit must be one of the term's, and a real word
                     // (`isWord`) must be one the term accounts for ("Joan" for "João"), not a neighbour ("LamineYama all").
+                    // Each real word takes its own term word, in order, so "Club club" cannot both be the term's one "Club"
+                    // (Sol verification 11).
                     let own = term.split(separator: " ").map { folded(String($0)) }
+                    var next = 0
                     let swallowed = stem.split(separator: " ").contains { word in
+                        guard isWord(String(word)) else { return false }
                         let letters = folded(String(word))
-                        return isWord(String(word)) && !own.contains { AutoLearn.distance(letters, $0) <= ($0.count >= 4 ? 1 : 0) }
+                        guard let i = own[next...].firstIndex(where: { AutoLearn.distance(letters, $0) <= ($0.count >= 4 ? 1 : 0) }) else { return true }
+                        next = i + 1
+                        return false
                     }
                     if swallowed || stem.filter(\.isNumber) != term.filter(\.isNumber) { continue }
                     found.append((range, term + suffix, d))
