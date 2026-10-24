@@ -9,6 +9,7 @@ swift build --scratch-path /private/tmp/talkread-build
 swift test  --scratch-path /private/tmp/talkread-build
 ./build.sh      # signed Talk & Read.app + ../Outputs/Talk & Read <version>.zip
 ./install.sh    # /Applications/JuniorOS Apps/ (TALKREAD_INSTALL_ROOT overrides for test installs)
+./release.sh --website <checkout> --notes notes.md [--dry-run]   # publish: only on Junior's word (see its header)
 ```
 
 ## Installing a release (testers)
