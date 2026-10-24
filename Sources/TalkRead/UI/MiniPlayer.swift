@@ -302,11 +302,12 @@ struct KaraokeStrip: View {
     /// Whitespace-separated pieces with their UTF-16 ranges (punctuation stays attached to its word).
     static func words(_ s: String) -> [(text: String, range: Range<Int>)] {
         let ns = s as NSString
-        let re = try! NSRegularExpression(pattern: "\\S+")
-        return re.matches(in: s, range: NSRange(location: 0, length: ns.length)).map {
+        return wordPattern.matches(in: s, range: NSRange(location: 0, length: ns.length)).map {
             (ns.substring(with: $0.range), $0.range.location..<NSMaxRange($0.range))
         }
     }
+    /// Compiled once, not on every word change.
+    private static let wordPattern = try! NSRegularExpression(pattern: "\\S+")
 }
 
 /// Three lines: previous (dim), current with the word highlighted, next (dim).

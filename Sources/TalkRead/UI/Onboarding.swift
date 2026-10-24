@@ -9,13 +9,9 @@ struct OnboardingView: View {
     var onFinish: () -> Void = {}
 
     var body: some View {
+        // Live permission ticks: AppDelegate's 2 s poll while a window is open, and at once when the app is activated
+        // again (coming back from System Settings).
         OnboardingContent(model: model, data: model.viewData, onFinish: onFinish)
-            .task {   // live permission ticks
-                while !Task.isCancelled {
-                    model.refreshPermissions()
-                    try? await Task.sleep(for: .seconds(1))
-                }
-            }
     }
 }
 
