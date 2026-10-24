@@ -43,7 +43,7 @@ cleanup() {
   [[ -z $SILENT ]] || kill $SILENT 2>/dev/null || true
   /usr/bin/defaults delete "$TEST_ID" 2>/dev/null || true
   rm -rf "$HOME/Library/Preferences/$TEST_ID.plist" "$HOME/Library/Caches/$TEST_ID" "$HOME/Library/HTTPStorages/$TEST_ID" \
-         "$E2E"/{install,new,down} "$E2E"/site/*.zip(N)
+         "$E2E"/{install,new,down} "$E2E"/site/*.{zip,dmg}(N)
 }
 trap cleanup EXIT
 ok() { print "PASS  $*" | tee -a "$E2E/e2e.log"; }
@@ -62,7 +62,10 @@ variant "$E2E/install" $V $B
 variant "$E2E/new" $NEW_V $NEW_B
 variant "$E2E/down" $DOWN_V $DOWN_B
 for f in new down; do
-  /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$E2E/$f/Talk & Read.app" "$E2E/site/Talk_and_Read_$(info "$E2E/$f/Talk & Read.app" CFBundleShortVersionString).zip"
+  base="$E2E/site/Talk_and_Read_$(info "$E2E/$f/Talk & Read.app" CFBundleShortVersionString)"
+  /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$E2E/$f/Talk & Read.app" "$base.zip"
+  # release.sh wants the website's disk image beside the zip (0.7.1); unsigned here, so a dry run lists it, never stops.
+  /usr/bin/hdiutil create -quiet -volname "Talk & Read" -srcfolder "$E2E/$f" -format UDZO "$base.dmg"
 done
 print '{}' > "$E2E/website/lib/apps.json"
 print -- "- Test build for the end-to-end update check." > "$E2E/notes.md"
