@@ -89,7 +89,7 @@ static_checks() {
   [[ $minos == 26.0 ]] && pass E6 "Mach-O minos $minos" || fail E6 "Mach-O minos is '$minos', not 26.0"
   if (( ! BUNDLE )); then
     nrun E6 "Info.plist, Developer ID signature (bare binary)"; nrun B-version "bare binary"; nrun B-signature "bare binary"; nrun B-contents "bare binary"
-    nrun U1 "Sparkle embedding, feed and key (bare binary)"
+    nrun U1-pack "Sparkle embedding, feed and key (bare binary)"; nrun U1 "the update e2e needs a bundle"
     return
   fi
   v=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$info" 2>&1)
@@ -110,9 +110,9 @@ static_checks() {
   grep -q "flags=0x[0-9a-f]*(.*runtime" <<<$sig && pass B-signature "hardened runtime on" || fail B-signature "hardened runtime flag missing"
   hsig=$(/usr/bin/codesign -dvv "$CLI" 2>&1)
   grep -q "Identifier=com.juniornkanabassi.TalkAndRead.cli" <<<$hsig && pass B-signature "helper keeps its own identifier" || fail B-signature "helper identifier changed or unsigned"
-  v=$(/usr/sbin/spctl --assess --type execute -vv "$APP" 2>&1 | tr '\n' ' ')
-  pass B-signature "spctl: ${v:0:90} (notarisation is not required for a local install)"
-  # U1 (0.7.0): Sparkle is embedded, each nested part signed by the app's team with hardened runtime and a secure
+  if v=$(/usr/sbin/spctl --assess --type execute -vv "$APP" 2>&1); then pass B-signature "spctl: ${${v//$'\n'/ }:0:110}"
+  else fail B-signature "Gatekeeper refuses it (spctl): ${${v//$'\n'/ }:0:160}"; fi
+  # U1-pack (0.7.0): Sparkle is embedded, each nested part signed by the app's team with hardened runtime and a secure
   # timestamp; the feed and the EdDSA public key are set (never the placeholder); the app finds the framework.
   local fw="$APP/Contents/Frameworks/Sparkle.framework" team part psig unsigned="" feed key
   team=$(sed -nE 's/^TeamIdentifier=//p' <<<$sig)
@@ -121,14 +121,22 @@ static_checks() {
       psig=$(/usr/bin/codesign -dvv "$part" 2>&1)
       grep -q "^TeamIdentifier=$team\$" <<<$psig && grep -q '^Timestamp=' <<<$psig && grep -q 'flags=0x[0-9a-f]*(.*runtime' <<<$psig || unsigned+="${part:t} "
     done
-    [[ -z $unsigned ]] && pass U1 "Sparkle $(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$fw/Resources/Info.plist") embedded; Autoupdate, Updater.app, XPC services and the framework signed by team $team, hardened runtime, timestamped" \
-                       || fail U1 "Sparkle parts not signed by team $team with runtime and timestamp: $unsigned"
-  else fail U1 "Contents/Frameworks/Sparkle.framework missing or its signature does not verify"; fi
-  /usr/bin/otool -l "$EXE" | grep -q 'path @executable_path/../Frameworks ' && pass U1 "rpath @executable_path/../Frameworks" || fail U1 "no @executable_path/../Frameworks rpath"
+    [[ -z $unsigned ]] && pass U1-pack "Sparkle $(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$fw/Resources/Info.plist") embedded; Autoupdate, Updater.app, XPC services and the framework signed by team $team, hardened runtime, timestamped" \
+                       || fail U1-pack "Sparkle parts not signed by team $team with runtime and timestamp: $unsigned"
+  else fail U1-pack "Contents/Frameworks/Sparkle.framework missing or its signature does not verify"; fi
+  /usr/bin/otool -l "$EXE" | grep -q 'path @executable_path/../Frameworks ' && pass U1-pack "rpath @executable_path/../Frameworks" || fail U1-pack "no @executable_path/../Frameworks rpath"
   feed=$(/usr/bin/plutil -extract SUFeedURL raw -o - "$info" 2>/dev/null); key=$(/usr/bin/plutil -extract SUPublicEDKey raw -o - "$info" 2>/dev/null)
-  [[ $feed == https://* ]] && pass U1 "SUFeedURL $feed" || fail U1 "SUFeedURL missing or not https: '$feed'"
-  if [[ ${#key} == 44 && $key != REPLACE_WITH_* ]] && print -rn -- $key | /usr/bin/base64 -D 2>/dev/null | wc -c | grep -q '^ *32$'; then pass U1 "SUPublicEDKey set (${key:0:6}…, 32-byte EdDSA key)"
-  else fail U1 "SUPublicEDKey missing, the placeholder or not a 32-byte base64 key: '${key:0:30}'"; fi
+  [[ $feed == https://* ]] && pass U1-pack "SUFeedURL $feed" || fail U1-pack "SUFeedURL missing or not https: '$feed'"
+  if [[ ${#key} == 44 && $key != REPLACE_WITH_* ]] && print -rn -- $key | /usr/bin/base64 -D 2>/dev/null | wc -c | grep -q '^ *32$'; then pass U1-pack "SUPublicEDKey set (${key:0:6}…, 32-byte EdDSA key)"
+  else fail U1-pack "SUPublicEDKey missing, the placeholder or not a 32-byte base64 key: '${key:0:30}'"; fi
+  # U1 (behaviour): only Tools/update-e2e.sh run on this very build (same CDHash) proves discovery, the reminder,
+  # signature and downgrade refusal, install and no relaunch; Sparkle's own alert, consent and a relaunch need eyes.
+  local cdh=$(/usr/bin/codesign -dvvv "$APP" 2>&1 | sed -n 's/^CDHash=//p') ev
+  ev=/private/tmp/talkread-checker/update-e2e/$cdh.txt
+  if [[ -n $cdh && -f $ev ]] && [[ $(tail -1 "$ev") == "update e2e: all passed" ]]; then
+    pass U1 "update e2e on this build ($(sed -n 's/^run: //p' "$ev" | cut -d, -f1)): $(grep -c '^PASS' "$ev") checks, reminder, bad signature, downgrade, two callers, install, no relaunch"
+  else owe U1 "run Tools/update-e2e.sh on this build (no evidence for CDHash ${cdh:0:12})"; fi
+  owe U1-live "Sparkle's alert with the release notes, Install, the relaunch, and the menu reminder and icon dot after a background check, on his Mac"
   local f clip secs
   for f in breeze.us_warm breeze.us_calm qwen.us_warm qwen.us_calm qwen.fr_warm; do
     clip="$APP/Contents/Resources/Voices/$f.wav"
@@ -517,7 +525,7 @@ row() { local k=$1 s; s=$(status_of $k)
   if [[ $s == NO-RULE ]]; then s=OWED-JUNIOR; EV[$k]="NO CHECKER RULE for this checklist line yet; read it by hand"; NORULE=$(( NORULE + 1 )); fi
   COUNT[$s]=$(( ${COUNT[$s]:-0} + 1 ))
   ROWS+=("$(printf '%-11s %-12s %s' $k $s "${EV[$k]}")"); }
-for k in B-version B-signature B-contents U1; do [[ -n ${EV[$k]:-} ]] && (( ! ${ids[(Ie)$k]} )) && row $k; done   # U1 until the checklist has its line
+for k in B-version B-signature B-contents U1-pack U1 U1-live; do [[ -n ${EV[$k]:-} ]] && (( ! ${ids[(Ie)$k]} )) && row $k; done   # U1 until the checklist has its line
 for k in $ids; do row $k; done
 {
   print "\nAcceptance checklist, $(basename "$APP"), $(date '+%d %b %H:%M'), ${ELAPSED} s of tests"
