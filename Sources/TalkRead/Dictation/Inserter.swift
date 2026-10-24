@@ -37,8 +37,14 @@ enum Inserter {
 
     /// Whether the focused field is secure, whether it is a terminal, whether it is a single-line field, and the UTF-16
     /// unit before its caret (nil = unknown or at the start).
-    @MainActor static func focusedField(pid: pid_t?) -> (secure: Bool, previous: unichar?, terminal: Bool, singleLine: Bool) {
-        if pid == getpid() { let own = ownFocusedField(); return (own.secure, own.previous, false, own.singleLine) }
+    /// Normal dictation passes no PID: the frontmost app then decides whether the focus is one of our own fields
+    /// (`frontmost` and `ownEditor` are swapped by the self-test).
+    @MainActor static func focusedField(pid: pid_t?, frontmost: () -> pid_t? = { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+                                        ownEditor: @MainActor () -> NSTextView? = { Inserter.ownEditor() }) -> (secure: Bool, previous: unichar?, terminal: Bool, singleLine: Bool) {
+        if (pid ?? frontmost()) == getpid() {
+            let own: (secure: Bool, previous: unichar?, singleLine: Bool) = ownEditor().map { describe($0) } ?? (false, nil, false)
+            return (own.secure, own.previous, false, own.singleLine)
+        }
         let root = pid.map { AXUIElementCreateApplication($0) } ?? AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(root, 0.25)
         guard let element: AXUIElement = attribute(root, kAXFocusedUIElementAttribute) else { return (false, nil, false, false) }
@@ -102,10 +108,9 @@ enum Inserter {
 
     /// Our own windows (the reader, onboarding, the self-test): AppKit knows the focus even when the window is not
     /// key, where an AX query of our own process returns nothing.
-    @MainActor private static func ownFocusedField() -> (secure: Bool, previous: unichar?, singleLine: Bool) {
+    @MainActor static func ownEditor() -> NSTextView? {
         let window = NSApp.keyWindow ?? NSApp.windows.first { $0.isVisible && $0.firstResponder is NSTextView }
-        guard let editor = window?.firstResponder as? NSTextView else { return (false, nil, false) }
-        return describe(editor)
+        return window?.firstResponder as? NSTextView
     }
 
     /// What the inserter needs to know about the text view that has our own focus.

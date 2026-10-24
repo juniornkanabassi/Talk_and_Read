@@ -131,7 +131,9 @@ import WebKit
         for v in [field, combo, secure, view] as [NSView] { window.contentView?.addSubview(v) }
         func state(_ responder: NSResponder) -> (secure: Bool, previous: unichar?, singleLine: Bool)? {
             guard window.makeFirstResponder(responder), let editor = window.firstResponder as? NSTextView else { return nil }
-            return Inserter.describe(editor)
+            // The production route: no PID, our own process in front, the focus in `window`.
+            let seen = Inserter.focusedField(pid: nil, frontmost: { getpid() }, ownEditor: { editor })
+            return (seen.secure, seen.previous, seen.singleLine)
         }
         let results = [state(field)?.singleLine, state(combo)?.singleLine, state(view)?.singleLine, state(secure)?.secure]
         let ok = results == [true, true, false, true]
@@ -731,9 +733,10 @@ import WebKit
             let on = await DictationBench.releaseToPaste(transcriber, clips: clips)
             settings.paragraphs = false; try? settings.save()
             let off = await DictationBench.releaseToPaste(transcriber, clips: clips)
-            let slow = on.median - off.median > 10 || on.median > 50
-            print(String(format: "paragraphs: release to insertion median %.0f ms (max %.0f) with paragraphs, %.0f ms (max %.0f) without; 0.5.0 was 25 to 40 ms%@",
-                         on.median, on.max, off.median, off.max, slow ? "  TOO SLOW" : ""))
+            let measured = on.count > 0 && on.count == on.tried && off.count > 0 && off.count == off.tried
+            let slow = !measured || on.median - off.median > 10 || on.median > 50
+            print(String(format: "paragraphs: release to insertion median %.0f ms (max %.0f) over %d of %d insertions with paragraphs, %.0f ms (max %.0f) over %d of %d without; 0.5.0 was 25 to 40 ms%@",
+                         on.median, on.max, on.count, on.tried, off.median, off.max, off.count, off.tried, measured ? (slow ? "  TOO SLOW" : "") : "  FAIL: not every insertion was measured"))
             let regressions = checkSplitRegressions()
             return missed + extra <= 1 && drives && splitMs < 5 && short == baseline && !slow && text.hasSuffix(".") && regressions
         } catch {

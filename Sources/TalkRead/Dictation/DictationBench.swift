@@ -21,6 +21,7 @@ import TalkReadCore
         let names = argument("--engines")?.split(separator: ",").map(String.init) ?? ["parakeet", "apple-speech", "apple-dictation"]
         print("bench: \(clips.count) clips, \(vocabulary.count) vocabulary entries, \(terms.count) key terms; app footprint at start \(Int(footprintMB())) MB")
         var summary: [String] = []
+        var failed = false
         for name in names {
             let asr: DictationASR
             switch name {
@@ -54,17 +55,18 @@ import TalkReadCore
             }
             let e2e = await releaseToPaste(asr, clips: clips)
             let sorted = latencies.sorted()
-            let line = String(format: "%@: WER %.1f%%, key terms %d/%d, exact %d/%d, after last sample median %.0f ms (max %.0f), release to paste median %.0f ms (max %.0f), app memory +%.0f MB loaded, peak %.0f MB",
+            let line = String(format: "%@: WER %.1f%%, key terms %d/%d, exact %d/%d, after last sample median %.0f ms (max %.0f), release to paste median %.0f ms (max %.0f) over %d of %d insertions, app memory +%.0f MB loaded, peak %.0f MB",
                               name, 100 * Double(errors) / Double(max(1, words)), hits, termTotal, exact, clips.count,
-                              sorted[sorted.count / 2], sorted.last!, e2e.median, e2e.max, peak - before, peak)
+                              sorted[sorted.count / 2], sorted.last!, e2e.median, e2e.max, e2e.count, e2e.tried, peak - before, peak)
             print(line)
+            if e2e.count == 0 { print("bench: \(name) FAIL: no insertion succeeded, release-to-paste was not measured"); failed = true }
             summary.append(line)
             asr.unload()
         }
         summary.append(focusQueryCost())
         print("bench summary:")
         for line in summary { print("  " + line) }
-        return 0
+        return failed ? 1 : 0
     }
 
     /// Read-only, in Junior's frontmost app: the inserter's focus query (one character before the caret), against
@@ -87,10 +89,11 @@ import TalkReadCore
 
     /// Release (the clip's last buffer, then `stop`) to the moment the controller hands the text to the inserter, for
     /// clips of 4–7 s, through the production DictationController (clean-up, settings and vocabulary reads included).
-    static func releaseToPaste(_ asr: DictationASR, clips: [URL]) async -> (median: Double, max: Double) {
-        var times: [Double] = []
+    static func releaseToPaste(_ asr: DictationASR, clips: [URL]) async -> (median: Double, max: Double, count: Int, tried: Int) {
+        var times: [Double] = [], tried = 0
         for clip in clips {
             guard let samples = try? Transcriber.samples(of: clip), (4 * 16_000...7 * 16_000).contains(samples.count) else { continue }
+            tried += 1
             let audio = ClipAudio(samples: samples)
             var pasted: Date?
             let controller = DictationController(audio: audio, asr: asr, insert: { _, _, _ in pasted = Date(); return .inserted })
@@ -105,7 +108,8 @@ import TalkReadCore
             if let pasted { times.append(pasted.timeIntervalSince(released) * 1000) }
         }
         let sorted = times.sorted()
-        return sorted.isEmpty ? (0, 0) : (sorted[sorted.count / 2], sorted.last!)
+        guard !sorted.isEmpty else { return (.nan, .nan, 0, tried) }          // no insertion happened: nothing was measured
+        return (sorted[sorted.count / 2], sorted.last!, sorted.count, tried)
     }
 
     /// Plays a clip into the controller like a microphone: 100 ms buffers at real-time pace from `start`.
