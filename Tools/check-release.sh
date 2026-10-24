@@ -19,7 +19,7 @@ PROJECT="/Users/junior.nkanabassi/Documents/JuniorOS/02 Projects/Development/Tal
 SRC="$PROJECT/Source"
 CHECKLIST="${TALKREAD_CHECKLIST:-$PROJECT/00 Project State/Acceptance checklist.md}"
 ROOT=/private/tmp/talkread-checker
-EXPECT_VERSION="${TALKREAD_EXPECT_VERSION:-0.4.0}"
+EXPECT_VERSION="${TALKREAD_EXPECT_VERSION:-$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "${0:A:h}/../Resources/Info.plist")}"   # the source's version
 BATCH_DIR=/private/tmp/talkread-b-a
 BATCH_LOG=$BATCH_DIR/final/BATCH-runner.txt
 GPU=0 SERIAL=0 STATIC_ONLY=0 NETDENY_ON=1 WAIT_BATCH=1 SELFCHECK=0 APP="" REPORT="" prev=""
@@ -96,6 +96,11 @@ static_checks() {
                               || fail B-version "version is $v, expected $EXPECT_VERSION"
   [[ $(/usr/bin/plutil -extract LSMinimumSystemVersion raw -o - "$info") == 26.0 ]] && pass E6 "LSMinimumSystemVersion 26.0" || fail E6 "LSMinimumSystemVersion is not 26.0"
   [[ $(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$info") == com.juniornkanabassi.TalkAndRead ]] || fail B-version "bundle id changed"
+  # N1 (0.5.0): the name is Talk & Read wherever it is shown; the bundle id and data root keep the old form on purpose.
+  n=$(/usr/bin/plutil -extract CFBundleName raw -o - "$info"); dn=$(/usr/bin/plutil -extract CFBundleDisplayName raw -o - "$info")
+  [[ $n == "Talk & Read" && $dn == "Talk & Read" && ${APP:t} == "Talk & Read.app" ]] \
+    && pass N1 "bundle name, display name and bundle file are Talk & Read" || fail N1 "name '$n', display '$dn', bundle '${APP:t}'"
+  owe N1 "the name in Finder, the menu bar menu, windows and onboarding, by eye"
   if /usr/bin/codesign --verify --strict --deep "$APP" 2>"$OUT/codesign.err"; then pass B-signature "codesign --verify --strict --deep valid"; else fail B-signature "codesign verify: $(head -1 "$OUT/codesign.err")"; fi
   sig=$(/usr/bin/codesign -dvv "$APP" 2>&1)
   if grep -q "Authority=Developer ID Application" <<<$sig; then
@@ -342,6 +347,10 @@ rules() {
       grep -q "^PASS  $p" $OUT/control.txt || { fail E1 "control: '$p' did not pass"; }
     done
     grep -q '^PASS  a and b dictate-file at once' $OUT/control.txt && pass T1 "CLI dictate-file transcribes; two callers: one done, one busy"
+    # D2 (0.5.0): microphone choice through the control path; recording from it needs a live mic, so it stays owed.
+    m=$(grep -cE '^PASS  mic (lists the inputs|<uid> chooses it|refuses an unknown UID|default clears the choice)' $OUT/control.txt)
+    (( m == 4 )) && pass D2 "mic list, choose, refuse unknown, back to default; status reports the microphone" || fail D2 "control mic steps passed: $m of 4"
+    owe D2 "dictate with a chosen USB or Bluetooth mic; unplug it and see the fallback notice"
     n=$(num $OUT/control.txt '^PASS  idle CPU over 20 s: ([0-9.]+) %.*')
     [[ -n $n ]] && pass E3 "idle CPU ${n} % over 20 s (limit 0.5)" || fail E3 "idle CPU check missing or failed: $(L $OUT/control.txt 'idle CPU')"
     grep -q '^PASS  idle unload around dictate-file' $OUT/control.txt && pass E3 "model unloads after the idle timeout (scheduled and fired)" || fail E3 "idle unload check failed"
