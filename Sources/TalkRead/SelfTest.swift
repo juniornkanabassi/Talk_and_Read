@@ -655,7 +655,13 @@ enum SelfTest {
         model.preview(fakeBreeze.listed[0])   // saved 2.5x again
         if let p = model.session {
             p.player.volume = 0
+            model.togglePause()   // paused: nothing else refreshes the display
+            _ = await until(2) { p.state == .paused }
+            var changes = 0
+            let watch = model.objectWillChange.sink { changes += 1 }
             model.stepSpeed(0.05)   // what ⌥D does
+            watch.cancel()
+            check("fake: ⌥D on a paused preview notifies the display (\(changes) change(s))", p.state == .paused && changes > 0)
             check("fake: ⌥D during a 1x preview gives 1.05x and the saved 2.5x stays (rate \(p.player.rate)x, shown \(model.activeSpeed)x, saved \(model.settings.speed)x)",
                   abs(p.player.rate - 1.05) < 0.001 && abs(model.activeSpeed - 1.05) < 0.001 && model.settings.speed == 2.5)
         } else { check("fake: the second preview started", false) }

@@ -80,7 +80,8 @@ extension EngineKind {
     /// preparing, playing and paused, released at finished, failed or stopped.
     var owner: (caller: String, sessionID: UUID)?
     /// What the status command reports about the current read (the voice is the session's `effectiveVoice`).
-    private(set) var sessionInfo = (source: "", rate: Float(1), item: UUID?.none)
+    /// Published so a speed shown from `activeSpeed` refreshes when only the live read's rate changes (a paused preview).
+    @Published private(set) var sessionInfo = (source: "", rate: Float(1), item: UUID?.none)
     private(set) var downloadTask: Task<Void, Never>?
     /// Optional downloads in flight or failed, by title; the rest show installed or missing.
     private var downloadStates: [String: ModelState] = [:]
@@ -496,6 +497,12 @@ extension EngineKind {
 
     func setSpeed(_ s: Float) {
         owner?.caller = "user"
+        changeSpeed(s)
+    }
+
+    /// The speed commands' one path (the GUI, the keys and control `speed`; `settings-set` stays a plain preference
+    /// write): the saved speed, applied to a live read too, except during a preview, which changes alone.
+    func changeSpeed(_ s: Float) {
         var next = settings
         next.speed = s
         next = next.validated()
