@@ -1,4 +1,4 @@
-// `TalkRead --selftest-asr <dir> [--insert]`: hotkey mapping, the ownership rules (fake recorder and recogniser),
+// `TalkRead --selftest-asr <dir> [--insert | --paragraphs]`: hotkey mapping, the ownership rules (fake recorder and recogniser),
 // WER and latency of the real Transcriber over the fixtures (file path and live streaming path), paragraph breaks on a
 // Kokoro-spoken four-paragraph script, and, with --insert, pasting into a test panel on the Prompter XL. Never uses the microphone; events go only to our own pid.
 import AppKit
@@ -14,6 +14,11 @@ import WebKit
             setenv("TALKREAD_HOME", "/private/tmp/talkread-selftest-home", 1)
         }
         if CommandLine.arguments.contains("--bench") { return await DictationBench.run(dir: URL(fileURLWithPath: dir)) }
+        if CommandLine.arguments.contains("--paragraphs") {       // just the paragraph check
+            let transcriber = Transcriber()
+            guard (try? await transcriber.load(progress: nil)) != nil else { return 1 }
+            return await checkParagraphs(transcriber) ? 0 : 1
+        }
         var ok = checkHotkeys()
         ok = checkTextRules() && ok
         if Paths.dataRoot.path.hasPrefix("/private/tmp") {
@@ -679,10 +684,8 @@ import WebKit
             let began = Date()
             for _ in 0..<200 { _ = Paragraphs.split(clean, pauses: raw.pauses) }
             let splitMs = Date().timeIntervalSince(began) * 1000 / 200
-            let at = script.reduce(into: [0]) { $0.append($0.last! + $1.count) }.dropFirst().dropLast()   // sentence index of paragraphs 2 to 4
-            print("paragraphs: \(script.joined().joined(separator: " ").split(separator: " ").count) words spoken, \(raw.pauses.count) sentence pauses heard; at the paragraph starts " +
-                  at.map { raw.pauses.indices.contains($0 - 1) ? String(format: "%.2f s", raw.pauses[$0 - 1].seconds) : "?" }.joined(separator: ", ") +
-                  " (spoken 1.2 s); inside paragraphs max " + String(format: "%.2f s", raw.pauses.enumerated().filter { !at.contains($0.offset + 1) }.map(\.element.seconds).max() ?? 0))
+            print("paragraphs: \(script.joined().joined(separator: " ").split(separator: " ").count) words spoken (gaps 1.2 s before sentences 6, 11, 16, else 0.4 s); the recogniser heard \(raw.pauses.count + 1) sentences, pause before each: " +
+                  raw.pauses.map { "\($0.word) \(String(format: "%.2f", $0.seconds))" }.joined(separator: ", "))
             print("paragraphs: \(text.components(separatedBy: "\n\n").count) paragraphs, missed \(missed), extra \(extra); Paragraphs.split \(String(format: "%.3f", splitMs)) ms on \(clean.count) characters")
             print("paragraphs output: " + text.replacingOccurrences(of: "\n\n", with: " ⏎⏎ "))
             let untouched = !short.contains("\n") && short.split(separator: " ").count < 60
