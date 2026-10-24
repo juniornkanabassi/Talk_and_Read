@@ -14,7 +14,7 @@ swift test  --scratch-path /private/tmp/talkread-build
 
 ## Installing a release (testers)
 
-1. Download `Talk & Read <version>.zip` from this repository's Releases, double-click it, and drag **Talk & Read** into Applications. Builds are notarised by Apple, so it opens without a warning.
+1. Download `Talk_and_Read_<version>.zip` from the latest release at https://github.com/juniornkanabassi/talkandread-releases (or this repository's Releases), double-click it, and drag **Talk & Read** into Applications. Builds are notarised by Apple, so it opens without a warning.
 2. Open it. A short setup asks for Accessibility (reading your selection, the highlight, typing) and Microphone (dictation); Screen Recording is optional (the highlight in apps that hide their text).
 3. It offers to download the voice (about 90 MB) and the dictation model (about 580 MB) from Hugging Face. Everything else runs on your Mac; no text, audio or documents leave it.
 4. Read: select text and press ⌃A. Dictate: hold right Option and speak. All shortcuts are in Settings ▸ Shortcuts.
