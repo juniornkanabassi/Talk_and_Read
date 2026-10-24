@@ -37,23 +37,21 @@ import TalkReadCore
     }
 
     /// Junior: nothing of a previous version stays after an update. On the first launch of a different build this removes
-    /// Sparkle's cache for this bundle id (the downloaded and extracted update), nothing else, and logs only its size.
+    /// ~/Library/Caches/<bundle id>/org.sparkle-project.Sparkle (the downloaded and extracted update) and nothing else
+    /// (UpdateCache.clear refuses an odd bundle id or a symlinked folder), logs only its size, then records the build.
+    /// A refusal or failure is logged and leaves the build unrecorded, so the next launch tries again.
     @discardableResult static func clearCacheAfterUpdate(_ defaults: UserDefaults = .standard) -> String {
         let key = "lastLaunchedBuild", running = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
-        let last = defaults.string(forKey: key), fm = FileManager.default
-        guard UpdateCache.shouldClear(lastLaunched: last, running: running), let id = Bundle.main.bundleIdentifier else {
-            return "build \(running) as last launch: nothing to clear"
-        }
-        let folder = UpdateCache.folder(bundleID: id, caches: fm.urls(for: .cachesDirectory, in: .userDomainMask)[0])
-        var note = "build \(last ?? "none") to \(running): no update cache"
-        if fm.fileExists(atPath: folder.path) {
-            let bytes = (fm.enumerator(at: folder, includingPropertiesForKeys: [.totalFileAllocatedSizeKey])?.allObjects ?? [])
-                .compactMap { ($0 as? URL).flatMap { try? $0.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize } }.reduce(0, +)
-            do { try fm.removeItem(at: folder) } catch {
-                Log.write("update cache: not removed (\(error.localizedDescription)); trying again at the next launch")
-                return "FAIL the update cache was not removed"
-            }
-            note = "build \(last ?? "none") to \(running): removed Sparkle's update cache, \(bytes) bytes"
+        let last = defaults.string(forKey: key)
+        guard UpdateCache.shouldClear(lastLaunched: last, running: running) else { return "build \(running) as last launch: nothing to clear" }
+        let caches = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches", isDirectory: true)
+        let note: String
+        do {
+            let bytes = try UpdateCache.clear(bundleID: Bundle.main.bundleIdentifier ?? "", caches: caches)
+            note = "build \(last ?? "none") to \(running): " + (bytes.map { "removed Sparkle's update cache, \($0) bytes" } ?? "no update cache")
+        } catch {
+            Log.write("update cache: refused or failed, nothing more removed (\(error))")
+            return "FAIL \(error)"
         }
         defaults.set(running, forKey: key)
         Log.write("update cache: \(note)")
