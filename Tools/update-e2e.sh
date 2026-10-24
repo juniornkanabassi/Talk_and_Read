@@ -10,7 +10,8 @@
 #   - after every case that must not install: the bundle still verifies and every file is byte for byte the same
 #   - two `update-check` callers: one starts, one is busy with the same check id; `status` reports the result; the
 #     update downloads, verifies and installs in place as the process quits, with no relaunch and no window
-#   - the new build's first launch removes Sparkle's update cache; the install root holds only the updated app
+#   - after the update, with no clean-up of ours: Sparkle's cache holds no update archive or extracted app, the
+#     install root exactly one app; afterwards the test's own bundles, defaults and caches are gone
 # codesign --verify reports "invalid signature" for every bundle inside the Claude or Codex sandbox; run it outside.
 # Junior's installed app, its defaults and the release key are never touched. On success the evidence goes to
 # /private/tmp/talkread-checker/update-e2e/<CDHash of the app>.txt, which the checker's U1 row reads.
@@ -164,23 +165,24 @@ sleep 2
 ! /usr/bin/pgrep -f -- "$OLD/Contents/MacOS/TalkRead" >/dev/null || no "the updated app was relaunched"
 ok "no relaunch: nothing runs from the test bundle"
 
+# What the update itself leaves (Sparkle cleans up after installing; this app adds no deletion of its own).
 CACHE="$HOME/Library/Caches/$TEST_ID/org.sparkle-project.Sparkle"
-KB=$(du -sk "$CACHE" 2>/dev/null | cut -f1); KB=${KB:-0}
-# Also an update downloaded but never installed, and two things the clean-up must leave alone: the bundle id's other
-# caches and the app's data folder.
-mkdir -p "$CACHE/PersistentDownloads"; cp "$E2E/site/Talk_and_Read_$NEW_V.zip" "$CACHE/PersistentDownloads/"
-print keep > "$HOME/Library/Caches/$TEST_ID/keep-me"; print keep > "$E2E/home/keep-me"
-launch() { TALKREAD_HOME="$E2E/home" "$OLD/Contents/MacOS/TalkRead" --selftest-update-launch > "$E2E/$1.log" 2>&1 || no "$1: the launch clean-up failed"; }
-launch launch
-has launch "^update-cleanup: build none to $NEW_B: removed Sparkle's update cache, [0-9]+ bytes\$"
-(( $(sed -nE "s/.*cache, ([0-9]+) bytes\$/\\1/p" "$E2E/launch.log") >= $(stat -f %z "$E2E/site/Talk_and_Read_$NEW_V.zip") )) || no "the clean-up reported less than the leftover download"
-[[ ! -e $CACHE ]] || no "Sparkle's update cache is still there after the first launch"
-[[ -f "$HOME/Library/Caches/$TEST_ID/keep-me" && -f "$E2E/home/keep-me" ]] || no "the clean-up removed something outside Sparkle's cache folder"
-[[ $(/usr/bin/defaults read "$TEST_ID" lastLaunchedBuild) == $NEW_B ]] || no "the launched build was not recorded"
-launch relaunch
-has relaunch "^update-cleanup: build $NEW_B as last launch: nothing to clear\$"
-[[ $(ls -A "$E2E/install") == "Talk & Read.app" ]] || no "the install root holds more than the updated app: $(ls -A "$E2E/install" | tr '\n' ' ')"
-ok "first launch of $NEW_V: Sparkle's update cache gone (Sparkle had left ${KB} KB; with a leftover download added, $(sed -n 's/^update-cleanup: .*: //p' "$E2E/launch.log")); its other caches and the data folder untouched; the next launch clears nothing; the install root holds only the updated app"
+if [[ -d $CACHE ]]; then
+  STATE="$(du -sk "$CACHE" | cut -f1) KB in $(find "$CACHE" -mindepth 1 | wc -l | tr -d ' ') entries"
+  find "$CACHE" -type f -exec stat -f '  left: %z bytes %N' {} + >> "$E2E/e2e.log"
+  ! find "$CACHE" \( -name '*.zip' -o -name '*.dmg' -o -name '*.tar*' -o -name '*.aar' -o -name '*.delta' -o -name '*.app' \) | grep -q . \
+    || no "Sparkle left an update archive or app in its cache: $(find "$CACHE" \( -name '*.zip' -o -name '*.dmg' -o -name '*.tar*' -o -name '*.app' \) | head -3 | tr '\n' ' ')"
+else STATE="absent"; fi
+(( $(find "$E2E/install" -name '*.app' -prune | wc -l) == 1 )) && [[ $(ls -A "$E2E/install") == "Talk & Read.app" ]] \
+  || no "the install root holds more than the updated app: $(ls -A "$E2E/install" | tr '\n' ' ')"
+ok "after the update: Sparkle's cache holds no update archive or extracted app ($STATE); the install root holds exactly one app"
+
+kill $SERVER $SILENT 2>/dev/null || true; SERVER="" SILENT=""
+cleanup
+for f in "$HOME/Library/Caches/$TEST_ID" "$HOME/Library/Preferences/$TEST_ID.plist" "$HOME/Library/HTTPStorages/$TEST_ID" "$E2E"/{install,new,down}; do
+  [[ ! -e $f ]] || no "the test's own $f is still there after its clean-up"
+done
+ok "the test's own bundles, defaults and caches removed (logs kept in $E2E)"
 
 KEY=$(cdhash "$APP_IN")
 { print "app: $APP_IN"; print "CDHash: $KEY"; print "version: $V (build $B), commit $(info "$APP_IN" TRSourceCommit 2>/dev/null || print unknown)"
