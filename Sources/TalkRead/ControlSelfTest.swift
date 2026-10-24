@@ -159,7 +159,7 @@ enum ControlSelfTest {
         print("\(quitOK ? "PASS" : "FAIL")  quit during a paste: clipboard during \"\(during ?? "-")\", at quit \"\(atQuit ?? "-")\" after \(waited) ms")
         results.append(quitOK)
 
-        // Sol #17: "Insert again" targets the app that comes forward once Talk and Read hides (never itself).
+        // Sol #17: "Insert again" targets the app that comes forward once Talk & Read hides (never itself).
         let t17 = Date()
         let target = await AppModel.otherFrontmostApp(within: 1)
         let found = target != nil && target?.processIdentifier != getpid()

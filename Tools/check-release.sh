@@ -1,8 +1,8 @@
 #!/bin/zsh
-# Talk and Read acceptance checker: walks every line of 00 Project State/Acceptance checklist.md against a built app.
+# Talk & Read acceptance checker: walks every line of 00 Project State/Acceptance checklist.md against a built app.
 #
 # Usage: zsh /private/tmp/talkread-checker/check.sh [--gpu] [--serial] [--static-only] [--no-netdeny] [--no-wait-batch]
-#                                                   [APP]      (default /Applications/JuniorOS Apps/Talk and Read.app)
+#                                                   [APP]      (default /Applications/JuniorOS Apps/Talk & Read.app)
 #   APP may also be a bare TalkRead executable (dry run: the signature, bundle and version rows are NOT-RUN).
 #   --gpu           also run the Qwen3 and Breeze self-tests (loads the models; needs mains power and a quiet Mac)
 #   --serial        run the two test lanes one after the other (about 13 min) instead of side by side (about 7 min)
@@ -15,7 +15,7 @@
 setopt pipefail
 zmodload zsh/datetime
 
-PROJECT="/Users/junior.nkanabassi/Documents/JuniorOS/02 Projects/Development/Talk and Read"
+PROJECT="/Users/junior.nkanabassi/Documents/JuniorOS/02 Projects/Development/Talk & Read"
 SRC="$PROJECT/Source"
 CHECKLIST="${TALKREAD_CHECKLIST:-$PROJECT/00 Project State/Acceptance checklist.md}"
 ROOT=/private/tmp/talkread-checker
@@ -28,7 +28,7 @@ for a in "$@"; do if [[ $prev == --report ]]; then REPORT=$a; prev=""; continue;
   --gpu) GPU=1;; --serial) SERIAL=1;; --static-only) STATIC_ONLY=1;; --no-netdeny) NETDENY_ON=0;;
   --no-wait-batch) WAIT_BATCH=0;; --selfcheck) SELFCHECK=1;; -h|--help) sed -n 2,14p "$0"; exit 0;;
   -*) print -u2 "unknown option $a"; exit 2;; *) APP=$a;; esac; done
-APP="${APP:-/Applications/JuniorOS Apps/Talk and Read.app}"
+APP="${APP:-/Applications/JuniorOS Apps/Talk & Read.app}"
 
 # ---------------------------------------------------------------- evidence bookkeeping
 typeset -A OKN BAD OWE SKP EV
@@ -68,7 +68,7 @@ else print -u2 "No app bundle or executable at: $APP"; exit 2; fi
 STAMP=$(date +%Y%m%d-%H%M%S)
 OUT=$ROOT/run-$STAMP; FX=$ROOT/fixtures
 if [[ -n $REPORT ]]; then OUT=${REPORT:A}; WAIT_BATCH=0; else mkdir -p "$OUT" "$ROOT/home"; ln -sfn "$OUT" "$ROOT/latest"; fi
-print "Talk and Read checker, $(date '+%a %d %b %H:%M:%S')\nApp: $APP$( (( DRY )) && print ' (bare binary: dry run)')\nOutput: $OUT"
+print "Talk & Read checker, $(date '+%a %d %b %H:%M:%S')\nApp: $APP$( (( DRY )) && print ' (bare binary: dry run)')\nOutput: $OUT"
 print "Power: $(pmset -g batt | head -1 | sed 's/Now drawing from //'); load $(sysctl -n vm.loadavg)"
 
 if (( WAIT_BATCH )) && [[ -f $BATCH_LOG ]] && ! grep -q "ALL DONE" "$BATCH_LOG"; then

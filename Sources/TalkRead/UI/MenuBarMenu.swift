@@ -58,11 +58,11 @@ import TalkReadCore
         submenu("Microphone  \(inputs.first { $0.uid == s.dictationMicrophone }?.name ?? "System default")", microphoneMenu(inputs, chosen: s.dictationMicrophone))
         menu.addItem(.separator())
 
-        add("Open Talk and Read…", action: openMain)
+        add("Open Talk & Read…", action: openMain)
         add("Settings…", key: ",", action: openSettings)
         if model.needsSetup { add("⚠︎ Finish setup…", action: openOnboarding) }
         menu.addItem(.separator())
-        add("Quit Talk and Read", key: "q") { NSApp.terminate(nil) }
+        add("Quit Talk & Read", key: "q") { NSApp.terminate(nil) }
     }
 
     /// The default input, then every input; a tick on the chosen one (a saved microphone that is unplugged shows as such).

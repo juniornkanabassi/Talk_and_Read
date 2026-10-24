@@ -17,7 +17,7 @@ enum Inserter {
     /// out, the 500 ms wait before the restore runs in full even if the task is cancelled.
     @MainActor static func insert(_ text: String, targetPID: pid_t? = nil, isCurrent: @MainActor () -> Bool = { true }) async -> InsertResult {
         guard !text.isEmpty else { return .failed("Nothing to type") }
-        guard CGPreflightPostEventAccess() else { return .failed("Talk and Read needs Accessibility to type") }
+        guard CGPreflightPostEventAccess() else { return .failed("Talk & Read needs Accessibility to type") }
         let gate = gate
         return await gate.transaction {
             if IsSecureEventInputEnabled() { return .refusedSecure }
@@ -27,7 +27,7 @@ enum Inserter {
             let typed = needsLeadingSpace(after: field.previous, text: body) ? " " + body : body
             guard !Task.isCancelled, isCurrent() else { return .failed("Cancelled") }
             // Refused while quitting: the pasteboard still holds the user's own clipboard, so no ⌘V may go out.
-            guard gate.write(typed) != nil else { return .failed("Talk and Read is quitting") }
+            guard gate.write(typed) != nil else { return .failed("Talk & Read is quitting") }
             guard postPaste(to: targetPID) else { return .failed("Could not send the paste keystroke") }
             // Let the app read the pasteboard before it is restored. Not `Task.sleep`: cancellation would end it at once.
             await withCheckedContinuation { done in DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { done.resume() } }

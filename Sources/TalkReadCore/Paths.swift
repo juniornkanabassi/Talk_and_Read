@@ -6,6 +6,7 @@ public enum Paths {
         if let home = ProcessInfo.processInfo.environment["TALKREAD_HOME"], !home.isEmpty {
             return URL(fileURLWithPath: home, isDirectory: true)
         }
+        // Never renamed with the app (0.5.0 "Talk & Read"): this folder holds the models and settings and is never shown.
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Talk and Read", isDirectory: true)
     }()

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Stdio MCP adapter over the `talkread` CLI: one tool per control command, no dependencies (Node 18+).
 // The tool list comes from `talkread mcp-manifest`, so the CLI stays the single source of truth.
-// Connect with: claude mcp add talkread -- node "/Applications/JuniorOS Apps/Talk and Read.app/Contents/Resources/mcp/talkread-mcp.mjs"
+// Connect with: claude mcp add talkread -- node "/Applications/JuniorOS Apps/Talk & Read.app/Contents/Resources/mcp/talkread-mcp.mjs"
 // Codex: [mcp_servers.talkread] command = "node", args = ["<same path>"]
 // Env: TALKREAD_CLI overrides the helper path (tests). TALKREAD_HOME is passed through to the CLI.
 import { createInterface } from 'node:readline';

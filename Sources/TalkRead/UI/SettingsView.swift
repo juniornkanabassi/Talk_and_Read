@@ -90,7 +90,7 @@ struct SettingsContent: View {
     private var general: some View {
         Form {
             Section {
-                Toggle("Open Talk and Read at login", isOn: $model.settings.launchAtLogin)
+                Toggle("Open Talk & Read at login", isOn: $model.settings.launchAtLogin)
             }
             Section("Mini player") {
                 Toggle("Show the mini player when reading", isOn: $model.settings.showMiniPlayer)
@@ -143,13 +143,13 @@ struct SettingsContent: View {
                     Slider(value: $model.settings.opacity, in: 0.1...1).frame(width: 220).accessibilityValue("\(Int(model.settings.opacity * 100)) percent")
                 }
                 if model.settings.highlightHex.uppercased() != Theme.accentHex {
-                    Button("Use the Talk and Read yellow") { model.settings.highlightHex = Theme.accentHex }
+                    Button("Use the Talk & Read yellow") { model.settings.highlightHex = Theme.accentHex }
                 }
             }
             Section {
                 Toggle("Use screen text recognition when an app hides its text", isOn: $model.settings.useOCRFallback)
             } footer: {
-                Text("Needs Screen Recording. Talk and Read looks only at the window it is reading, on this Mac.").foregroundStyle(.secondary)
+                Text("Needs Screen Recording. Talk & Read looks only at the window it is reading, on this Mac.").foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -255,7 +255,7 @@ struct SettingsContent: View {
     private var about: some View {
         VStack(spacing: 12) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 96, height: 96).accessibilityHidden(true)
-            Text("Talk and Read").font(.title2.weight(.semibold))
+            Text("Talk & Read").font(.title2.weight(.semibold))
             Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")")
                 .foregroundStyle(.secondary).textSelection(.enabled)
             Text("Reads and types for you, entirely on this Mac. No account, no analytics, and nothing you read or say leaves this computer.")
@@ -348,7 +348,7 @@ struct ShortcutsPage: View {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.accent).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Speechify is open").font(.body.weight(.semibold))
-                Text("It answers the same keys as the defaults here, so one press can reach both apps. Quit Speechify, or give Talk and Read different keys below.")
+                Text("It answers the same keys as the defaults here, so one press can reach both apps. Quit Speechify, or give Talk & Read different keys below.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)

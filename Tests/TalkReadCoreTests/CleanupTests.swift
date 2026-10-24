@@ -94,8 +94,8 @@ final class CleanupTests: XCTestCase {
 
     func testMixedSentence() {
         let raw = "um so hello comma this is a test full stop new paragraph uh is it working question mark open quote yes close quote he said full stop"
-        XCTAssertEqual(clean(raw, ["talk and read": "Talk and Read"]), "So hello, this is a test.\n\nIs it working? \"Yes\" he said.")
-        XCTAssertEqual(clean("um try talk and read period", ["talk and read": "Talk and Read"]), "Try Talk and Read.")
+        XCTAssertEqual(clean(raw, ["talk and read": "Talk & Read"]), "So hello, this is a test.\n\nIs it working? \"Yes\" he said.")
+        XCTAssertEqual(clean("um try talk and read period", ["talk and read": "Talk & Read"]), "Try Talk & Read.")
     }
 
     func testInputPlaceholderCharactersCannotInjectText() {
