@@ -204,6 +204,30 @@ final class ParagraphsTests: XCTestCase {
         XCTAssertEqual(Paragraphs.tidy(intro + "\n1. a\n2. b.\n\nThe last item goes on."), intro + "\n1. a\n2. b.\n\nThe last item goes on.", "nothing is pulled into the final item")
     }
 
+    /// split, then Cleanup, then tidy, with a clear pause before every sentence.
+    private func throughTheApp(_ text: String) -> String {
+        let count = Paragraphs.sentenceRanges(text).count
+        return Paragraphs.tidy(Cleanup.apply(Paragraphs.split(text, pauses: [Double?](repeating: 1.5, count: count)), vocabulary: [:], removeFillers: true))
+    }
+
+    func testExplicitListItemsStayWhole() {
+        let long = names.prefix(7).map(sentence).joined(separator: " ")
+        let intro = "Here is the plan for today. It has a few parts."
+        // One bullet with a long continuation.
+        XCTAssertTrue(throughTheApp(intro + "\n- " + long).contains("\n- " + long), "a single item")
+        // The final item continues.
+        let last = throughTheApp(intro + "\n1. " + sentence("Alpha") + " " + sentence("Bravo") + "\n2. " + long)
+        XCTAssertTrue(last.contains("\n1. " + sentence("Alpha") + " " + sentence("Bravo") + "\n2. " + long), last)
+        // Two lists with prose between them: the prose is not part of either item, and may break.
+        let prose = names[7..<12].map(sentence).joined(separator: " ")
+        let two = throughTheApp(intro + "\n  * " + sentence("Alpha") + " " + sentence("Bravo") + "\n  * " + sentence("Charlie") + " " + sentence("Delta")
+                                + "\n" + prose + "\n1) " + sentence("Echo") + " " + sentence("Foxtrot") + "\n2) " + sentence("Golf") + " " + sentence("Hotel"))
+        XCTAssertTrue(two.contains("* " + sentence("Alpha") + " " + sentence("Bravo") + "\n* " + sentence("Charlie") + " " + sentence("Delta") + "\n" + names[7] + " goes"), two)
+        XCTAssertTrue(two.contains("\n1) " + sentence("Echo") + " " + sentence("Foxtrot") + "\n2) " + sentence("Golf") + " " + sentence("Hotel")), two)
+        XCTAssertTrue(prose.components(separatedBy: " ").count == 50 && two.components(separatedBy: "\n\n").count >= 2, "the prose between is still split into paragraphs")
+        XCTAssertFalse(two.contains("ten.\n\n" + sentence("Echo")), "no blank line pulls it away from the second list's first item")
+    }
+
     func testNoAutomaticBreakInsideASpokenList() {
         let list = "Here is the plan. First, finish the essay. Then check it twice. Second, email Jon about it. Add the draft. Finally, send the invoice. Then rest."
         let more = (names.prefix(6).map(sentence)).joined(separator: " ")

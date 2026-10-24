@@ -767,7 +767,12 @@ import WebKit
         if !Paragraphs.split(so.joined(separator: " "), pauses: gaps(5)).contains("\n\nSo, foxtrot goes") { failures.append("repeated starts") }
         let list = Paragraphs.tidy((1...62).map { "w\($0)" }.joined(separator: " ") + ".\n1. One thing.\n\n2. Two things")
         if !list.hasSuffix("\n1. One thing.\n2. Two things.") { failures.append("list") }
-        print("paragraphs: Sol regressions (Dr., No. 5, ellipsis, guillemets, Um starts, repeated starts, list, full stop) \(failures.isEmpty ? "ok" : "FAIL \(failures)")")
+        // An explicit list item that runs on (split, Cleanup, tidy as the app does): no blank line inside it.
+        let item = (0..<7).map { plain(names[$0]) }.joined(separator: " ")
+        let doc = "Here is the plan for today. It has a few parts.\n- " + item
+        let end = Paragraphs.tidy(Cleanup.apply(Paragraphs.split(doc), vocabulary: [:], removeFillers: true))   // no pauses: the 5-sentence fallback
+        if !end.contains("\n- " + item) { failures.append("list item continues") }
+        print("paragraphs: Sol regressions (Dr., No. 5, ellipsis, guillemets, Um starts, repeated starts, lists, a list item that runs on, full stop) \(failures.isEmpty ? "ok" : "FAIL \(failures)")")
         return failures.isEmpty
     }
 

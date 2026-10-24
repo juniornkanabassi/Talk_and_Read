@@ -96,7 +96,11 @@ public enum Paragraphs {
             var end = first + 1                                       // a stretch: sentences with no line break between them
             while end < spans.count, !text[spans[end - 1].upperBound..<spans[end].lowerBound].contains("\n") { end += 1 }
             let spoken = (first..<end).filter { text[spans[$0]].range(of: "\\bnew (?:paragraph|line)\\b", options: [.regularExpression, .caseInsensitive]) != nil }
-            let blocked = Set(spoken.flatMap { [$0 - 1 - first, $0 - first, $0 + 1 - first] } + listed.map { $0 - first })
+            // A line that is a list item (`1.`, `1)`, `-`, `•`, `*`) stays whole, however many sentences it runs on.
+            let lineStart = text[..<spans[first].lowerBound].lastIndex(of: "\n").map { text.index(after: $0) } ?? text.startIndex
+            let isItem = text[lineStart..<spans[end - 1].upperBound].range(of: item, options: .regularExpression) != nil
+            let blocked = isItem ? Set(0..<(end - first))
+                : Set(spoken.flatMap { [$0 - 1 - first, $0 - first, $0 + 1 - first] } + listed.map { $0 - first })
             cuts += breaks((first..<end).map { known ? (pauses[$0] ?? 0) : 0 }, blocked: blocked).map { $0 + first }
             first = end
         }
