@@ -48,6 +48,16 @@ final class VocabularyTests: XCTestCase {
         XCTAssertEqual(Cleanup.apply("Joan Neves", vocabulary: ["João Neves": "João Neves"], removeFillers: true, isWord: { $0.lowercased() == "joan" }), "João Neves")
     }
 
+    func testNoRealWordOrDigitIsSwallowedByAPartialMatch() {
+        // A protected token that merely shares a few letters or all but a digit is still content (Sol verification 10).
+        for text in ["LamineYama all scored.", "Kvaratskhelia2 scored.", "LamineYama 2 scored.", "Kvaratskelia2 scored."] {
+            let out = clean(text)
+            XCTAssertEqual(out, clean(text, vocabulary: [:]), text)
+        }
+        XCTAssertEqual(clean("Kvaratskelia scored."), "Kvaratskhelia scored.", "a plain near miss is still fixed")
+        XCTAssertEqual(clean("Ligue 2 starts."), "Ligue 2 starts.", "a different digit is not the term's")
+    }
+
     func testKnownMishearingsAreFixed() {
         XCTAssertTrue(clean("Is PHG bigger than Juve?").contains("PSG"))
         XCTAssertTrue(clean("If Mbappe is not French").contains("Mbappé is"))
