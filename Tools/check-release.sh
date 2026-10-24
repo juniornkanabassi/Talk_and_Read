@@ -392,6 +392,14 @@ rules() {
     [[ $(L $OUT/asr.txt '^drain: ') == 'drain: ok'* ]] && pass E3 "model unload waits for work and fires when idle"
     pass T6 "history and insert-again ownership checked in the dictation self-test"
     pass D1 "fixture set (the hard set is not run): $(L $OUT/asr.txt '^asr: .*latency' | sed -E 's/^asr: //')"
+    # D4 (0.6.0): paragraphs for a long spoken script, driven by the pauses; short dictation unchanged.
+    p=$(L $OUT/asr.txt '^paragraphs: [0-9]+ paragraphs, missed')
+    if [[ $p == *"missed 0, extra 0"* && $p == *"(differs: true)"* ]] && grep -q '^paragraphs: short dictation .* equals the cleaned baseline' $OUT/asr.txt; then
+      pass D4 "${p#paragraphs: }; short dictation unchanged"
+    else fail D4 "paragraph check: ${p:-no result}"; fi
+    owe D4 "dictate a real script and judge the paragraph breaks (the pause threshold is calibrated on synthetic speech)"
+    # D5 (0.6.0): the vocabulary safety rules are unit-tested (VocabularyTests); the import is Junior's data.
+    owe D5 "the imported vocabulary on his own dictation (PSG, Mbappé, Olise, Lamine Yamal, Bayern, Doué)"
   fi
 }
 
