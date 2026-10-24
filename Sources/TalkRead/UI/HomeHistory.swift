@@ -6,38 +6,66 @@ import TalkReadCore
 
 // MARK: - App icons
 
-/// Icons by bundle id (or by name for old entries), resolved lazily and cached for the life of the app. The slow part
-/// (Launch Services and folder probing) runs off the main thread; only the cheap `icon(forFile:)` runs on it.
+/// Icons for `AppLookup` (a bundle id, or for old entries a name), resolved lazily and cached in memory. The whole lookup
+/// (Launch Services, folder probing and the file's icon) runs off the main thread. The cache is capped, and a miss
+/// (the generic icon) expires, so an app installed later gets its icon the next time its row appears.
 @MainActor enum AppIcons {
-    private static var cache: [String: NSImage] = [:]
-    private static var inflight: [String: Task<URL?, Never>] = [:]
+    private struct Entry { let image: NSImage; let found: Bool; let at: Date }
+    private static var cache: [String: Entry] = [:]
+    private static var inflight: [String: Task<NSImage?, Never>] = [:]
+    private static let limit = 300
+    private static let missLifetime: TimeInterval = 600
+    private static let generic = NSWorkspace.shared.icon(for: .applicationBundle)
 
-    static func key(_ name: String?, _ bundleID: String?) -> String { bundleID ?? "name:" + (name ?? "") }
-    static func cached(_ name: String?, _ bundleID: String?) -> NSImage? { cache[key(name, bundleID)] }
-
-    static func load(_ name: String?, _ bundleID: String?) async -> NSImage {
-        let k = key(name, bundleID)
-        if let hit = cache[k] { return hit }
-        if name == ownAppName || (bundleID != nil && bundleID == Bundle.main.bundleIdentifier), let own = NSApp.applicationIconImage {
-            cache[k] = own
-            return own
+    static func key(_ name: String?, _ bundleID: String?) -> String {
+        switch AppLookup(name: name, bundleID: bundleID) {
+        case .bundle(let id): id
+        case .name(let n): "name:" + n
+        case .generic: "generic"
         }
-        let lookup = inflight[k] ?? Task.detached(priority: .utility) { appURL(name, bundleID) }
-        inflight[k] = lookup
-        let url = await lookup.value
-        inflight[k] = nil
-        let image = cache[k] ?? url.map { NSWorkspace.shared.icon(forFile: $0.path) } ?? NSWorkspace.shared.icon(for: .applicationBundle)
-        cache[k] = image
-        return image
     }
 
-    /// Bundle id first; for old entries (a name only) `<name>.app` in the usual folders.
-    nonisolated static func appURL(_ name: String?, _ bundleID: String?) -> URL? {
-        if let id = bundleID, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) { return url }
-        guard let name, !name.isEmpty, !name.contains("/") else { return nil }
-        let folders = ["/Applications", "/System/Applications", "/System/Applications/Utilities", NSHomeDirectory() + "/Applications"]
-        return folders.map { URL(fileURLWithPath: $0).appendingPathComponent(name + ".app") }
-            .first { FileManager.default.fileExists(atPath: $0.path) }
+    static func cached(_ name: String?, _ bundleID: String?) -> NSImage? {
+        guard let e = cache[key(name, bundleID)], e.found || Date().timeIntervalSince(e.at) < missLifetime else { return nil }
+        return e.image
+    }
+
+    static func load(_ name: String?, _ bundleID: String?) async -> NSImage {
+        if let hit = cached(name, bundleID) { return hit }
+        let k = key(name, bundleID)
+        if name == ownAppName || (bundleID != nil && bundleID == Bundle.main.bundleIdentifier), let own = NSApp.applicationIconImage {
+            store(k, own, found: true)
+            return own
+        }
+        let lookup = AppLookup(name: name, bundleID: bundleID)
+        let task = inflight[k] ?? Task.detached(priority: .utility) { icon(lookup) }
+        inflight[k] = task
+        let found = await task.value
+        inflight[k] = nil
+        store(k, found ?? generic, found: found != nil)
+        return cache[k]?.image ?? generic
+    }
+
+    // ponytail: clearing everything at the cap is crude, but 300 distinct apps is far beyond real use and a refill is cheap.
+    private static func store(_ k: String, _ image: NSImage, found: Bool) {
+        if cache.count >= limit { cache.removeAll() }
+        cache[k] = Entry(image: image, found: found, at: Date())
+    }
+
+    /// A bundle id is looked up by itself; only an entry with no bundle id is matched by `<name>.app` in the usual folders.
+    nonisolated static func icon(_ lookup: AppLookup) -> NSImage? {
+        let url: URL?
+        switch lookup {
+        case .bundle(let id):
+            url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
+        case .name(let name):
+            let folders = ["/Applications", "/System/Applications", "/System/Applications/Utilities", NSHomeDirectory() + "/Applications"]
+            url = folders.map { URL(fileURLWithPath: $0).appendingPathComponent(name + ".app") }
+                .first { FileManager.default.fileExists(atPath: $0.path) }
+        case .generic:
+            url = nil
+        }
+        return url.map { NSWorkspace.shared.icon(forFile: $0.path) }
     }
 }
 
@@ -74,6 +102,8 @@ struct HomeHistory: View {
     @State private var filter: HistoryFilter
     @State private var search: String
     @State private var shown: Int
+    /// Changes at midnight and when the time zone or the clock changes, so day headers and times are rebuilt (no polling).
+    @State private var epoch = UUID()
     /// Snapshots only: the row drawn as if the pointer were over it, and a short page to show the Show more button.
     let hoveredID: UUID?
     let pageSize: Int
@@ -91,7 +121,7 @@ struct HomeHistory: View {
     var body: some View {
         let everything = History.merge(data.recentReads.map(\.historyItem) + data.dictations.map(\.historyItem))
         let matches = History.filter(everything, kind: filter.kind, search: search)
-        let sections = History.sections(matches, limit: shown)
+        let sections = History.sections(matches, limit: shown, now: Date(), calendar: .current)
         VStack(alignment: .leading, spacing: 14) {
             header
             if everything.isEmpty {
@@ -99,19 +129,23 @@ struct HomeHistory: View {
             } else if matches.isEmpty {
                 EmptyNote(text: "No matching history").card(padding: 0)
             } else {
-                ForEach(sections) { section in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(section.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                            .padding(.leading, 4).accessibilityAddTraits(.isHeader)
-                        VStack(spacing: 0) {
-                            ForEach(section.items) { item in
-                                HistoryRow(model: model, item: item, forceActions: item.id == hoveredID)
-                                if item.id != section.items.last?.id { Divider().padding(.leading, 14) }
+                // Lazy, so a long history only builds the rows on screen. The id rebuilds them when the day or the clock changes.
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    ForEach(sections) { section in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(section.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                                .padding(.leading, 4).accessibilityAddTraits(.isHeader)
+                            LazyVStack(spacing: 0) {
+                                ForEach(section.items) { item in
+                                    HistoryRow(model: model, item: item, forceActions: item.uuid == hoveredID)
+                                    if item.id != section.items.last?.id { Divider().padding(.leading, 14) }
+                                }
                             }
+                            .card(padding: 0)
                         }
-                        .card(padding: 0)
                     }
                 }
+                .id(epoch)
                 if matches.count > shown {
                     Button("Show more") { shown += pageSize }
                         .buttonStyle(.bordered).controlSize(.large)
@@ -122,6 +156,9 @@ struct HomeHistory: View {
         }
         .onChange(of: filter) { shown = pageSize }
         .onChange(of: search) { shown = pageSize }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in epoch = UUID() }
+        .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in epoch = UUID() }
+        .onReceive(NotificationCenter.default.publisher(for: .NSSystemClockDidChange)) { _ in epoch = UUID() }
     }
 
     private var header: some View {
@@ -256,6 +293,6 @@ struct HistoryRow: View {
     }
 
     private func delete() {
-        if item.kind == .read { model.deleteRead(item.id) } else { model.deleteDictation(item.id) }
+        if item.kind == .read { model.deleteRead(item.uuid) } else { model.deleteDictation(item.uuid) }
     }
 }

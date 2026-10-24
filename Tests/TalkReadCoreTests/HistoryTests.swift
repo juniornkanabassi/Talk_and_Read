@@ -64,6 +64,34 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(History.sections([], limit: 50, now: now, calendar: calendar), [])
     }
 
+    func testGroupingAHugeDayIsLinear() {
+        let now = at(2026, 10, 24, 23)
+        let items = (0..<40_000).map { item(.read, now.addingTimeInterval(-Double($0) * 0.001), nil, "\($0)") }   // all one day
+        let start = Date()
+        let sections = History.sections(items, limit: items.count, now: now, calendar: calendar)
+        XCTAssertEqual(sections.count, 1)
+        XCTAssertEqual(sections[0].items.count, 40_000)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2, "quadratic grouping took seconds here")
+    }
+
+    func testAppLookupTrustsTheBundleIDOverTheName() {
+        XCTAssertEqual(AppLookup(name: "Notes", bundleID: "com.apple.Notes"), .bundle("com.apple.Notes"))
+        XCTAssertEqual(AppLookup(name: "Safari", bundleID: "com.example.not-installed"), .bundle("com.example.not-installed"))   // never Safari's icon
+        XCTAssertEqual(AppLookup(name: "Preview", bundleID: nil), .name("Preview"))
+        XCTAssertEqual(AppLookup(name: "Preview", bundleID: ""), .name("Preview"))
+        XCTAssertEqual(AppLookup(name: nil, bundleID: nil), .generic)
+        XCTAssertEqual(AppLookup(name: "../etc", bundleID: nil), .generic)
+    }
+
+    func testRowIdentityIncludesTheKind() {
+        let shared = UUID()
+        let read = HistoryItem(id: shared, kind: .read, date: Date(), app: nil, bundleID: nil, text: "a")
+        let said = HistoryItem(id: shared, kind: .dictated, date: Date(), app: nil, bundleID: nil, text: "b")
+        XCTAssertNotEqual(read.id, said.id)
+        XCTAssertEqual(Set([read.id, said.id]).count, 2)
+        XCTAssertEqual(read.uuid, said.uuid)   // deletion still goes by the UUID within its own kind
+    }
+
     func testTimeIsTwentyFourHour() {
         XCTAssertEqual(History.time(at(2026, 10, 24, 14, 32), calendar: calendar), "14:32")
         XCTAssertEqual(History.time(at(2026, 10, 24, 7, 5), calendar: calendar), "07:05")

@@ -52,7 +52,7 @@ let commands: [Command] = [
     Command(name: "dictate-start", summary: "Start dictating from the microphone.", example: "dictate-start", forceable: true),
     Command(name: "dictate-stop", summary: "Stop dictating and insert the text where the cursor is.", example: "dictate-stop", forceable: true),
     Command(name: "dictation-last", summary: "Print the most recent dictation.", example: "dictation-last"),
-    Command(name: "history", summary: "List what was read aloud and what was dictated, newest first, as the Home page's History shows it. Read-only. Each entry has kind (read or dictated), date (ISO 8601), app, bundleID (null for old entries) and text. Reads started inside Talk & Read have the app Talk & Read.",
+    Command(name: "history", summary: "List what was read aloud and what was dictated, newest first, as the Home page's History shows it. Read-only. Each entry has kind (read or dictated), date (ISO 8601), app, bundleID (null for old entries) and text. Reads started inside Talk & Read have the app Talk & Read. truncated is true when very long texts made the reply stop short of the limit; ask for fewer entries or narrow the search.",
             example: "history --kind dictated --search ferry --limit 10 --json",
             params: [Param(name: "kind", kind: .string, help: "all, read or dictated; default all.", choices: ["all", "read", "dictated"]),
                      Param(name: "limit", kind: .integer, help: "Most entries to return, 1 to 500; default 50."),
@@ -130,6 +130,7 @@ func render(_ response: ControlResponse, command: String) {
                   + "  " + (text.count > 100 ? String(text.prefix(100)) + "…" : text))
         }
         if entries.isEmpty { print("No matching history.") }
+        if data["truncated"]?.boolValue == true { stderrLine("The reply was cut short: use a smaller --limit or a --search.") }
         return
     }
     if command == "mic", let inputs = data["inputs"]?.arrayValue {
