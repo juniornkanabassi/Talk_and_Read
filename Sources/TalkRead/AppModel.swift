@@ -507,7 +507,7 @@ extension EngineKind {
     /// The control route refuses a larger skip; every other path clamps to it (Sol #5).
     nonisolated static let maxSkip = 10_000
     /// `talkread history`: most rows per call, and the text it may carry (the socket reply is capped at 8 MB).
-    nonisolated static let maxHistoryLimit = 500, maxHistoryBytes = 6_000_000
+    nonisolated static let maxHistoryLimit = 500, maxHistoryBytes = 2_000_000
 
     func skip(_ sentences: Int) {
         guard let s = liveSession else { return }

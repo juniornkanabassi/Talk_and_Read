@@ -264,6 +264,20 @@ enum ControlSelfTest {
         if let deleted { model.deleteRead(deleted) }
         let afterDelete = await call(cli, ["history", "--kind", "read", "--search", "second read"])
         record("a deleted read is gone from history", deleted != nil && entries(afterDelete).isEmpty, "\(model.recentReads.count) reads")
+
+        // Control characters encode as six bytes each (\u0001): a full history (200 reads) of 5,000 of them is about 6 MB on the
+        // wire from 1 MB of text. The reply must stay inside its budget, say it was cut, and never fail as response_too_large.
+        let heavy = String(repeating: "\u{1}", count: 5000)
+        var ids: [UUID] = []
+        for _ in 0..<model.settings.historyLimit { model.recordOwnRead(heavy); ids.append(model.recentReads[0].id) }
+        let big = await call(cli, ["history", "--kind", "read", "--limit", "500"])
+        let wire = big.text.utf8.count
+        let cut = entries(big).count
+        record("history stays inside its reply budget", big.response?.ok == true && wire <= AppModel.maxHistoryBytes + 4096
+               && big.response?.data?["truncated"]?.boolValue == true && cut > 30 && cut < model.recentReads.count, "\(cut) of \(model.recentReads.count) entries, \(wire / 1024) KB")
+        let few = await call(cli, ["history", "--kind", "read", "--limit", "10"])
+        record("history within the budget is not cut", few.response?.ok == true && entries(few).count == 10 && few.response?.data?["truncated"]?.boolValue == false, "\(entries(few).count) entries")
+        for id in ids { model.deleteRead(id) }
     }
 
     private static func check(_ label: String, _ o: Outcome, _ expect: Expect) -> Bool {

@@ -145,16 +145,22 @@ extension AppModel {
             let all = History.filter(History.merge(recentReads.map(\.historyItem) + dictation.history.map(\.historyItem)),
                                      kind: kind, search: a["search"] ?? "")
             let iso = ISO8601DateFormatter()
+            // The socket reply is capped at 8 MB of encoded JSON, so budget what the encoder produces (escapes included),
+            // not the raw text. 2 MB, well inside the limit: the control client re-scans what it has read on every receive, so a reply of several MB can outlast the server's 5 s write deadline. A cut list says so with `truncated`.
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             var bytes = 0
             var entries: [JSONValue] = []
             for item in all.prefix(limit) {
-                bytes += item.text.utf8.count
-                if bytes > Self.maxHistoryBytes { break }   // the socket reply is capped at 8 MB
-                entries.append(.object(["kind": .string(item.kind.rawValue), "date": .string(iso.string(from: item.date)),
-                                        "app": item.app.map { .string($0) } ?? .null, "bundleID": item.bundleID.map { .string($0) } ?? .null,
-                                        "text": .string(item.text)]))
+                let entry = JSONValue.object(["kind": .string(item.kind.rawValue), "date": .string(iso.string(from: item.date)),
+                                              "app": item.app.map { .string($0) } ?? .null, "bundleID": item.bundleID.map { .string($0) } ?? .null,
+                                              "text": .string(item.text)])
+                bytes += ((try? encoder.encode(entry))?.count ?? Self.maxHistoryBytes) + 1   // +1 for the comma
+                if bytes > Self.maxHistoryBytes { break }
+                entries.append(entry)
             }
-            return ["entries": .array(entries), "count": .number(Double(entries.count)), "matching": .number(Double(all.count))]
+            return ["entries": .array(entries), "count": .number(Double(entries.count)), "matching": .number(Double(all.count)),
+                    "truncated": .bool(entries.count < min(limit, all.count))]
 
         case "dictate-file":
             let url = try fileArg(a)

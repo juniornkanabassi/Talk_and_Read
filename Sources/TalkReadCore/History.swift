@@ -7,15 +7,20 @@ public enum HistoryKind: String, Sendable, CaseIterable, Codable {
 
 /// One row of the merged history. The app's `ReadEntry` and `DictationEntry` convert to this.
 public struct HistoryItem: Identifiable, Equatable, Sendable {
-    public let id: UUID
+    /// The entry's own id, for deleting it. Reads and dictations come from two files, so it is unique only within a kind.
+    public let uuid: UUID
     public let kind: HistoryKind
     public let date: Date
     public let app: String?
     public let bundleID: String?
     public let text: String
 
+    /// What the UI uses to tell rows apart: the same UUID in a read and a dictation must not collide.
+    public struct ID: Hashable, Sendable { public let kind: HistoryKind; public let uuid: UUID }
+    public var id: ID { ID(kind: kind, uuid: uuid) }
+
     public init(id: UUID, kind: HistoryKind, date: Date, app: String?, bundleID: String?, text: String) {
-        self.id = id; self.kind = kind; self.date = date; self.app = app; self.bundleID = bundleID; self.text = text
+        self.uuid = id; self.kind = kind; self.date = date; self.app = app; self.bundleID = bundleID; self.text = text
     }
 }
 
@@ -23,8 +28,20 @@ public struct HistorySection: Identifiable, Equatable, Sendable {
     /// Start of the day.
     public let day: Date
     public let title: String
-    public let items: [HistoryItem]
+    public var items: [HistoryItem]
     public var id: Date { day }
+}
+
+/// How to find an app's icon. A bundle id is authoritative: when it is present the name is never used, so a renamed or
+/// same-named different app cannot show the wrong icon. The name matters only for old entries that never had a bundle id.
+public enum AppLookup: Equatable, Sendable {
+    case bundle(String), name(String), generic
+
+    public init(name: String?, bundleID: String?) {
+        if let id = bundleID, !id.isEmpty { self = .bundle(id) }
+        else if let name, !name.isEmpty, !name.contains("/") { self = .name(name) }
+        else { self = .generic }
+    }
 }
 
 public enum History {
@@ -49,8 +66,8 @@ public enum History {
         var out: [HistorySection] = []
         for item in items.prefix(limit) {
             let day = calendar.startOfDay(for: item.date)
-            if let last = out.last, last.day == day {
-                out[out.count - 1] = HistorySection(day: day, title: last.title, items: last.items + [item])
+            if out.last?.day == day {
+                out[out.count - 1].items.append(item)   // in place: copying the day's array per entry was quadratic
             } else {
                 out.append(HistorySection(day: day, title: dayTitle(day, now: now, calendar: calendar), items: [item]))
             }
