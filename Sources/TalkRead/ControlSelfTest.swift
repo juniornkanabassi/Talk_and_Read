@@ -63,6 +63,7 @@ enum ControlSelfTest {
         // 0.7.0: routed to Sparkle; a self-test starts no updater, so the answer is a clear error, never a window.
         await step("update-check (no updater here)", ["update-check"], .unavailable)
         await microphoneSteps(cli, model, &results)
+        await historySteps(cli, model, &results)
         await step("a speak", ["speak", "Hello from the control test.", "--caller", "a"], .audio)
         await step("b speak while a reads", ["speak", "Interrupting.", "--caller", "b"], .busy)
         await step("b pause", ["pause", "--caller", "b"], .busy)
@@ -232,6 +233,37 @@ enum ControlSelfTest {
         let reset = await call(cli, ["mic", "default"])
         let status = await statusChoice()
         record("mic default clears the choice", reset.response?.ok == true && model.settings.dictationMicrophone == nil && status == "default", "status \(status ?? "-")")
+    }
+
+    /// `history` is read-only, newest first, filterable and searchable, and changes nothing. Two reads are recorded first.
+    @MainActor private static func historySteps(_ cli: URL, _ model: AppModel, _ results: inout [Bool]) async {
+        func record(_ label: String, _ pass: Bool, _ detail: String) { results.append(pass); print("\(pass ? "PASS" : "FAIL")  \(label.padding(toLength: 36, withPad: " ", startingAt: 0)) \(detail)") }
+        func entries(_ o: Outcome) -> [[String: JSONValue]] { (o.response?.data?["entries"]?.arrayValue ?? []).compactMap(\.objectValue) }
+        model.recordOwnRead("History test: the first read, about gulls.")
+        model.recordOwnRead("History test: the second read, about ferries.")
+        let before = model.recentReads.count
+        let all = await call(cli, ["history", "--kind", "read"])
+        let texts = entries(all).compactMap { $0["text"]?.stringValue }
+        let ours = entries(all).first
+        record("history lists reads newest first", all.response?.ok == true && texts.first == "History test: the second read, about ferries."
+               && texts.dropFirst().first == "History test: the first read, about gulls."
+               && ours?["kind"]?.stringValue == "read" && ours?["app"]?.stringValue == ownAppName && ours?["date"]?.stringValue != nil,
+               "\(texts.count) reads, first app \(ours?["app"]?.stringValue ?? "-")")
+        let one = await call(cli, ["history", "--limit", "1", "--search", "GULLS"])
+        record("history --search ignores case", entries(one).count == 1 && entries(one).first?["text"]?.stringValue?.contains("gulls") == true, one.text)
+        let dictated = await call(cli, ["history", "--kind", "dictated", "--search", "History test"])
+        record("history --kind dictated excludes reads", dictated.response?.ok == true && entries(dictated).isEmpty, "\(entries(dictated).count) entries")
+        let none = await call(cli, ["history", "--search", "no such words anywhere"])
+        record("history with no match is empty, not an error", none.response?.ok == true && entries(none).isEmpty
+               && none.response?.data?["matching"]?.numberValue == 0, none.text)
+        let badKind = await call(cli, ["history", "--kind", "listened"])
+        let badLimit = await call(cli, ["history", "--limit", "501"])
+        record("history refuses a bad kind and limit", badKind.status == 2 && badLimit.response?.code == "bad_args", "\(badKind.status) \(badLimit.response?.code ?? "-")")
+        record("history changes nothing", model.recentReads.count == before, "\(model.recentReads.count) reads")
+        let deleted = model.recentReads.first.map(\.id)
+        if let deleted { model.deleteRead(deleted) }
+        let afterDelete = await call(cli, ["history", "--kind", "read", "--search", "second read"])
+        record("a deleted read is gone from history", deleted != nil && entries(afterDelete).isEmpty, "\(model.recentReads.count) reads")
     }
 
     private static func check(_ label: String, _ o: Outcome, _ expect: Expect) -> Bool {

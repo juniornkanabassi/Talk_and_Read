@@ -135,6 +135,27 @@ extension AppModel {
             guard let e = dictation.history.first else { throw AppError(code: "empty", message: "Nothing has been dictated yet.") }
             return ["text": .string(e.text), "date": .string(ISO8601DateFormatter().string(from: e.date))]
 
+        case "history":
+            // Read-only: reads and dictations merged, newest first, as Home shows them.
+            let kinds: [String: HistoryKind?] = ["all": nil, "read": .read, "dictated": .dictated]
+            guard let kind = kinds[a["kind"] ?? "all"] else { throw AppError.badArgs("kind must be all, read or dictated.") }
+            guard let limit = Int(a["limit"] ?? "50"), (1...Self.maxHistoryLimit).contains(limit) else {
+                throw AppError.badArgs("limit must be a whole number from 1 to \(Self.maxHistoryLimit).")
+            }
+            let all = History.filter(History.merge(recentReads.map(\.historyItem) + dictation.history.map(\.historyItem)),
+                                     kind: kind, search: a["search"] ?? "")
+            let iso = ISO8601DateFormatter()
+            var bytes = 0
+            var entries: [JSONValue] = []
+            for item in all.prefix(limit) {
+                bytes += item.text.utf8.count
+                if bytes > Self.maxHistoryBytes { break }   // the socket reply is capped at 8 MB
+                entries.append(.object(["kind": .string(item.kind.rawValue), "date": .string(iso.string(from: item.date)),
+                                        "app": item.app.map { .string($0) } ?? .null, "bundleID": item.bundleID.map { .string($0) } ?? .null,
+                                        "text": .string(item.text)]))
+            }
+            return ["entries": .array(entries), "count": .number(Double(entries.count)), "matching": .number(Double(all.count))]
+
         case "dictate-file":
             let url = try fileArg(a)
             let start = Date()

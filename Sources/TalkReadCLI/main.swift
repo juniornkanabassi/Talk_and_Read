@@ -52,6 +52,11 @@ let commands: [Command] = [
     Command(name: "dictate-start", summary: "Start dictating from the microphone.", example: "dictate-start", forceable: true),
     Command(name: "dictate-stop", summary: "Stop dictating and insert the text where the cursor is.", example: "dictate-stop", forceable: true),
     Command(name: "dictation-last", summary: "Print the most recent dictation.", example: "dictation-last"),
+    Command(name: "history", summary: "List what was read aloud and what was dictated, newest first, as the Home page's History shows it. Read-only. Each entry has kind (read or dictated), date (ISO 8601), app, bundleID (null for old entries) and text. Reads started inside Talk & Read have the app Talk & Read.",
+            example: "history --kind dictated --search ferry --limit 10 --json",
+            params: [Param(name: "kind", kind: .string, help: "all, read or dictated; default all.", choices: ["all", "read", "dictated"]),
+                     Param(name: "limit", kind: .integer, help: "Most entries to return, 1 to 500; default 50."),
+                     Param(name: "search", kind: .string, help: "Only entries whose text or app name contains this, ignoring case.")]),
     Command(name: "dictate-file", summary: "Transcribe an audio file (WAV, M4A) without the microphone.", example: "dictate-file ~/Desktop/note.m4a",
             params: [Param(name: "path", kind: .path, help: "Audio file to transcribe.", required: true, positional: true)], forceable: true, timeout: 600),
     Command(name: "open", summary: "Open a document in the Talk & Read reader.", example: "open ~/Documents/notes.pdf --show 1 --read 1",
@@ -115,6 +120,16 @@ func render(_ response: ControlResponse, command: String) {
             let current = id == english ? "  <- English voice" : id == french ? "  <- French voice" : ""
             print(([id] + rest).joined(separator: "  ") + installed + current)
         }
+        return
+    }
+    if command == "history", let entries = data["entries"]?.arrayValue {
+        for e in entries {
+            guard let o = e.objectValue else { continue }
+            let text = (o["text"]?.stringValue ?? "").split(whereSeparator: \.isNewline).joined(separator: " ")
+            print([o["date"]?.stringValue, o["kind"]?.stringValue, o["app"]?.stringValue].compactMap { $0 }.joined(separator: "  ")
+                  + "  " + (text.count > 100 ? String(text.prefix(100)) + "…" : text))
+        }
+        if entries.isEmpty { print("No matching history.") }
         return
     }
     if command == "mic", let inputs = data["inputs"]?.arrayValue {
