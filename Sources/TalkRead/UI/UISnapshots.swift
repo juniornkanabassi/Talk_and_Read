@@ -108,7 +108,8 @@ import TalkReadCore
             ("pill-notice", CGSize(width: 508, height: 172), false, pill("Mic not found, using MacBook Pro Microphone", words: false)),
             ("pill-done", CGSize(width: 508, height: 172), false, pill(long, recording: false)),
             ("pill-done-short", CGSize(width: 508, height: 120), false, pill("Hello, this is a short sentence", recording: false)),
-            // P-B: done or not typed, with Copy and the paste-last tip; a failure with nothing to copy has neither.
+            // P-B: a paste not confirmed (the app did not say it takes text) or not typed, with Copy and the paste-last tip;
+            // a confirmed paste ("pill-done", "pill-done-short" above) and a failure with nothing to copy have neither.
             ("pill-done-copy", CGSize(width: 508, height: 120), false, pill(long, recording: false, copy: true)),
             ("pill-done-copied", CGSize(width: 508, height: 120), false, pill("Hello, this is a short sentence", recording: false, copy: true, copied: true)),
             ("pill-failed-copy", CGSize(width: 508, height: 120), false, pill(Inserter.noField, recording: false, words: false, copy: true)),

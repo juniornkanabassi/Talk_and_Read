@@ -207,19 +207,19 @@ import WebKit
         Inserter.focus = { _ in (secure: false, previous: nil, terminal: false, singleLine: false, takesText: false) }
         var kept = sentinel()
         let refused = await Inserter.insert("hello there", targetPID: getpid(), requireField: true)
-        expect("Inserter: no field refused", refused == .failed(Inserter.noField) || (!CGPreflightPostEventAccess() && refused != .inserted))
+        expect("Inserter: no field refused", refused == .failed(Inserter.noField) || (!CGPreflightPostEventAccess() && !refused.landed))
         expect("Inserter: no field leaves the clipboard untouched", untouched(kept))
 
         var calls: [(text: String, requireField: Bool)] = []
         var answer = InsertResult.failed(Inserter.noField)
         let c = DictationController(audio: FakeAudio(), asr: FakeASR()) { text, _, requireField, _ in
             calls.append((text, requireField))
-            return requireField ? answer : .inserted
+            return requireField ? answer : .inserted(confirmed: true)
         }
         c.quiet = true
-        let defaults = (c.holdSeconds.done, c.holdSeconds.failed)
-        expect("result stays 5 s, a failure 8 s", defaults == (5, 8))
-        c.holdSeconds = (done: 0.4, failed: 0.8, recheck: 0.05)
+        let defaults = (c.holdSeconds.confirmed, c.holdSeconds.done, c.holdSeconds.failed)
+        expect("a confirmed result stays 1.5 s, an unconfirmed one 5 s, a failure 8 s", defaults == (1.5, 5, 8))
+        c.holdSeconds = (confirmed: 0.2, done: 0.4, failed: 0.8, recheck: 0.05)
         var hovering = false
         c.pointerOverPill = { hovering }
         func dictate() async {
@@ -254,18 +254,47 @@ import WebKit
         await settle(100)
         expect("paste last pastes without a field check", calls.count == before + 1 && calls.last?.requireField == false && calls.last?.text == said)
 
-        answer = .inserted
+        // Unconfirmed: pasted, but the app did not say it takes text. Copy and the tip stay (copyable), 5 s.
+        answer = .inserted(confirmed: false)
         await dictate()
         let typed = calls.last?.text ?? ""
-        expect("typed: done with Copy", c.state == .done(typed) && c.copyable == typed)
+        expect("unconfirmed: done with Copy", c.state == .done(typed) && c.copyable == typed)
+        expect("unconfirmed: the tip shows with Copy", c.copyable != nil && DictationPillStatus.pasteTip(TalkReadCore.Settings().pasteLastShortcut) != nil)
         await settle(250)
-        expect("typed: still shown at 0.25 s", c.state == .done(typed))
+        expect("unconfirmed: still shown at 0.25 s", c.state == .done(typed))
         await settle(350)
-        expect("typed: hidden after 0.4 s", c.state == .idle && c.copyable == nil)
+        expect("unconfirmed: hidden after 0.4 s", c.state == .idle && c.copyable == nil)
+
+        // Confirmed: the focus took the text. The words only, no Copy, gone after the short hold; hover holds, ✕ closes.
+        answer = .inserted(confirmed: true)
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        await dictate()
+        let sure = calls.last?.text ?? ""
+        expect("confirmed: done with no Copy", c.state == .done(sure) && c.copyable == nil && c.history.first?.text == sure)
+        expect("a new entry carries the frontmost app's bundle id", c.history.first?.bundleID == front)
+        expect("confirmed: Copy does nothing", c.copyResult() == nil)
+        hovering = true
+        await settle(350)
+        expect("confirmed: hover holds it past its 0.2 s", c.state == .done(sure))
+        hovering = false
+        await settle(120)
+        expect("confirmed: gone once the pointer leaves", c.state == .idle)
+        await dictate()
+        await settle(100)
+        expect("confirmed: still shown at 0.1 s", c.state == .done(sure))
+        await settle(250)
+        expect("confirmed: hidden after 0.2 s, long before an unconfirmed result", c.state == .idle)
 
         await dictate()
         c.dismiss()
         expect("✕ closes the result", c.state == .idle && c.copyable == nil)
+
+        // The history records the frontmost app's bundle id, and an old history file without it still decodes.
+        let old = Data(#"[{"id":"\#(UUID().uuidString)","date":0,"text":"old","app":"Mail"}]"#.utf8)
+        let decoded = try? JSONDecoder().decode([DictationEntry].self, from: old)
+        expect("old history without bundleID decodes", decoded?.first?.text == "old" && decoded?.first?.bundleID == nil)
+        let round = try? JSONDecoder().decode(DictationEntry.self, from: JSONEncoder().encode(DictationEntry(id: UUID(), date: Date(), text: "x", app: "Mail", bundleID: "com.apple.mail")))
+        expect("bundleID round-trips", round?.bundleID == "com.apple.mail")
 
         answer = .failed(Inserter.noField)
         await dictate()
@@ -297,7 +326,7 @@ import WebKit
         let f = DictationController(audio: FakeAudio(), asr: FakeASR(), insert: { _, _, _, _ in .failed(Inserter.noField) },
                                     decode: { _ in Thread.sleep(forTimeInterval: 0.5); return [Float](repeating: 0, count: 1600) })
         f.quiet = true
-        f.holdSeconds = (done: 0.2, failed: 0.2, recheck: 0.05)
+        f.holdSeconds = (confirmed: 0.2, done: 0.2, failed: 0.2, recheck: 0.05)
         f.pointerOverPill = { false }
         try? f.start(caller: DictationController.user)
         await settle(100)
@@ -331,7 +360,7 @@ import WebKit
         let away = NSPoint(x: -30000, y: -30000)
         let c = DictationController(audio: FakeAudio(), asr: FakeASR()) { _, _, _, _ in .failed(Inserter.noField) }
         c.quiet = true
-        c.holdSeconds = (done: 30, failed: 30, recheck: 1)   // this check hides the pill itself
+        c.holdSeconds = (confirmed: 30, done: 30, failed: 30, recheck: 1)   // this check hides the pill itself
         let pill = DictationPill(dictation: c)
 
         pill.show(at: away)
@@ -501,7 +530,7 @@ import WebKit
 
         let audio = FakeAudio()
         audio.fallbackNotice = "Mic not found, using Selftest Default"
-        let c = DictationController(audio: audio, asr: FakeASR()) { _, _, _, _ in .inserted }
+        let c = DictationController(audio: audio, asr: FakeASR()) { _, _, _, _ in .inserted(confirmed: true) }
         c.quiet = true
         let saved = Microphone.inputs().first?.uid ?? "talkread-selftest-mic"   // resolves now (read only), fails to open
         c.microphoneUID = saved
@@ -525,7 +554,7 @@ import WebKit
             guard isCurrent() else { return .failed("Cancelled") }
             typed.append(text)
             targets.append(pid)
-            return .inserted
+            return .inserted(confirmed: true)
         }
         c.quiet = true
         let user = DictationController.user
@@ -592,8 +621,8 @@ import WebKit
         // #17: a history entry typed again through the guarded insert path, to the given process only.
         if let entry = c.history.first {
             let again = await c.reinsert(entry.id, targetPID: 4242)
-            expect("reinsert", again == .inserted && typed.last == entry.text && targets.last == 4242 && !c.isBusy)
-            expect("reinsert of a deleted entry fails", await c.reinsert(UUID(), targetPID: nil) != .inserted)
+            expect("reinsert", again.landed && typed.last == entry.text && targets.last == 4242 && !c.isBusy)
+            expect("reinsert of a deleted entry fails", !(await c.reinsert(UUID(), targetPID: nil)).landed)
         }
 
         // #1: the microphone is never started, or left running, for a cancelled or stopped utterance, and a stale
@@ -699,7 +728,7 @@ import WebKit
             await holder.value
             let pasted = await real.result()
             expect("#2 cancelled while waiting for the pasteboard: not pasted",
-                   pasted == nil && results.count == 1 && results.first != .inserted && pb.changeCount == before)
+                   pasted == nil && results.count == 1 && results.first?.landed != true && pb.changeCount == before)
 
             // Quitting (FIX2-B #20): the closed gate refuses the write, so the insert fails at once and the pasteboard
             // keeps its sentinel (a ⌘V here would paste the user's own clipboard; the --insert panel checks none lands).
@@ -732,7 +761,7 @@ import WebKit
         asr.log = { events.append($0) }
         asr.work = .milliseconds(100)
         // A decode that takes 300 ms, so a takeover can land inside it.
-        let c = DictationController(audio: audio, asr: asr, insert: { text, _, _, _ in typed.append(text); return .inserted },
+        let c = DictationController(audio: audio, asr: asr, insert: { text, _, _, _ in typed.append(text); return .inserted(confirmed: true) },
                                     decode: { Thread.sleep(forTimeInterval: 0.3); return try Transcriber.samples(of: $0) })
         c.quiet = true
         let user = DictationController.user
@@ -836,7 +865,7 @@ import WebKit
         let api = refusedLoading && quit && refusedInUse && cancelledRun
         print(String(format: "asr: unload refused while loading %@, while in use %@; cancelled load waiter returned in %.0f ms with the load carrying on %@; cancelled run ended %@",
                      "\(refusedLoading)", "\(refusedInUse)", waiterMs, "\(quit)", "\(cancelledRun)"))
-        let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _, _, _, _ in .inserted })
+        let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _, _, _, _ in .inserted(confirmed: true) })
         controller.quiet = true
         var fileErrors = 0, liveErrors = 0, words = 0
         var latencies: [Double] = []
@@ -933,7 +962,7 @@ import WebKit
         do { samples = try await speak(script, with: kokoro) } catch { print("paragraphs: could not speak the script: \(error)"); return false }
         kokoro.unload()
         func dictate(_ samples: [Float]) async throws -> String {
-            let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _, _, _, _ in .inserted }, decode: { _ in samples })
+            let controller = DictationController(audio: FakeAudio(), asr: transcriber, insert: { _, _, _, _ in .inserted(confirmed: true) }, decode: { _ in samples })
             controller.quiet = true
             return try await controller.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "selftest")
         }
@@ -1163,12 +1192,12 @@ import WebKit
             let (r1, restored1) = await attempt("thanks for the update.")
             let got1 = field.stringValue
             print("insert: NSTextField \(r1) -> \"\(got1)\", pasteboard restored \(restored1)")
-            if r1 != .inserted || got1 != "Dear Sarah, thanks for the update." || !restored1 { failures.append("NSTextField") }
+            if r1 != .inserted(confirmed: true) || got1 != "Dear Sarah, thanks for the update." || !restored1 { failures.append("NSTextField") }
             let started = Date()
             let (r1b, restored1b) = await attempt("See you soon.", cancelAtPaste: true)
             let waited = Date().timeIntervalSince(started), got1b = field.stringValue
             print(String(format: "insert: cancelled at ⌘V %@ -> \"%@\", waited %.0f ms, pasteboard restored %@", "\(r1b)", got1b, waited * 1000, "\(restored1b)"))
-            if r1b != .inserted || got1b != "Dear Sarah, thanks for the update. See you soon." || waited < 0.5 || !restored1b {
+            if r1b != .inserted(confirmed: true) || got1b != "Dear Sarah, thanks for the update. See you soon." || waited < 0.5 || !restored1b {
                 failures.append("cancelled at paste")
             }
 
@@ -1178,7 +1207,7 @@ import WebKit
             let (r2, restored2) = await attempt("Meeting moved to Thursday at 3 pm.")
             let got2 = (try? await web.evaluateJavaScript("document.getElementById('t').value")) as? String ?? "?"
             print("insert: WKWebView textarea \(r2) -> \"\(got2)\", pasteboard restored \(restored2)")
-            if r2 != .inserted || got2 != "Meeting moved to Thursday at 3 pm." || !restored2 { failures.append("textarea") }
+            if r2 != .inserted(confirmed: false) || got2 != "Meeting moved to Thursday at 3 pm." || !restored2 { failures.append("textarea") }
 
             panel.makeFirstResponder(secure)
             forwarder.target = panel.firstResponder
