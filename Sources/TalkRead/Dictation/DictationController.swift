@@ -184,18 +184,25 @@ enum DictationError: LocalizedError, Equatable {
         pill?.hide()
     }
 
-    /// The pill's Copy: the dictation goes on the clipboard. A deliberate copy, so nothing restores it; written straight
-    /// to the pasteboard the inserter uses (the self-test swaps in a private one), where a running transaction's restore
-    /// leaves it alone as it does any copy made meanwhile.
-    func copyResult() {
-        guard let text = copyable else { return }
-        let pasteboard = Inserter.gate.pasteboard
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-        copied = true
-        let token = pillToken
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            if self?.pillToken == token { self?.copied = false }
+    /// The pill's Copy: the dictation goes on the clipboard the inserter uses (the self-test swaps in a private one).
+    /// Queued as a transaction, so it lands after any running capture or paste has restored and a capture waiting for an
+    /// app's copy never takes it for that copy (Sol verification 15 #2); written without `gate.write`, so its own restore
+    /// leaves it, a deliberate copy, in place. "Copied" only once it is written (Sol verification 16). The returned task
+    /// finishes then.
+    @discardableResult func copyResult() -> Task<Void, Never>? {
+        guard let text = copyable else { return nil }
+        let gate = Inserter.gate, token = pillToken
+        return Task { [weak self] in
+            let wrote = await gate.transaction { () -> Bool in
+                guard gate.prepareToChange() != nil else { return false }   // quitting: change nothing
+                gate.pasteboard.clearContents()
+                return gate.pasteboard.setString(text, forType: .string)
+            }
+            guard wrote, let self, self.pillToken == token else { return }
+            self.copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                if self?.pillToken == token { self?.copied = false }
+            }
         }
     }
 
@@ -467,15 +474,15 @@ enum DictationError: LocalizedError, Equatable {
     /// Bumped by every result shown, a new dictation and the ✕: a stale hide or "Copied" reset does nothing.
     private var pillToken = 0
 
-    /// The result goes after `seconds`; while the pointer is over the pill it waits, checking again every
-    /// `holdSeconds.recheck`.
+    /// The result goes after `seconds`; while the pointer is over the pill, or a file transcription holds the slot (a
+    /// new dictation bumps the token instead), it waits, checking again every `holdSeconds.recheck` (Sol verification 15 #3).
     private func hideLater(after seconds: Double) {
         pillToken += 1
         let token = pillToken
         func fire(after seconds: Double) {
             DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
-                guard let self, token == self.pillToken, self.owner == nil else { return }
-                if self.pointerOverPill() { return fire(after: self.holdSeconds.recheck) }
+                guard let self, token == self.pillToken else { return }
+                if self.owner != nil || self.pointerOverPill() { return fire(after: self.holdSeconds.recheck) }
                 self.state = .idle
                 self.offerOrHide()
             }

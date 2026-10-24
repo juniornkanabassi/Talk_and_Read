@@ -85,12 +85,13 @@ enum Inserter {
 
     /// Whether a paste has somewhere to land. true: a text field or area, a search field, an editable combo box, a
     /// terminal, or anything with a caret whose value can be set. nil when the app does not say: no role, or a generic
-    /// group, window or scroll area (what an Electron app whose AX tree is asleep, or a terminal without AX, reports), so
-    /// the paste goes ahead as before and the pill's Copy and tip cover a miss. false for anything else AX names: a web
-    /// page with no field focused, a list, a table, a button, an image, static text.
+    /// group, window or scroll area (what an Electron app whose AX tree is asleep, or a terminal without AX, reports), or
+    /// a web area (an editable web document or iframe reports neither a caret range nor a settable value: Sol
+    /// verification 15 #1), so the paste goes ahead as before and the pill's Copy and tip cover a miss. false for anything
+    /// else AX names: a list, a table, a button, an image, static text.
     static func takesText(role: String?, subrole: String?, editable: Bool, caret: Bool, terminal: Bool) -> Bool? {
         if terminal || role == kAXTextAreaRole || isSingleLine(role: role, subrole: subrole, editable: editable) || (caret && editable) { return true }
-        guard let role, ![kAXGroupRole, kAXWindowRole, kAXScrollAreaRole, kAXSplitGroupRole, kAXUnknownRole, kAXApplicationRole].contains(role)
+        guard let role, ![kAXGroupRole, kAXWindowRole, kAXScrollAreaRole, kAXSplitGroupRole, kAXUnknownRole, kAXApplicationRole, "AXWebArea"].contains(role)
         else { return nil }
         return false
     }
