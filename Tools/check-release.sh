@@ -19,7 +19,7 @@ PROJECT="/Users/junior.nkanabassi/Documents/JuniorOS/02 Projects/Development/Tal
 SRC="$PROJECT/Source"
 CHECKLIST="${TALKREAD_CHECKLIST:-$PROJECT/00 Project State/Acceptance checklist.md}"
 ROOT=/private/tmp/talkread-checker
-EXPECT_VERSION="${TALKREAD_EXPECT_VERSION:-$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "${0:A:h}/../Resources/Info.plist")}"   # the source's version
+EXPECT_VERSION="${TALKREAD_EXPECT_VERSION:-$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$SRC/Resources/Info.plist")}"   # the source's version (also from a copy of this script)
 BATCH_DIR=/private/tmp/talkread-b-a
 BATCH_LOG=$BATCH_DIR/final/BATCH-runner.txt
 GPU=0 SERIAL=0 STATIC_ONLY=0 NETDENY_ON=1 WAIT_BATCH=1 SELFCHECK=0 APP="" REPORT="" prev=""
