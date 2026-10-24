@@ -147,15 +147,18 @@ enum SelfTest {
             let name = slow.kind == .breeze ? "Breeze" : "Qwen3"
             print("(\(name)'s words come from Parakeet v3, corrected (Aligner.corrected); the acoustic check decides\(language == "en" ? ", and v2's signed median guards it" : "; v3 also judges French, so not independent"))")
             return mlxVerdict(name, audio, timings: timings, firstChunkMs: firstChunkMs, synthSeconds: synthSeconds, chunks: chunks.count, wer: wer1,
-                              recogniserSigned: language == "en" ? percentile(signed.sorted(), 0.5) : nil, invariants: problems.isEmpty) ? 0 : 1
+                              recogniser: language == "en" ? (percentile(signed.sorted(), 0.5), signed.count, spoken) : nil, invariants: problems.isEmpty) ? 0 : 1
         }
         var pass = problems.isEmpty && signed.count >= 200 && median <= 60 && p90 <= 150
         if language == "fr" {
             // PLAN 0.3.0 "Build results": Parakeet v3's French word starts run ~105 ms early, so French is judged by the
             // acoustic onset check instead of the recogniser.
+            // What this cannot prove for French (Sol verification 7): no recogniser independent of the aligner judges it
+            // (Parakeet v3 is both), so word identity at each onset and the size of the aligner's 80 ms lead rest on energy,
+            // order, the anchor and terminal pairs and coverage alone; a slide that keeps both ends paired would pass.
             // ponytail: >= 40 pairs, as phrase starts are the pairs now (the fixture has about 65; it was >= 100 words
             // after any 40 ms silence before Sol inspection 5 #6).
-            pass = problems.isEmpty && onset.errors.count >= 40 && onset.coverage >= 0.6 && abs(onset.signedMedian) <= 0.06 && onset.absP90 <= 0.15
+            pass = problems.isEmpty && onset.terminal && onset.errors.count >= 40 && onset.coverage >= 0.6 && abs(onset.signedMedian) <= 0.06 && onset.absP90 <= 0.15
             print("R2 (French, acoustic check decides): \(pass ? "PASS" : "FAIL") (|signed median| <= 60 ms, p90 <= 150 ms, >= 40 pairs, >= 60 % of phrase starts paired, invariants)")
         } else {
             print("R2: \(pass ? "PASS" : "FAIL") (median <= 60 ms, p90 <= 150 ms, >= 200 matched words, invariants)")
@@ -343,15 +346,19 @@ enum SelfTest {
     /// aligner's v3; Kokoro shows it 10 ms early mid-phrase) also guards the correction: its signed median within 60 ms,
     /// since after `Aligner.corrected` phrase starts sit on onsets by construction (timing diagnosis, 24 Oct).
     private static func mlxVerdict(_ name: String, _ audio: [Float], timings: [TalkReadCore.WordTiming], firstChunkMs: Int, synthSeconds: Double,
-                                   chunks: Int, wer: Double, recogniserSigned: Double?, invariants: Bool) -> Bool {
+                                   chunks: Int, wer: Double, recogniser: (signed: Double, matched: Int, timed: Int)?, invariants: Bool) -> Bool {
         let onset = onsets(audio, timings: timings)
         print(String(format: "%@: first chunk %d ms; %.2fx real time including alignment (%d chunks)",
                      name, firstChunkMs, Double(audio.count) / Player.sampleRate / synthSeconds, chunks))
         print("\(name) acoustic check: \(onset.summary)")
         let breeze = name == "Breeze"
-        let pass = invariants && mlxTimingPass(onset) && (!breeze || wer <= 0.08) && abs(recogniserSigned ?? 0) <= 0.06
-        print("\(name) timing: \(pass ? "PASS" : "FAIL") (acoustic: >= 15 pairs, >= 60 % of phrase starts paired, median <= 90 ms, p90 <= 150 ms; \(breeze ? "WER <= 8 %, " : "")"
-              + "\(recogniserSigned.map { "recogniser signed median \(Int(($0 * 1000).rounded())) ms within 60 ms, " } ?? "")invariants)")
+        // The recogniser guard needs evidence first (Sol verification 7 #2): R2's 200 matched words and 60 % of ours timed
+        // by it, else an empty list's median of 0 would pass.
+        let evidence = recogniser.map { $0.matched >= 200 && Double($0.matched) >= 0.6 * Double(max($0.timed, 1)) }
+        if evidence == false, let r = recogniser { print("\(name) timing: no recogniser timing evidence (\(r.matched) of \(r.timed) words matched; needs 200 and 60 %)") }
+        let pass = invariants && mlxTimingPass(onset) && (!breeze || wer <= 0.08) && (recogniser.map { r in evidence == true && abs(r.signed) <= 0.06 } ?? true)
+        print("\(name) timing: \(pass ? "PASS" : "FAIL") (acoustic: both ends paired, >= 15 pairs, >= 60 % of phrase starts paired, median <= 90 ms, p90 <= 150 ms; \(breeze ? "WER <= 8 %, " : "")"
+              + "\(recogniser.map { "recogniser signed median \(Int(($0.signed * 1000).rounded())) ms within 60 ms over \($0.matched) matched words, " } ?? "")invariants)")
         return pass
     }
 
@@ -1060,10 +1067,11 @@ enum SelfTest {
             let f = fixtureData(gap, shift, extra: extra, spurious: spurious)
             return onsets(f.audio, timings: f.timings)
         }
-        /// Through the aligner's correction first, as Qwen3's and Breeze's words go.
+        /// Through the aligner's correction first, as Qwen3's and Breeze's words go (a start before 0 clamped to [0, 0.08]).
         func corrected(_ gap: (Int) -> Double, _ shift: (Int) -> Double) -> Onsets {
             let f = fixtureData(gap, shift)
-            let words = Aligner.corrected(f.timings.map { SpokenWord(text: "w", start: $0.start, end: $0.end) }, samples: f.audio, sampleRate: 24_000)
+            let words = Aligner.corrected(f.timings.map { $0.start < 0 ? SpokenWord(text: "w", start: 0, end: 0.08) : SpokenWord(text: "w", start: $0.start, end: $0.end) },
+                                          samples: f.audio, sampleRate: 24_000)
             return onsets(f.audio, timings: zip(f.timings, words).map { TalkReadCore.WordTiming(token: $0.token, start: $1.start, end: $1.end) })
         }
         let sparse: (Int) -> Double = { _ in 0.6 }, irregular: (Int) -> Double = { 0.4 + 0.1 * Double(($0 * 7) % 6) }   // 0.4-0.9 s
@@ -1079,7 +1087,8 @@ enum SelfTest {
                           ("one in three 200 ms late", fixture(sparse, { $0 % 3 == 0 ? 0.2 : 0.03 })), ("half the starts with no onset", fixture(sparse, { _ in 0.03 }, extra: true)),
                           ("all 250 ms early, 100 ms gaps", fixture({ _ in 0.1 }, { _ in -0.25 })),
                           ("corrected: all 250 ms late, 100 ms gaps", corrected({ _ in 0.1 }, { _ in 0.25 })), ("corrected: all 250 ms late, 600 ms gaps", corrected(sparse, { _ in 0.25 })),
-                          ("corrected: all 250 ms early, 100 ms gaps", corrected({ _ in 0.1 }, { _ in -0.25 }))] {
+                          ("corrected: all 250 ms early, 100 ms gaps", corrected({ _ in 0.1 }, { _ in -0.25 })),
+                          ("corrected: one onset early (750 ms), 600 ms gaps", corrected(sparse, { _ in -0.75 }))] {
             check(!mlxTimingPass(o), "acoustic check: \(what) must fail (\(o.summary))")
             verdicts.append("\(what) \(mlxTimingPass(o) ? "PASSED" : "fails")")
         }
@@ -1158,12 +1167,15 @@ enum SelfTest {
         let errors: [Double], candidates: Int
         /// Our first start had the audio's first onset, and only it, within the window.
         var anchored = true
+        /// The audio's last phrase onset has our nearest word within the window, at or after our last paired phrase start.
+        var terminal = true
         var coverage: Double { candidates == 0 ? 0 : Double(errors.count) / Double(candidates) }
         var absMedian: Double { SelfTest.percentile(errors.map(abs).sorted(), 0.5) }
         var absP90: Double { SelfTest.percentile(errors.map(abs).sorted(), 0.9) }
         var signedMedian: Double { SelfTest.percentile(errors.sorted(), 0.5) }
         var summary: String {
             (anchored ? "" : "not anchored (the first word is not at the audio's first onset alone); ")
+                + (terminal || !anchored ? "" : "not terminal (no word of ours near the audio's last phrase onset after our last pair); ")
                 + "\(errors.count) of \(candidates) phrase starts paired with an onset (\(SelfTest.pct(coverage))); |ours - onset| median "
                 + "\(Int((absMedian * 1000).rounded())) ms, p90 \(Int((absP90 * 1000).rounded())) ms; signed median \(Int((signedMedian * 1000).rounded())) ms"
         }
@@ -1189,7 +1201,7 @@ enum SelfTest {
         let found = env.indices.filter { j in env[j] >= threshold && (max(j - pause, 0) ..< j).allSatisfy { env[$0] < threshold } }.map { Double($0) / 200 }
         let spoken = timings.filter { $0.end > $0.start }
         let starts = spoken.indices.filter { $0 == 0 || spoken[$0].start - spoken[$0 - 1].end >= Double(pause) / 200 }.map { spoken[$0].start }
-        var errors: [Double] = [], next = 0
+        var errors: [Double] = [], next = 0, last: (start: Int, onset: Int)?
         for (i, s) in starts.enumerated() {
             let near = found.indices.dropFirst(next).prefix { found[$0] <= s + window }.filter { found[$0] >= s - window }
             // ...and only if no other word of ours starts nearer that onset (a start after a spurious gap in our timings
@@ -1200,13 +1212,23 @@ enum SelfTest {
             }
             errors.append(s - found[near[0]])
             next = near[0] + 1
+            last = (i, near[0])
         }
-        return Onsets(errors: errors, candidates: starts.count)
+        // Terminal correspondence too: the audio's last phrase onset must have a word of ours starting within `window`,
+        // nearest of all ours and no earlier than our last paired phrase start; else a slide by one onset, which the
+        // correction snapped into place at the start, hides behind an unmatched end (Sol verification 7 #1). Not "paired
+        // with our last phrase start": a final phrase our timings show with a 99.99 ms gap is no candidate (Kokoro, 24 Oct).
+        var terminal = false
+        if let p = last, let o = found.last {
+            let nearest: Double? = spoken.map(\.start).min { abs($0 - o) < abs($1 - o) }
+            if let w = nearest { terminal = abs(w - o) <= window && w >= starts[p.start] }
+        }
+        return Onsets(errors: errors, candidates: starts.count, terminal: terminal)
     }
 
     /// Qwen3's and Breeze's acoustic bars: at least 15 pairs, 60 % of our phrase starts paired, |error| median <= 90 ms
     /// (PLAN 0.3.0 build results: Parakeet v3's 80 ms frames set the floor) and p90 <= 150 ms.
-    static func mlxTimingPass(_ o: Onsets) -> Bool { o.errors.count >= 15 && o.coverage >= 0.6 && o.absMedian <= 0.09 && o.absP90 <= 0.15 }
+    static func mlxTimingPass(_ o: Onsets) -> Bool { o.terminal && o.errors.count >= 15 && o.coverage >= 0.6 && o.absMedian <= 0.09 && o.absP90 <= 0.15 }
 
     static func percentile(_ sorted: [Double], _ p: Double) -> Double {
         sorted.isEmpty ? 0 : sorted[min(Int(Double(sorted.count - 1) * p + 0.5), sorted.count - 1)]
