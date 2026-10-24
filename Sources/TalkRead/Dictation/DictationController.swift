@@ -1,4 +1,4 @@
-// One dictation at a time: recorder -> streaming transcriber -> Cleanup -> optional Polish -> Inserter -> history.
+// One dictation at a time: recorder -> streaming transcriber -> Cleanup -> Paragraphs -> optional Polish -> Inserter -> history.
 // Ownership (PLAN decision 19): one owner from `start` until the utterance is inserted, cancelled or failed; another
 // control caller gets `busy` unless it forces; the human (hotkeys, pill, GUI: caller "user") always wins.
 import AppKit
@@ -64,9 +64,9 @@ enum DictationError: LocalizedError, Equatable {
     let audio: DictationAudio
     let asr: DictationASR
     private let insert: Insert
-    private var fileJob: Task<String, Error>?              // set while the owner's work is a file transcription
+    private var fileJob: Task<Transcript, Error>?           // set while the owner's work is a file transcription
     private var feed: AsyncStream<AVAudioPCMBuffer>.Continuation?
-    private var transcript: Task<String, Error>?
+    private var transcript: Task<Transcript, Error>?
     private var work: Task<String?, Never>?
     private var generation = 0                            // bumped on every start/cancel; stale work changes nothing
     private var insertOnStop = true
@@ -218,7 +218,7 @@ enum DictationError: LocalizedError, Equatable {
 
     // MARK: Utterance
 
-    private func finish(_ gen: Int, _ transcript: Task<String, Error>) async -> String? {
+    private func finish(_ gen: Int, _ transcript: Task<Transcript, Error>) async -> String? {
         // The microphone is asked for only by the current utterance, and only while it is still recording: a stale
         // task never starts audio (it would stop the newer utterance's input) and a stop that came first is honoured.
         guard gen == generation else { return nil }
@@ -239,7 +239,7 @@ enum DictationError: LocalizedError, Equatable {
         guard gen == generation else { return nil }               // discard() has already stopped the input
         if let notice = audio.fallbackNotice { micNotice = notice }   // the chosen mic went away after it was resolved
         if case .recording = state {} else { _ = audio.stop() }   // stopped while the microphone was starting
-        let raw: String
+        let raw: Transcript
         do { raw = try await transcript.value } catch {
             guard gen == generation else { return nil }
             discard()
@@ -269,10 +269,11 @@ enum DictationError: LocalizedError, Equatable {
         return result == .inserted ? text : nil
     }
 
-    private func clean(_ raw: String) async -> String {
+    private func clean(_ raw: Transcript) async -> String {
         let settings = Settings.load()
-        var text = Cleanup.apply(raw, vocabulary: vocabulary(), removeFillers: settings.removeFillers, isWord: Self.isCommonWord)
+        var text = Cleanup.apply(raw.text, vocabulary: vocabulary(), removeFillers: settings.removeFillers, isWord: Self.isCommonWord)
         if britishSpelling { text = BritishSpelling.apply(text) }
+        if settings.paragraphs { text = Paragraphs.split(text, pauses: raw.pauses) }
         return settings.polishWithAppleIntelligence ? await Polish.polish(text) : text
     }
 

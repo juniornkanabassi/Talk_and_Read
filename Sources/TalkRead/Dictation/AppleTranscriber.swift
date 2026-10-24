@@ -39,7 +39,7 @@ import Speech
         return true
     }
 
-    func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> String {
+    func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> Transcript {
         try await queue.exclusive {
             if !isLoaded { try await load(progress: nil) }
             let (module, results) = makeModule()
@@ -70,7 +70,7 @@ import Speech
                 try Task.checkCancellation()
                 feed.finish()
                 try await analyzer.finalizeAndFinishThroughEndOfInput()
-                return try await collect.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return Transcript(text: try await collect.value.trimmingCharacters(in: .whitespacesAndNewlines))
             } catch {
                 feed.finish()
                 await analyzer.cancelAndFinishNow()
