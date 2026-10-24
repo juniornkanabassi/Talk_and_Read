@@ -5,12 +5,14 @@ BUILD_ROOT="${TALKREAD_BUILD_ROOT:-$HOME/Library/Caches/TalkRead-release-cache}"
 OUTPUT_ROOT="${TALKREAD_OUTPUT_ROOT:-$ROOT/../Outputs}"
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$ROOT/Resources/Info.plist")
 ARCHIVE="$OUTPUT_ROOT/Talk & Read $VERSION.zip"
-[[ ! -e "$ARCHIVE" ]] || { print -u2 "Refusing to overwrite $ARCHIVE"; exit 1; }
+DMG="$OUTPUT_ROOT/Talk & Read $VERSION.dmg"   # the website download; the zip is what Sparkle updates use
+for f in "$ARCHIVE" "$DMG"; do [[ ! -e "$f" ]] || { print -u2 "Refusing to overwrite $f"; exit 1; }; done
 WORK=$(mktemp -d /private/tmp/talkread-package.XXXXXX)
 APP="$WORK/Talk & Read.app"
 TMP_ARCHIVE="$WORK/Talk & Read $VERSION.zip"
 OUTPUT_TMP="$OUTPUT_ROOT/.Talk & Read $VERSION.zip.$$"
-cleanup() { rm -rf "$WORK"; rm -f "$OUTPUT_TMP"; }
+DMG_TMP="$OUTPUT_ROOT/.Talk & Read $VERSION.dmg.$$"
+cleanup() { rm -rf "$WORK"; rm -f "$OUTPUT_TMP" "$DMG_TMP"; }
 trap cleanup EXIT
 export MODULE_CACHE_PATH="$BUILD_ROOT/ModuleCache"
 export CLANG_MODULE_CACHE_PATH="$BUILD_ROOT/ClangModuleCache"
@@ -81,7 +83,9 @@ print "Signed with: $SIGN_ID"
 /usr/bin/codesign --verify --strict "$APP/Contents/Helpers/talkread"
 # Notarise and staple so other Macs open it without a warning (Junior, 24 Oct: releases are notarised). Uses the
 # "JuniorOS" notarytool keychain profile; TALKREAD_NOTARISE=0 skips it for a quick local build.
+NOTARISED=0
 if [[ "$SIGN_ID" != "-" && "${TALKREAD_NOTARISE:-1}" == 1 ]]; then
+  NOTARISED=1
   /usr/bin/ditto -c -k --keepParent "$APP" "$WORK/notarise.zip"
   /usr/bin/xcrun notarytool submit "$WORK/notarise.zip" --keychain-profile "JuniorOS" --wait --timeout 30m | tee "$WORK/notarise.log"
   grep -q "status: Accepted" "$WORK/notarise.log" || { print -u2 "Notarisation was not accepted (see the log above)"; exit 1; }
@@ -91,8 +95,35 @@ if [[ "$SIGN_ID" != "-" && "${TALKREAD_NOTARISE:-1}" == 1 ]]; then
 fi
 [[ $(tree_state) == $STATE ]] || { print -u2 "The source changed while packaging (HEAD or the worktree), so $COMMIT may not be what was built. Build again."; exit 1; }
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$TMP_ARCHIVE"
+# DMG begin: the website download, from the same stapled app (a plain disk image: the app and an Applications link, no
+# Finder window styling, which would need Finder automation). Signed, notarised and stapled like the app, so the
+# download itself is trusted. Skipped for ad hoc and TALKREAD_NOTARISE=0 builds, which have nothing to staple.
+if (( NOTARISED )); then
+  STAGE="$WORK/dmg"
+  TMP_DMG="$WORK/Talk & Read $VERSION.dmg"
+  mkdir -p "$STAGE"
+  /usr/bin/ditto "$APP" "$STAGE/Talk & Read.app"
+  /bin/ln -s /Applications "$STAGE/Applications"
+  /usr/bin/hdiutil create -quiet -volname "Talk & Read" -srcfolder "$STAGE" -format UDZO "$TMP_DMG"
+  /usr/bin/codesign --force --timestamp --sign "$SIGN_ID" "$TMP_DMG"
+  /usr/bin/xcrun notarytool submit "$TMP_DMG" --keychain-profile "JuniorOS" --wait --timeout 30m | tee "$WORK/notarise-dmg.log"
+  grep -q "status: Accepted" "$WORK/notarise-dmg.log" || { print -u2 "Disk image notarisation was not accepted (see the log above)"; exit 1; }
+  /usr/bin/xcrun stapler staple "$TMP_DMG"
+  /usr/bin/xcrun stapler validate "$TMP_DMG"
+  /usr/sbin/spctl -a -vv -t open --context context:primary-signature "$TMP_DMG"
+  print "Disk image signed, notarised and stapled"
+else
+  print "No disk image: it is made only for a notarised Developer ID build"
+fi
+# DMG end
 mkdir -p "$OUTPUT_ROOT"
 /usr/bin/ditto "$TMP_ARCHIVE" "$OUTPUT_TMP"
 /bin/mv -f "$OUTPUT_TMP" "$ARCHIVE"
+if (( NOTARISED )); then
+  /bin/cp "$TMP_DMG" "$DMG_TMP"
+  /bin/mv -n "$DMG_TMP" "$DMG"
+  [[ ! -e "$DMG_TMP" ]] || { print -u2 "Could not write $DMG without overwriting an existing file"; exit 1; }
+fi
 print "Built and verified $APP"
 print "Archive: ${ARCHIVE:A}"
+(( ! NOTARISED )) || print "Disk image: ${DMG:A}"

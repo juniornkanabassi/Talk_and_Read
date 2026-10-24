@@ -1,21 +1,25 @@
 #!/bin/zsh
 # Publishes one Talk & Read release (PLAN 0.7.0 decision 4). Run only on Junior's explicit instruction to publish.
 #
-# Usage: zsh release.sh --website <website checkout> --notes <notes.md> [--zip <zip>] [--resume] [--dry-run [--out <dir>]]
+# Usage: zsh release.sh --website <website checkout> --notes <notes.md> [--zip <zip>] [--dmg <dmg>] [--resume] [--dry-run [--out <dir>]]
 #   1. build.sh (sign, notarise, staple), unless --zip names a zip it already made. The zipped app must be a notarised
 #      build of this clean HEAD (TRSourceCommit) with the source's bundle id, version, build and SUPublicEDKey.
+#      The disk image (--dmg, default: the zip's path ending .dmg) must be stapled and accepted by Gatekeeper, and the
+#      app inside it (mounted read-only) must have the zipped app's version, build, commit and CDHash.
 #   2. sign_update the zip with the EdDSA key in the login keychain (account $TALKREAD_SPARKLE_ACCOUNT, default
 #      talkandread), then check that signature against the SUPublicEDKey inside the zipped app
 #   3. prepare the appcast privately from <website>/public/apps/talkandread/appcast.xml (new if missing), read as XML:
 #      the build number must be greater than every build in it, from <sparkle:version> or the enclosure attribute
 #      (equal only with --resume, for the same version); unreadable or ambiguous items stop it. Markdown notes.
-#   4. print the lib/apps.json release object for the website session
-#   5. create the GitHub release v<version> on juniornkanabassi/talkandread-releases with Talk_and_Read_<version>.zip,
-#      then download the asset back and compare its sha256
+#   4. print the lib/apps.json release object for the website session (its url, bytes and sha256 are the DMG's;
+#      the appcast enclosure stays the zip)
+#   5. create the GitHub release v<version> on juniornkanabassi/talkandread-releases with Talk_and_Read_<version>.zip
+#      (the Sparkle update) and Talk_and_Read_<version>.dmg (the website download), then download each asset back and
+#      compare its sha256
 #   6. only then replace the website's appcast.xml (refused if it changed since step 3)
 #   7. tag this repository v<version> (pushing the tag is left to the lead)
 # --resume: finish a release a failed run left behind: an existing release and tag are reused only when they match
-#   (its asset, if present, must be this zip byte for byte; the tag must be on HEAD); a missing asset is uploaded.
+#   (each asset, if present, must be this file byte for byte; the tag must be on HEAD); a missing asset is uploaded.
 # --dry-run: everything except the upload and the tag, into --out or a new /private/tmp/talkread-release-dry.XXXXXX;
 #   identity mismatches are listed as "a real run would refuse" instead of stopping.
 # Every step stops the script on failure. It never commits to or pushes the website: the website session does that.
@@ -25,7 +29,7 @@ REPO=juniornkanabassi/talkandread-releases
 ACCOUNT="${TALKREAD_SPARKLE_ACCOUNT:-talkandread}"
 BUILD_ROOT="${TALKREAD_BUILD_ROOT:-$HOME/Library/Caches/TalkRead-release-cache}"
 SIGN_UPDATE="$BUILD_ROOT/artifacts/sparkle/Sparkle/bin/sign_update"
-DRY=0 RESUME=0 WEBSITE="" NOTES="" ZIP="" OUT=""
+DRY=0 RESUME=0 WEBSITE="" NOTES="" ZIP="" DMG="" OUT=""
 die() { print -u2 "release.sh: $*"; exit 1; }
 while (( $# )); do case $1 in
   --dry-run) DRY=1; shift;;
@@ -33,8 +37,9 @@ while (( $# )); do case $1 in
   --website) WEBSITE=${2:-}; shift 2;;
   --notes) NOTES=${2:-}; shift 2;;
   --zip) ZIP=${2:-}; shift 2;;
+  --dmg) DMG=${2:-}; shift 2;;
   --out) OUT=${2:-}; shift 2;;
-  -h|--help) sed -n 2,23p "$0"; exit 0;;
+  -h|--help) sed -n 2,25p "$0"; exit 0;;
   *) die "unknown argument $1 (see --help)";; esac; done
 [[ -n $WEBSITE && -f $WEBSITE/lib/apps.json ]] || die "--website must be the website checkout (no lib/apps.json in '$WEBSITE')"
 [[ -n $NOTES && -s $NOTES ]] || die "--notes must name a non-empty Markdown file"
@@ -65,7 +70,9 @@ else
   mkdir -p "$OUT"
 fi
 WORK=$(mktemp -d /private/tmp/talkread-release.XXXXXX)
-trap 'rm -rf "$WORK"' EXIT
+MNT="$WORK/mnt" MOUNTED=0
+detach() { (( MOUNTED )) || return 0; /usr/bin/hdiutil detach -quiet "$MNT" || /usr/bin/hdiutil detach -quiet -force "$MNT" || true; MOUNTED=0; }
+trap 'detach; rm -rf "$WORK"' EXIT
 
 step "1. Build"
 if [[ -z $ZIP ]]; then
@@ -88,6 +95,24 @@ print "Talk & Read $VERSION (build $BUILD, commit ${COMMIT:-unknown}), $SIGNING:
 problems=()
 [[ $COMMIT == $HEAD ]] || problems+=("the zip was built from '${COMMIT:-an unknown commit}', not HEAD $HEAD")
 (( CLEAN )) || problems+=("the source has uncommitted changes")
+# The disk image must hold this same build. It is read-only mounted without browsing, at a private mount point.
+[[ -n $DMG ]] || DMG="${ZIP%.zip}.dmg"
+[[ -f $DMG ]] || die "no disk image at $DMG (build.sh makes it beside the zip; --dmg names another)"
+/usr/bin/xcrun stapler validate -q "$DMG" 2>/dev/null || problems+=("the disk image is not notarised and stapled")
+/usr/sbin/spctl -a -t open --context context:primary-signature "$DMG" 2>/dev/null || problems+=("Gatekeeper does not accept the disk image")
+mkdir "$MNT"
+/usr/bin/hdiutil attach -quiet -readonly -nobrowse -noautoopen -mountpoint "$MNT" "$DMG" >/dev/null || die "could not mount $DMG"
+MOUNTED=1
+DAPP="$MNT/Talk & Read.app"
+[[ -d $DAPP ]] || die "no Talk & Read.app inside $DMG"
+cdhash() { /usr/bin/codesign -dv --verbose=4 "$1" 2>&1 | sed -n 's/^CDHash=//p'; }
+dplist() { /usr/libexec/PlistBuddy -c "Print $1" "$DAPP/Contents/Info.plist" 2>/dev/null || true; }
+for k in CFBundleShortVersionString CFBundleVersion TRSourceCommit; do
+  [[ $(dplist $k) == $(plist $k) ]] || problems+=("$k is '$(dplist $k)' in the disk image but '$(plist $k)' in the zip")
+done
+CDHASH=$(cdhash "$APP")
+[[ -n $CDHASH && $(cdhash "$DAPP") == $CDHASH ]] || problems+=("the app in the disk image has CDHash '$(cdhash "$DAPP")', the zipped app '$CDHASH'")
+detach
 for k in CFBundleIdentifier CFBundleShortVersionString CFBundleVersion SUPublicEDKey; do
   [[ $(plist $k) == $(src $k) ]] || problems+=("$k is '$(plist $k)' in the zip but '$(src $k)' in the source")
 done
@@ -101,6 +126,8 @@ step "2. Sign the zip (EdDSA, keychain account $ACCOUNT)"
 SIG=$("$SIGN_UPDATE" --account "$ACCOUNT" -p "$ZIP") || die "sign_update failed"
 BYTES=$(stat -f %z "$ZIP")
 SHA=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)
+DMG_BYTES=$(stat -f %z "$DMG")
+DMG_SHA=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
 "$SIGN_UPDATE" --account "$ACCOUNT" --verify "$ZIP" "$SIG" || die "sign_update --verify rejected the signature"
 # The check that matters: the app's own public key (what every installed copy verifies with) accepts the signature.
 /usr/bin/swift - "$KEY" "$SIG" "$ZIP" <<'SWIFT' || die "the signature does not match the app's SUPublicEDKey (wrong keychain account?)"
@@ -114,7 +141,8 @@ SWIFT
 print "Signature verified against the app's SUPublicEDKey ($BYTES bytes)"
 
 step "3. Appcast (prepared privately; the website copy changes only after the asset is verified)"
-URL="https://github.com/$REPO/releases/download/v$VERSION/Talk_and_Read_$VERSION.zip"
+URL="https://github.com/$REPO/releases/download/v$VERSION/Talk_and_Read_$VERSION.zip"   # the appcast enclosure
+DMG_URL="${URL%.zip}.dmg"
 APPCAST="$WEBSITE/public/apps/talkandread/appcast.xml"
 digest() { [[ -f $1 ]] && shasum -a 256 "$1" | cut -d' ' -f1 || print none; }
 SEEN=$(digest "$APPCAST")
@@ -203,9 +231,9 @@ cat <<JSON
   "version": "$VERSION",
   "date": "$(date +%Y-%m-%d)",
   "file": null,
-  "url": "$URL",
-  "bytes": $BYTES,
-  "sha256": "$SHA",
+  "url": "$DMG_URL",
+  "bytes": $DMG_BYTES,
+  "sha256": "$DMG_SHA",
   "minMacOS": "26.0",
   "arch": "arm64",
   "signing": "$SIGNING",
@@ -213,25 +241,37 @@ cat <<JSON
 }
 JSON
 
-ASSET="$WORK/Talk_and_Read_$VERSION.zip"
-/bin/cp "$ZIP" "$ASSET"
+# The files are copied under their asset names for gh; WANT maps each name to its sha256.
+NAMES=("Talk_and_Read_$VERSION.zip" "Talk_and_Read_$VERSION.dmg")
+typeset -A WANT=("Talk_and_Read_$VERSION.zip" $SHA "Talk_and_Read_$VERSION.dmg" $DMG_SHA)
+/bin/cp "$ZIP" "$WORK/Talk_and_Read_$VERSION.zip"
+/bin/cp "$DMG" "$WORK/Talk_and_Read_$VERSION.dmg"
 step "5. GitHub release v$VERSION on $REPO"
 if (( DRY )); then
-  print "dry run, not run: gh release create v$VERSION '${ASSET:t}' --repo $REPO --title 'Talk & Read $VERSION' --notes-file '$NOTES'"
+  print "dry run, not run: gh release create v$VERSION ${(q)NAMES} --repo $REPO --title 'Talk & Read $VERSION' --notes-file '$NOTES'"
+  print "asset Talk_and_Read_$VERSION.zip: $BYTES bytes, sha256 $SHA (Sparkle appcast enclosure)"
+  print "asset Talk_and_Read_$VERSION.dmg: $DMG_BYTES bytes, sha256 $DMG_SHA (website download)"
 else
   if (( EXISTS )); then
-    if gh release view "v$VERSION" --repo $REPO --json assets --jq '.assets[].name' | grep -qx "${ASSET:t}"; then
-      print "v$VERSION already has ${ASSET:t}; checking it is this zip"
-    else
-      gh release upload "v$VERSION" "$ASSET" --repo $REPO || die "gh release upload failed"
-    fi
+    HAVE=$(gh release view "v$VERSION" --repo $REPO --json assets --jq '.assets[].name')
+    for name in $NAMES; do
+      if print -r -- "$HAVE" | grep -qx "$name"; then
+        print "v$VERSION already has $name; checking it is this file"
+      else
+        gh release upload "v$VERSION" "$WORK/$name" --repo $REPO || die "gh release upload $name failed"
+      fi
+    done
   else
-    gh release create "v$VERSION" "$ASSET" --repo $REPO --title "Talk & Read $VERSION" --notes-file "$NOTES" || die "gh release create failed (rerun with --resume)"
+    gh release create "v$VERSION" "$WORK/Talk_and_Read_$VERSION.zip" "$WORK/Talk_and_Read_$VERSION.dmg" --repo $REPO --title "Talk & Read $VERSION" --notes-file "$NOTES" || die "gh release create failed (rerun with --resume)"
   fi
-  gh release download "v$VERSION" --repo $REPO --pattern "${ASSET:t}" --dir "$WORK/remote" || die "could not download ${ASSET:t} back (rerun with --resume)"
-  [[ $(shasum -a 256 "$WORK/remote/${ASSET:t}" | cut -d' ' -f1) == $SHA ]] \
-    || die "v$VERSION on $REPO holds a different ${ASSET:t} (sha256 differs): refusing a conflicting release; the website appcast is unchanged"
-  print "Published and verified ${ASSET:t} ($BYTES bytes, sha256 $SHA): $URL"
+  for name in $NAMES; do
+    gh release download "v$VERSION" --repo $REPO --pattern "$name" --dir "$WORK/remote" || die "could not download $name back (rerun with --resume)"
+    [[ $(shasum -a 256 "$WORK/remote/$name" | cut -d' ' -f1) == $WANT[$name] ]] \
+      || die "v$VERSION on $REPO holds a different $name (sha256 differs): refusing a conflicting release; the website appcast is unchanged"
+    print "Published and verified $name (sha256 $WANT[$name])"
+  done
+  print "Zip (appcast): $URL"
+  print "DMG (website): $DMG_URL"
 fi
 
 step "6. Website appcast"
