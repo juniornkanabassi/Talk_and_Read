@@ -39,10 +39,12 @@ for bundle in "$BIN_DIR"/*.bundle(N); do /usr/bin/ditto "$bundle" "$APP/Contents
 /usr/bin/ditto "$ROOT/Resources/Licences" "$APP/Contents/Resources/Licences"
 # The Developer ID certificate is installed twice; the SHA-1 picks one explicitly. Ad hoc is the fallback and loses TCC grants on rebuild.
 SIGN_ID="-"
-DEV_ID_SHA="AD9C29D9DAA8406609281158C2F4DF1B23260AD2"
+# The G2 Developer ID certificate (valid to 2031; the older AD9C29D9… one expires 1 Feb 2027). Same team, so macOS
+# permissions granted to earlier builds carry over.
+DEV_ID_SHA="C297CD17464A0EF6C93704A59BC2E1D4D1759400"
 if /usr/bin/security find-identity -v -p codesigning 2>/dev/null | grep -q "$DEV_ID_SHA"; then SIGN_ID="$DEV_ID_SHA"; fi
 SIGN_OPTS=(--force --sign "$SIGN_ID")
-[[ "$SIGN_ID" == "-" ]] || SIGN_OPTS+=(--timestamp=none)
+[[ "$SIGN_ID" == "-" ]] || SIGN_OPTS+=(--timestamp)   # notarisation needs Apple's secure timestamp
 # The identifiers keep the old "TalkAndRead" spelling: changing them would wipe the app's permissions and settings.
 /usr/bin/codesign "${SIGN_OPTS[@]}" --options runtime --identifier com.juniornkanabassi.TalkAndRead.cli "$APP/Contents/Helpers/talkread"
 # No --deep: it would re-sign the helper and drop its identifier.
@@ -50,6 +52,16 @@ SIGN_OPTS=(--force --sign "$SIGN_ID")
 print "Signed with: $SIGN_ID"
 /usr/bin/codesign --verify --strict "$APP"
 /usr/bin/codesign --verify --strict "$APP/Contents/Helpers/talkread"
+# Notarise and staple so other Macs open it without a warning (Junior, 24 Oct: releases are notarised). Uses the
+# "JuniorOS" notarytool keychain profile; TALKREAD_NOTARISE=0 skips it for a quick local build.
+if [[ "$SIGN_ID" != "-" && "${TALKREAD_NOTARISE:-1}" == 1 ]]; then
+  /usr/bin/ditto -c -k --keepParent "$APP" "$WORK/notarise.zip"
+  /usr/bin/xcrun notarytool submit "$WORK/notarise.zip" --keychain-profile "JuniorOS" --wait --timeout 30m | tee "$WORK/notarise.log"
+  grep -q "status: Accepted" "$WORK/notarise.log" || { print -u2 "Notarisation was not accepted (see the log above)"; exit 1; }
+  /usr/bin/xcrun stapler staple "$APP"
+  /usr/sbin/spctl --assess --type execute -vv "$APP"
+  print "Notarised and stapled"
+fi
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$TMP_ARCHIVE"
 mkdir -p "$OUTPUT_ROOT"
 /usr/bin/ditto "$TMP_ARCHIVE" "$OUTPUT_TMP"
