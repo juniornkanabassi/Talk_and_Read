@@ -38,6 +38,16 @@ final class VocabularyTests: XCTestCase {
         XCTAssertEqual(clean(psg), clean(psg, vocabulary: [:]))
     }
 
+    func testNoNeighbouringWordOrDigitIsSwallowed() {
+        for text in ["LamineYama is better.", "LamineYama 2 goals.", "Say LamineYama is here."] {
+            let out = clean(text)
+            XCTAssertEqual(out.contains("Lamine Yamal"), false, text)
+            XCTAssertEqual(out, clean(text, vocabulary: [:]), text)
+        }
+        XCTAssertEqual(clean("Joan Neves"), "Joan Neves", "no João in this vocabulary")
+        XCTAssertEqual(Cleanup.apply("Joan Neves", vocabulary: ["João Neves": "João Neves"], removeFillers: true, isWord: { $0.lowercased() == "joan" }), "João Neves")
+    }
+
     func testKnownMishearingsAreFixed() {
         XCTAssertTrue(clean("Is PHG bigger than Juve?").contains("PSG"))
         XCTAssertTrue(clean("If Mbappe is not French").contains("Mbappé is"))
