@@ -61,6 +61,7 @@ import TalkReadCore
         add("Open Talk & Read…", action: openMain)
         add("Settings…", key: ",", action: openSettings)
         if model.needsSetup { add("⚠︎ Finish setup…", action: openOnboarding) }
+        add("Check for Updates…", enabled: Updates.canCheck) { try? Updates.check() }
         menu.addItem(.separator())
         add("Quit Talk & Read", key: "q") { NSApp.terminate(nil) }
     }

@@ -16,7 +16,9 @@ let package = Package(
         // Qwen3-TTS and Breeze through MLX: mlx-audio-swift 013853a7 vendored with the Breeze patches (PLAN 0.4.0
         // decision 1; upstream has no tags); mlx-swift exact.
         .package(path: "Vendor/mlx-audio-swift"),
-        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.32.3")
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.32.3"),
+        // Self-updating (PLAN 0.7.0 decision 1): the latest stable 2.x at least two weeks old on 24 Oct 2026.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")
     ],
     targets: [
         .target(name: "TalkReadCore", path: "Sources/TalkReadCore", swiftSettings: [.swiftLanguageMode(.v6)]),
@@ -27,8 +29,11 @@ let package = Package(
                           dependencies: ["TalkReadCore", "ObjCExceptionCatch", .product(name: "FluidAudio", package: "FluidAudio"),
                                          .product(name: "MLXAudioTTS", package: "mlx-audio-swift"),
                                          .product(name: "MLXAudioCore", package: "mlx-audio-swift"),
-                                         .product(name: "MLX", package: "mlx-swift")],
-                          path: "Sources/TalkRead", swiftSettings: [.swiftLanguageMode(.v5)]),
+                                         .product(name: "MLX", package: "mlx-swift"),
+                                         .product(name: "Sparkle", package: "Sparkle")],
+                          path: "Sources/TalkRead", swiftSettings: [.swiftLanguageMode(.v5)],
+                          // build.sh embeds Sparkle.framework in Contents/Frameworks.
+                          linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
         .executableTarget(name: "TalkReadCLI", dependencies: ["TalkReadCore"], path: "Sources/TalkReadCLI",
                           swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "TalkReadCoreTests", dependencies: ["TalkReadCore"], path: "Tests/TalkReadCoreTests",

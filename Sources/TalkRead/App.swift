@@ -3,6 +3,7 @@
 import AppKit
 import Combine
 import ServiceManagement
+import Sparkle
 import SwiftUI
 import TalkReadCore
 
@@ -21,6 +22,7 @@ enum TalkReadMain {
         if let dir = value(after: "--selftest-import") { exitAfter { await Importer.selfTest(directory: dir) } }
         if args.contains("--selftest-ui-snapshots") { exit(MainActor.assumeIsolated { UISnapshots.run() }) }
         if args.contains("--selftest-control") { exitAfter { await ControlSelfTest.run(clip: value(after: "--selftest-control")) } }
+        if let feed = value(after: "--selftest-update") { exitAfter { await UpdateSelfTest.run(feed: feed) } }
 
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -57,6 +59,8 @@ enum TalkReadMain {
     private var recording = false { didSet { hotkeys?.recording = recording } }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Sparkle: checks on launch and daily (Info.plist); installs only after the user agrees in its window.
+        Updates.controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
         NSApp.mainMenu = Self.mainMenu()
         let menu = MenuBarMenu(model: model, openMain: { [weak self] in self?.show("main") },
                                openSettings: { [weak self] in self?.show("settings") },
@@ -296,7 +300,9 @@ enum TalkReadMain {
             holder.submenu = menu
             main.addItem(holder)
         }
-        add("Talk & Read", [item("About Talk & Read", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""), .separator(),
+        let update = item("Check for Updates…", #selector(SPUStandardUpdaterController.checkForUpdates(_:)), "")
+        update.target = Updates.controller   // Sparkle enables it only while a check can start
+        add("Talk & Read", [item("About Talk & Read", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""), update, .separator(),
                               item("Settings…", #selector(AppDelegate.openSettings(_:)), ","), .separator(),
                               item("Hide Talk & Read", #selector(NSApplication.hide(_:)), "h"),
                               item("Quit Talk & Read", #selector(NSApplication.terminate(_:)), "q")])

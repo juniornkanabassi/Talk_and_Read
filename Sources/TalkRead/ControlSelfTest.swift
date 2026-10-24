@@ -25,7 +25,7 @@ final class SilentEngine: SpeechEngine {
 }
 
 enum ControlSelfTest {
-    enum Expect { case ok, audio, busy, replayed, badArgs }
+    enum Expect { case ok, audio, busy, replayed, badArgs, unavailable }
     struct Outcome { let status: Int32; let response: ControlResponse?; let text: String }
 
     @MainActor static func run(clip: String?) async -> Int32 {
@@ -60,6 +60,8 @@ enum ControlSelfTest {
         await step("voices", ["voices"], .ok)
         await step("settings-get", ["settings-get"], .ok)
         await step("settings-set speed 1.5", ["settings-set", "speed", "1.5"], .ok)
+        // 0.7.0: routed to Sparkle; a self-test starts no updater, so the answer is a clear error, never a window.
+        await step("update-check (no updater here)", ["update-check"], .unavailable)
         await microphoneSteps(cli, model, &results)
         await step("a speak", ["speak", "Hello from the control test.", "--caller", "a"], .audio)
         await step("b speak while a reads", ["speak", "Interrupting.", "--caller", "b"], .busy)
@@ -232,6 +234,7 @@ enum ControlSelfTest {
         case .busy: pass = r?.ok == false && r?.code == "busy"
         case .replayed: pass = r?.ok == true && r?.data?["replayed"]?.boolValue == true
         case .badArgs: pass = r?.ok == false && r?.code == "bad_args"
+        case .unavailable: pass = r?.ok == false && r?.code == "unavailable"
         }
         let shown = o.text.count > 300 ? String(o.text.prefix(300)) + "…" : o.text
         print("\(pass ? "PASS" : "FAIL")  \(label.padding(toLength: 36, withPad: " ", startingAt: 0)) \(shown)")
