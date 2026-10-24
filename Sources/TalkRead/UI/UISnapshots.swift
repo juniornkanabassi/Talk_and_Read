@@ -91,6 +91,22 @@ import TalkReadCore
             ("mini-player-nothing-selected", CGSize(width: 488, height: 144), false, player(nil, nil, "Select some text first")),
         ]
 
+        // The dictation pill (460 pt wide, grows upwards with its text): newest words shown, meter underneath.
+        let wave: [Float] = [0.1, 0.35, 0.6, 0.9, 0.5, 0.25, 0.7, 1, 0.55, 0.3, 0.45]
+        let long = "so what I wanted to say is that the quarterly numbers look much better than anyone expected, and the team has been working very hard to get the new release out of the door before the end of the month, which means we should probably celebrate"
+        func pill(_ message: String, recording: Bool = true) -> AnyView {
+            AnyView(DictationPillStatus(message: message, levels: recording ? wave : [], recording: recording, cancel: {}).fixedSize(horizontal: false, vertical: true).padding(24))
+        }
+        shots += [
+            ("pill-listening", CGSize(width: 508, height: 120), false, pill("Listening")),
+            ("pill-partial", CGSize(width: 508, height: 130), false, pill("Hello, this is a short sentence")),
+            ("pill-long", CGSize(width: 508, height: 172), false, pill(long)),
+            ("pill-long-wide", CGSize(width: 508, height: 172), false, pill(String(repeating: "WWMMWW ", count: 30))),
+            ("pill-notice", CGSize(width: 508, height: 172), false, pill("Mic not found, using MacBook Pro Microphone")),
+            ("pill-done", CGSize(width: 508, height: 172), false, pill(long, recording: false)),
+            ("pill-done-short", CGSize(width: 508, height: 120), false, pill("Hello, this is a short sentence", recording: false)),
+        ]
+
         var failures = 0
         var written = 0
         for (name, size, titled, view) in shots {
