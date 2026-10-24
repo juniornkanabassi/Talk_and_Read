@@ -138,9 +138,11 @@ else:
 </rss>
 """
 def one(item, name):
-    """A value Sparkle reads from the element or from the enclosure's attribute; two different ones are ambiguous."""
+    """A value Sparkle reads from any of the item's elements (it picks one by language) or from the enclosure's
+    attribute; values that differ are ambiguous."""
     enclosure = item.find("enclosure")
-    found = {v.strip() for v in (item.findtext(SP + name), None if enclosure is None else enclosure.get(SP + name)) if v is not None}
+    values = [el.text or "" for el in item.findall(SP + name)] + ([] if enclosure is None else [enclosure.get(SP + name)])
+    found = {v.strip() for v in values if v is not None}
     if len(found) > 1:
         sys.exit(f"an appcast item has two {name} values {sorted(found)}: refusing to guess")
     return next(iter(found), None)
