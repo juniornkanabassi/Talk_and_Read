@@ -6,13 +6,14 @@
 #      build of this clean HEAD (TRSourceCommit) with the source's bundle id, version, build and SUPublicEDKey.
 #   2. sign_update the zip with the EdDSA key in the login keychain (account $TALKREAD_SPARKLE_ACCOUNT, default
 #      talkandread), then check that signature against the SUPublicEDKey inside the zipped app
-#   3. write the appcast item into <website>/public/apps/talkandread/appcast.xml (created if missing). The build number
-#      must be greater than every build already in it (equal only with --resume, for the same version). The notes
-#      are Markdown, shown by Sparkle before the user agrees to install.
+#   3. prepare the appcast privately from <website>/public/apps/talkandread/appcast.xml (new if missing), read as XML:
+#      the build number must be greater than every build in it, from <sparkle:version> or the enclosure attribute
+#      (equal only with --resume, for the same version); unreadable or ambiguous items stop it. Markdown notes.
 #   4. print the lib/apps.json release object for the website session
 #   5. create the GitHub release v<version> on juniornkanabassi/talkandread-releases with Talk_and_Read_<version>.zip,
 #      then download the asset back and compare its sha256
-#   6. tag this repository v<version> (pushing the tag is left to the lead)
+#   6. only then replace the website's appcast.xml (refused if it changed since step 3)
+#   7. tag this repository v<version> (pushing the tag is left to the lead)
 # --resume: finish a release a failed run left behind: an existing release and tag are reused only when they match
 #   (its asset, if present, must be this zip byte for byte; the tag must be on HEAD); a missing asset is uploaded.
 # --dry-run: everything except the upload and the tag, into --out or a new /private/tmp/talkread-release-dry.XXXXXX;
@@ -33,7 +34,7 @@ while (( $# )); do case $1 in
   --notes) NOTES=${2:-}; shift 2;;
   --zip) ZIP=${2:-}; shift 2;;
   --out) OUT=${2:-}; shift 2;;
-  -h|--help) sed -n 2,22p "$0"; exit 0;;
+  -h|--help) sed -n 2,23p "$0"; exit 0;;
   *) die "unknown argument $1 (see --help)";; esac; done
 [[ -n $WEBSITE && -f $WEBSITE/lib/apps.json ]] || die "--website must be the website checkout (no lib/apps.json in '$WEBSITE')"
 [[ -n $NOTES && -s $NOTES ]] || die "--notes must name a non-empty Markdown file"
@@ -112,21 +113,19 @@ guard let key = Data(base64Encoded: a[1]), let sig = Data(base64Encoded: a[2]),
 SWIFT
 print "Signature verified against the app's SUPublicEDKey ($BYTES bytes)"
 
-step "3. Appcast"
+step "3. Appcast (prepared privately; the website copy changes only after the asset is verified)"
 URL="https://github.com/$REPO/releases/download/v$VERSION/Talk_and_Read_$VERSION.zip"
 APPCAST="$WEBSITE/public/apps/talkandread/appcast.xml"
-if (( DRY )); then
-  if [[ -f $APPCAST ]]; then cp "$APPCAST" "$OUT/appcast.xml"; else rm -f "$OUT/appcast.xml"; fi
-  APPCAST="$OUT/appcast.xml"
-fi
-mkdir -p "${APPCAST:h}"
-/usr/bin/python3 -I - "$APPCAST" "$VERSION" "$BUILD" "$URL" "$BYTES" "$SIG" "$NOTES" "$RESUME" <<'PY' || die "could not write the appcast"
-import email.utils, html, os, re, sys, xml.dom.minidom
-path, version, build, url, length, sig, notes, resume = sys.argv[1:]
+digest() { [[ -f $1 ]] && shasum -a 256 "$1" | cut -d' ' -f1 || print none; }
+SEEN=$(digest "$APPCAST")
+/usr/bin/python3 -I - "$APPCAST" "$WORK/appcast.xml" "$VERSION" "$BUILD" "$URL" "$BYTES" "$SIG" "$NOTES" "$RESUME" <<'PY' || die "could not prepare the appcast"
+import email.utils, html, os, re, sys, xml.etree.ElementTree as ET
+source, path, version, build, url, length, sig, notes, resume = sys.argv[1:]
+SP = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
 notes = open(notes, encoding="utf-8").read().strip()
 e = lambda s: html.escape(s, quote=True)
-if os.path.exists(path):
-    feed = open(path, encoding="utf-8").read()
+if os.path.exists(source):
+    feed = open(source, encoding="utf-8").read()
 else:
     feed = """<?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
@@ -138,20 +137,45 @@ else:
   </channel>
 </rss>
 """
+def one(item, name):
+    """A value Sparkle reads from the element or from the enclosure's attribute; two different ones are ambiguous."""
+    enclosure = item.find("enclosure")
+    found = {v.strip() for v in (item.findtext(SP + name), None if enclosure is None else enclosure.get(SP + name)) if v is not None}
+    if len(found) > 1:
+        sys.exit(f"an appcast item has two {name} values {sorted(found)}: refusing to guess")
+    return next(iter(found), None)
+
+def items(text):
+    """Every item's build and version; anything this script cannot read for certain stops it."""
+    root = ET.fromstring(text.encode("utf-8"))
+    channels = root.findall("channel")
+    if root.tag != "rss" or len(channels) != 1 or len(root.findall(".//item")) != len(channels[0].findall("item")):
+        sys.exit("the appcast must be one RSS channel holding every item")
+    out = []
+    for item in channels[0].findall("item"):
+        if len(item.findall("enclosure")) != 1:
+            sys.exit(f"an appcast item has {len(item.findall('enclosure'))} enclosures; only one download per item is supported")
+        b = one(item, "version")
+        if b is None or not b.isdigit():
+            sys.exit(f"an appcast item's build number is {b!r}, not a whole number")
+        out.append((int(b), one(item, "shortVersionString")))
+    if len({b for b, _ in out}) != len(out):
+        sys.exit("the appcast lists one build number twice")
+    return out
+
 # Installed copies compare build numbers, so every release needs a higher one; only a resumed release may repeat its own.
 if not build.isdigit():
     sys.exit(f"CFBundleVersion '{build}' is not a whole number")
-prior = re.findall(r"<sparkle:version>\s*([^<]*?)\s*</sparkle:version>", feed)
-if any(not p.isdigit() for p in prior):
-    sys.exit(f"the appcast holds a build number that is not a whole number: {prior}")
-top = max(map(int, prior), default=0)
-same = re.compile(r"[ \t]*<item>(?:(?!</item>).)*<sparkle:version>\s*" + build + r"\s*</sparkle:version>.*?</item>\n?", re.S)
-match = same.search(feed)
-resumed = int(build) == top and resume == "1" and match and f"<sparkle:shortVersionString>{e(version)}</sparkle:shortVersionString>" in match.group(0)
+known = items(feed)
+blocks = re.findall(r"[ \t]*<item\b.*?</item>[ \t]*\n?", feed, re.S)
+if len(blocks) != len(known):
+    sys.exit("the appcast's items cannot be matched to its text one to one")
+top = max((b for b, _ in known), default=0)
+resumed = int(build) == top and resume == "1" and (top, version) in known
 if int(build) <= top and not resumed:
     sys.exit(f"build {build} must be greater than every build in the appcast (highest {top}); equal only with --resume for the same version")
 if resumed:
-    feed = same.sub("", feed)
+    feed = feed.replace(blocks[known.index((top, version))], "", 1)
 item = f"""    <item>
       <title>Version {e(version)}</title>
       <pubDate>{email.utils.formatdate(usegmt=True)}</pubDate>
@@ -162,14 +186,13 @@ item = f"""    <item>
       <enclosure url="{e(url)}" length="{e(length)}" type="application/octet-stream" sparkle:edSignature="{e(sig)}"/>
     </item>
 """
-at = feed.find("<item>")
+at = feed.find("<item")
 at = feed.rfind("\n", 0, at if at >= 0 else feed.index("</channel>")) + 1   # the start of that line
 feed = feed[:at] + item + feed[at:]
-xml.dom.minidom.parseString(feed.encode("utf-8"))   # refuses to write a malformed feed
-tmp = path + ".tmp"
-open(tmp, "w", encoding="utf-8").write(feed)
-os.replace(tmp, path)
-print(f"{'Replaced' if resumed else 'Added'} the item for {version} (build {build}) in {path}")
+if items(feed)[0] != (int(build), version):   # the whole feed still reads, with the new item first
+    sys.exit("the new item did not read back as the first item")
+open(path, "w", encoding="utf-8").write(feed)
+print(f"{'Replaced' if resumed else 'Added'} the item for {version} (build {build}); prepared at {path}")
 PY
 
 step "4. Release object for lib/apps.json (newest first in the app's releases)"
@@ -205,11 +228,22 @@ else
   fi
   gh release download "v$VERSION" --repo $REPO --pattern "${ASSET:t}" --dir "$WORK/remote" || die "could not download ${ASSET:t} back (rerun with --resume)"
   [[ $(shasum -a 256 "$WORK/remote/${ASSET:t}" | cut -d' ' -f1) == $SHA ]] \
-    || die "v$VERSION on $REPO holds a different ${ASSET:t} (sha256 differs): refusing a conflicting release"
+    || die "v$VERSION on $REPO holds a different ${ASSET:t} (sha256 differs): refusing a conflicting release; the website appcast is unchanged"
   print "Published and verified ${ASSET:t} ($BYTES bytes, sha256 $SHA): $URL"
 fi
 
-step "6. Tag v$VERSION"
+step "6. Website appcast"
+if (( DRY )); then
+  APPCAST="$OUT/appcast.xml"
+  /bin/cp "$WORK/appcast.xml" "$APPCAST"
+else
+  [[ $(digest "$APPCAST") == $SEEN ]] || die "$APPCAST changed while this ran; rerun with --resume"
+  mkdir -p "${APPCAST:h}"
+  /bin/cp "$WORK/appcast.xml" "$APPCAST.tmp.$$" && /bin/mv -f "$APPCAST.tmp.$$" "$APPCAST" || die "could not write $APPCAST"
+fi
+print "Wrote $APPCAST"
+
+step "7. Tag v$VERSION"
 if (( DRY )); then
   print "dry run, not run: git tag -a v$VERSION -m 'Talk & Read $VERSION'"
   print "\nDry run done: appcast $APPCAST"
