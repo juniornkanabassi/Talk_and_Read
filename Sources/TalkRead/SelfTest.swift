@@ -13,6 +13,7 @@
 // back and holds Breeze to its promised outcome per rate, `--cancel` cancels at every phase of a chunk (PLAN 0.4.0 Sol
 // rev. 4, 8); `--switch` switches Qwen3 -> Breeze -> Qwen3 mid-chunk on the one MLX queue, leaves Breeze during warm-up,
 // synthesis and cancellation through AppModel, and pauses through an idle unload (Sol rev. 1, 5).
+import AppKit
 import AVFoundation
 import Darwin
 import FluidAudio
@@ -1066,6 +1067,19 @@ enum SelfTest {
         print(String(format: "highlight: AX asked %.1f times/s at 30 ticks/s and 6.5 words/s (every new word, 10 Hz between); clip kept %.2f s",
                      Double(asks) / 6, Locator.clipLife))
         check(asks >= newWords && asks <= 6 * 15, "highlight query rate \(asks) in 6 s for \(newWords) words")
+        // Sol 0.5.0 #3: a gesture is hit-tested when it starts; its later phases and momentum keep that answer even after
+        // the pointer has left the window, and a plain wheel event is hit-tested each time.
+        var onSource = false, hits = 0
+        func scroll(_ phase: NSEvent.Phase, _ momentum: NSEvent.Phase = [], over: Bool) -> Bool {
+            onSource = Highlighter.scrollTargetsSource(phase: phase, momentum: momentum, previous: onSource) { hits += 1; return over }
+            return onSource
+        }
+        let gesture = [scroll(.began, over: true), scroll(.changed, over: false), scroll(.ended, over: false),
+                       scroll([], .began, over: false), scroll([], .changed, over: false), scroll([], .ended, over: false)]
+        let other = [scroll(.mayBegin, over: false), scroll(.changed, over: true), scroll([], .changed, over: true)]
+        let wheel = [scroll([], over: true), scroll([], over: false)]
+        check(gesture == [true, true, true, true, true, true] && other == [false, false, false] && wheel == [true, false] && hits == 4,
+              "scroll destination \(gesture) \(other) \(wheel), hit tests \(hits)")
 
         // An Objective-C exception (AVFAudio's "player did not see an IO cycle") comes back as an error with its reason.
         let caught = TRCatchException { NSException(name: .genericException, reason: "probe reason", userInfo: nil).raise() }
