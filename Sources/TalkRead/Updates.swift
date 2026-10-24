@@ -36,6 +36,30 @@ import TalkReadCore
         if begin(c.updater), c.updater.automaticallyChecksForUpdates { c.updater.checkForUpdatesInBackground() }
     }
 
+    /// Junior: nothing of a previous version stays after an update. On the first launch of a different build this removes
+    /// Sparkle's cache for this bundle id (the downloaded and extracted update), nothing else, and logs only its size.
+    @discardableResult static func clearCacheAfterUpdate(_ defaults: UserDefaults = .standard) -> String {
+        let key = "lastLaunchedBuild", running = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        let last = defaults.string(forKey: key), fm = FileManager.default
+        guard UpdateCache.shouldClear(lastLaunched: last, running: running), let id = Bundle.main.bundleIdentifier else {
+            return "build \(running) as last launch: nothing to clear"
+        }
+        let folder = UpdateCache.folder(bundleID: id, caches: fm.urls(for: .cachesDirectory, in: .userDomainMask)[0])
+        var note = "build \(last ?? "none") to \(running): no update cache"
+        if fm.fileExists(atPath: folder.path) {
+            let bytes = (fm.enumerator(at: folder, includingPropertiesForKeys: [.totalFileAllocatedSizeKey])?.allObjects ?? [])
+                .compactMap { ($0 as? URL).flatMap { try? $0.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize } }.reduce(0, +)
+            do { try fm.removeItem(at: folder) } catch {
+                Log.write("update cache: not removed (\(error.localizedDescription)); trying again at the next launch")
+                return "FAIL the update cache was not removed"
+            }
+            note = "build \(last ?? "none") to \(running): removed Sparkle's update cache, \(bytes) bytes"
+        }
+        defaults.set(running, forKey: key)
+        Log.write("update cache: \(note)")
+        return note
+    }
+
     /// No system profile, then start. The self-test passes its own updater (a windowless user driver).
     @discardableResult func begin(_ u: SPUUpdater) -> Bool {
         u.sendsSystemProfile = false
@@ -60,7 +84,7 @@ import TalkReadCore
             return (false, checkID)
         }
         let id = UUID().uuidString
-        (checking, checkID, reservedID) = (true, id, id)
+        (checking, checkID, reservedID, result) = (true, id, id, nil)
         updater.checkForUpdates()
         return (true, id)
     }
@@ -85,7 +109,7 @@ import TalkReadCore
 
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
         checkID = updateCheck == .updates ? reservedID ?? UUID().uuidString : UUID().uuidString
-        (checking, reservedID) = (true, nil)
+        (checking, reservedID, result) = (true, nil, nil)   // each check reports only its own outcome
     }
 
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) { finish("available \(item.displayVersionString)") }
@@ -96,7 +120,11 @@ import TalkReadCore
         if ![1001, 4007].contains((error as NSError).code) { finish("error \(error.localizedDescription)") }
     }
 
-    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) { checking = false }
+    /// A cycle that ends with no outcome (the user cancelled the check, or the alert was dismissed before one) says so.
+    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
+        checking = false
+        if result == nil { result = "cancelled" }
+    }
 
     private func finish(_ r: String) { (result, checking) = (r, false) }
 
@@ -117,7 +145,8 @@ import TalkReadCore
     func standardUserDriverWillFinishUpdateSession() { reminder = nil }
 }
 
-/// `--selftest-update <feed URL> [--reminder]`, on a test copy with its own bundle id (it may update the bundle it runs
+/// `--selftest-update <feed URL> [--reminder | --sequence <feed that never answers>]` and `--selftest-update-launch`,
+/// on a test copy with its own bundle id (it may update the bundle it runs
 /// from, and it writes Sparkle's defaults), so Junior's installed app and its defaults are never touched. The feed
 /// replaces SUFeedURL. Prints structured lines that `Tools/update-e2e.sh` asserts:
 /// - default: two callers send `update-check` through the control path (one starts, one is busy with the same id);
@@ -125,8 +154,18 @@ import TalkReadCore
 ///   verified it, so Sparkle installs it into this bundle as the process quits, with no relaunch and no window.
 /// - `--reminder`: the production start (standard user driver, launch check). The app is neither active nor a
 ///   background app here, so Sparkle never shows its alert; the test proves the gentle reminder reaches the menu.
+/// - `--sequence`: three checks in a row (found and dismissed, cancelled while checking, found again), each with its
+///   own checkID and its own result.
+/// - `--selftest-update-launch`: what launch does first, the post-update cache clean-up.
 @MainActor enum UpdateSelfTest {
-    static func run(feed: String, reminder: Bool) async -> Int32 {
+    static func launch() -> Int32 {
+        guard Bundle.main.bundleIdentifier != Updates.productionID else { print("update-cleanup: refused under the production bundle id"); return 2 }
+        let note = Updates.clearCacheAfterUpdate()
+        print("update-cleanup: \(note)")
+        return note.hasPrefix("FAIL") ? 1 : 0
+    }
+
+    static func run(feed: String, args: [String]) async -> Int32 {
         setvbuf(stdout, nil, _IOLBF, 0)
         let bundle = Bundle.main
         guard let id = bundle.bundleIdentifier, id != Updates.productionID else {
@@ -137,7 +176,31 @@ import TalkReadCore
         print("selftest-update: \(bundle.bundlePath) is \(info("CFBundleShortVersionString")) (build \(info("CFBundleVersion"))); feed \(feed)")
         let updates = Updates.shared
         updates.testFeed = feed
-        return reminder ? await remind(updates) : await install(updates, bundle)
+        if args.contains("--reminder") { return await remind(updates) }
+        if let i = args.firstIndex(of: "--sequence"), i + 1 < args.count { return await sequence(updates, bundle, feed: feed, silent: args[i + 1]) }
+        return await install(updates, bundle)
+    }
+
+    private static func sequence(_ updates: Updates, _ bundle: Bundle, feed: String, silent: String) async -> Int32 {
+        let driver = HeadlessDriver()
+        driver.dismissFound = true
+        guard updates.begin(SPUUpdater(hostBundle: bundle, applicationBundle: bundle, userDriver: driver, delegate: updates)) else {
+            print("selftest-update: FAIL the updater did not start")
+            return 1
+        }
+        var seen: [(id: String?, result: String?)] = []
+        for (url, cancel) in [(feed, false), (silent, true), (feed, false)] {
+            (updates.testFeed, driver.cancelCheck) = (url, cancel)
+            let r = await AppModel.shared.handle(ControlRequest(command: "update-check", caller: "sequence"))
+            await wait { !updates.checking && updates.updater?.sessionInProgress == false }
+            let id = r.data?["checkID"]?.stringValue
+            seen.append((updates.checkID == id ? id : nil, updates.result))
+            print("update-sequence: checkID \(id ?? "none") result \(updates.result ?? "null")")
+        }
+        let results = seen.map { $0.result ?? "null" }
+        let pass = Set(seen.compactMap(\.id)).count == 3 && results[0].hasPrefix("available ") && results[1] == "cancelled" && results[2] == results[0]
+        print("selftest-update: \(pass ? "PASS three checks, three checkIDs: \(results.joined(separator: ", "))" : "FAIL \(results)")")
+        return pass ? 0 : 1
     }
 
     private static func install(_ updates: Updates, _ bundle: Bundle) async -> Int32 {
@@ -184,6 +247,7 @@ import TalkReadCore
     /// Prints each step; agrees to download; stops at "ready to install" so the install happens as the process quits.
     private final class HeadlessDriver: NSObject, SPUUserDriver {
         var outcome: String?
+        var dismissFound = false, cancelCheck = false
         private var bytes: UInt64 = 0
 
         /// "4005>4005>3002": the error and its underlying errors, so the e2e test can require Sparkle's own reason.
@@ -196,11 +260,14 @@ import TalkReadCore
         func show(_ request: SPUUpdatePermissionRequest, reply: @escaping (SUUpdatePermissionResponse) -> Void) {
             reply(SUUpdatePermissionResponse(automaticUpdateChecks: false, sendSystemProfile: false))
         }
-        func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) { print("update: checking") }
+        func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) {
+            print("update: checking")
+            if cancelCheck { print("update: cancelling the check"); cancellation() }
+        }
         func showUpdateFound(with item: SUAppcastItem, state: SPUUserUpdateState, reply: @escaping (SPUUserUpdateChoice) -> Void) {
             print("update: found \(item.displayVersionString) (build \(item.versionString)), \(item.contentLength) bytes, minimum macOS \(item.minimumSystemVersion ?? "-"), "
                   + "notes \(item.itemDescription.map { "inline, \($0.count) characters" } ?? item.releaseNotesURL?.absoluteString ?? "none")")
-            reply(.install)
+            reply(dismissFound ? .dismiss : .install)
         }
         func showUpdateReleaseNotes(with downloadData: SPUDownloadData) { print("update: release notes downloaded, \(downloadData.data.count) bytes") }
         func showUpdateReleaseNotesFailedToDownloadWithError(_ error: Error) { print("update: release notes failed: \(error.localizedDescription)") }

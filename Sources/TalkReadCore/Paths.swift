@@ -21,6 +21,16 @@ public enum Paths {
     public static var log: URL { dataRoot.appendingPathComponent("talkread.log") }
 }
 
+/// Sparkle's update cache for one bundle id (downloaded and extracted updates). Junior: nothing of a previous version
+/// stays after an update, so the first launch of a different build clears this folder, and only this folder.
+public enum UpdateCache {
+    public static func folder(bundleID: String, caches: URL) -> URL {
+        caches.appendingPathComponent(bundleID, isDirectory: true).appendingPathComponent("org.sparkle-project.Sparkle", isDirectory: true)
+    }
+    /// A different build from the last launch's, or the first launch that records one.
+    public static func shouldClear(lastLaunched: String?, running: String) -> Bool { lastLaunched != running }
+}
+
 /// Appends one timestamped line to `talkread.log`; at 5 MB the file is rotated to `talkread.1.log` (one generation).
 public enum Log {
     static let maxBytes = 5_000_000
