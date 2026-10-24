@@ -126,6 +126,7 @@ extension EngineKind {
         dictation.preferApple = settings.dictationEngine == "apple"
         dictation.learnCorrections = settings.learnCorrections
         dictation.britishSpelling = settings.britishSpelling
+        dictation.microphoneUID = settings.dictationMicrophone
     }
 
     private func settingsDidChange(from old: Settings) {

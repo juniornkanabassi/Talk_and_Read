@@ -212,7 +212,7 @@ public final class ControlServer: @unchecked Sendable {
     /// Commands that change state; only these are replay-protected.
     public static let mutatingCommands: Set<String> = [
         "speak", "read-selection", "read-file", "pause", "resume", "stop", "skip", "speed", "voice",
-        "dictate-start", "dictate-stop", "dictate-file", "open", "settings-set", "models"
+        "dictate-start", "dictate-stop", "dictate-file", "open", "settings-set", "models", "mic"
     ]
     static let maxRequest = 1_048_576
     static let maxResponse = 8_388_608

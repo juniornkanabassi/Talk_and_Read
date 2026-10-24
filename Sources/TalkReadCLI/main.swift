@@ -46,6 +46,9 @@ let commands: [Command] = [
     Command(name: "voice", summary: "Choose the reading voice from the next read on. A French voice (ff_siwis, qwen.fr_warm) becomes the French voice; any other the English voice.",
             example: "voice qwen.us_warm",
             params: [Param(name: "id", kind: .string, help: "Voice id from `talkread voices`, for example af_heart, bf_emma, qwen.us_warm, ff_siwis or qwen.fr_warm.", required: true, positional: true)], forceable: true),
+    Command(name: "mic", summary: "List the microphones dictation can use, marking the system default and the chosen one; with a UID (or default) choose the microphone for the next dictation. A choice never interrupts a recording in progress.",
+            example: "mic default",
+            params: [Param(name: "uid", kind: .string, help: "UID from `talkread mic`, or default for whatever macOS has as the default input. Leave out to list.", positional: true)]),
     Command(name: "dictate-start", summary: "Start dictating from the microphone.", example: "dictate-start", forceable: true),
     Command(name: "dictate-stop", summary: "Stop dictating and insert the text where the cursor is.", example: "dictate-stop", forceable: true),
     Command(name: "dictation-last", summary: "Print the most recent dictation.", example: "dictation-last"),
@@ -110,6 +113,18 @@ func render(_ response: ControlResponse, command: String) {
             let current = id == english ? "  <- English voice" : id == french ? "  <- French voice" : ""
             print(([id] + rest).joined(separator: "  ") + installed + current)
         }
+        return
+    }
+    if command == "mic", let inputs = data["inputs"]?.arrayValue {
+        let choice = data["choice"]?.stringValue ?? "default"
+        print("default  System default" + (choice == "default" ? "  <- chosen" : ""))
+        for v in inputs {
+            guard let o = v.objectValue, let uid = o["uid"]?.stringValue else { continue }
+            print("\(uid)  \(o["name"]?.stringValue ?? "")" + (o["default"]?.boolValue == true ? "  (system default)" : "")
+                  + (o["chosen"]?.boolValue == true ? "  <- chosen" : ""))
+        }
+        if let using = data["using"]?.stringValue { print("Recording will use: \(using)") }
+        if let notice = data["notice"]?.stringValue { print(notice) }
         return
     }
     print(response.message ?? "ok")

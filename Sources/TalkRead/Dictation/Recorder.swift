@@ -2,6 +2,7 @@
 // an idle running input engine pins Bluetooth headsets into the low-quality HFP profile.
 import AVFoundation
 import QuartzCore
+import TalkReadCore
 
 /// What the dictation controller needs from an audio source (the real `Recorder`, or a fake in the self-test).
 @MainActor protocol DictationAudio: AnyObject {
@@ -63,6 +64,9 @@ final class StreamConverter {
 final class Recorder: DictationAudio {
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
     var onLevel: ((Float) -> Void)?
+    /// CoreAudio UID of the input to record from; nil follows the system default. Read at `start` only, so changing it
+    /// never touches a recording in progress.
+    var microphoneUID: String?
     private var engine: AVAudioEngine?
     private let lock = NSLock()                                 // guards the four below (the tap runs on the audio thread)
     private var samples: [Float] = []
@@ -79,7 +83,12 @@ final class Recorder: DictationAudio {
         let onBuffer = onBuffer, onLevel = onLevel                // this session's consumers
         let engine = AVAudioEngine()
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)   // the system default input device
+        if let uid = microphoneUID {                  // before the format is read: it is the chosen device's
+            guard let device = Microphone.deviceID(uid: uid), (try? input.auAudioUnit.setDeviceID(device)) != nil else {
+                throw RecorderError.noDevice
+            }
+        }
+        let format = input.outputFormat(forBus: 0)   // the chosen input, else the system default
         guard format.sampleRate > 0, format.channelCount > 0, let converter = StreamConverter(from: format) else {
             throw RecorderError.noDevice
         }

@@ -541,6 +541,7 @@ struct DictationPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            MicrophonePicker(model: model).frame(width: 420).padding(.top, 14)
             Picker("Show", selection: $showVocabulary) {
                 Text("History").tag(false)
                 Text("Vocabulary and clean-up").tag(true)

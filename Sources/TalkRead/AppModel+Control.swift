@@ -107,6 +107,19 @@ extension AppModel {
             let v = voice(for: id)
             return ["voice": .string(id), "language": .string(v.language), "speaking": .string(v.id)]
 
+        case "mic":
+            let inputs = Microphone.inputs()
+            if let choice = a["uid"] {
+                guard choice == "default" || inputs.contains(where: { $0.uid == choice }) else {
+                    throw AppError.badArgs("Unknown microphone '\(choice)'; see `talkread mic`.")
+                }
+                settings.dictationMicrophone = choice == "default" ? nil : choice   // applies from the next recording
+            }
+            let chosen = settings.dictationMicrophone
+            return microphoneJSON().merging(["inputs": .array(inputs.map { d in
+                .object(["uid": .string(d.uid), "name": .string(d.name), "default": .bool(d.isDefault), "chosen": .bool(d.uid == chosen)])
+            })]) { $1 }
+
         case "dictate-start":
             try dictation.start(caller: r.caller, force: r.force)
             return ["state": .string(Self.name(dictation.state))]
@@ -220,11 +233,21 @@ extension AppModel {
         return [
             "version": .string(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"),
             "reading": .object(reading),
-            "dictation": .object(["state": .string(Self.name(dictation.state)), "owner": dictation.owner.map { .string($0) } ?? .null]),
+            "dictation": .object(["state": .string(Self.name(dictation.state)), "owner": dictation.owner.map { .string($0) } ?? .null,
+                                  "microphone": .object(microphoneJSON())]),
             "permissions": .object(["accessibility": .bool(permissions.accessibility), "microphone": .bool(permissions.microphone),
                                     "screenRecording": .bool(permissions.screenRecording)]),
             "models": .object(modelsJSON())
         ]
+    }
+
+    /// The saved microphone ("default" or a UID), the device the next recording will use, and why it differs, if it does.
+    private func microphoneJSON() -> [String: JSONValue] {
+        let inputs = Microphone.inputs(), saved = settings.dictationMicrophone
+        let r = Microphone.resolve(saved, in: inputs)
+        let using = r.device ?? inputs.first(where: \.isDefault)
+        return ["choice": .string(saved ?? "default"), "using": using.map { .string($0.name) } ?? .null,
+                "notice": r.notice.map { .string($0) } ?? .null]
     }
 
     /// Kokoro's English voice and the dictation model, then every optional download (Qwen3, word timing, French).

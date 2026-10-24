@@ -160,7 +160,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃A"))
         XCTAssertEqual(json["skipForwardShortcut"]?.objectValue, ["keyCode": .number(14), "modifiers": .number(524_288), "display": .string("⌥E")])
         XCTAssertNil(json["miniPlayerOrigin"])
-        XCTAssertEqual(Settings.keys.count, 32)   // + dictationEngine, learnCorrections, britishSpelling (V-G)
+        XCTAssertEqual(Settings.keys.count, 33)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G)
         XCTAssertEqual(Set(Settings.chords.map(\.key)).count, 9)
         XCTAssertTrue(Settings.chords.allSatisfy { Settings.keys.contains($0.key) }, "every chord is a settings key")
         XCTAssertTrue(Settings.keys.contains("miniPlayerOrigin"))
