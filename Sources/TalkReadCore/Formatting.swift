@@ -84,8 +84,21 @@ extension Cleanup {
     /// "… things. First, finish the essay. Second, email Jon." → "… things.\n1. Finish the essay.\n2. Email Jon." Only
     /// when the markers open sentences and run 1, 2 (, 3 …) without a gap; "lastly" or "finally" may end the run.
     static func lists(_ text: String) -> String {
+        let run = listRun(text), ns = text as NSString
+        guard !run.isEmpty else { return text }
+        var out = text as NSString
+        for (m, n) in run.reversed() {
+            let lead = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces)
+            out = out.replacingCharacters(in: m.range, with: lead + "\n\(n). ") as NSString
+        }
+        return (out as String).replacingOccurrences(of: "^\\n", with: "", options: .regularExpression)
+    }
+
+    /// The spoken list markers of `text`: the sentence openers that run 1, 2 (, 3 …) without a gap, with their numbers. Empty
+    /// unless there are at least two.
+    static func listRun(_ text: String) -> [(NSTextCheckingResult, Int)] {
         let pattern = "(?i)(^|[.!?:;]\\s+|\\n)(firstly|first|secondly|second|thirdly|third|fourthly|fourth|fifth|sixth|seventh|eighth|ninth|tenth|lastly|finally|number (?:one|two|three|four|five|six|seven|eight|nine|ten))\\s*,\\s*"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
         let ns = text as NSString
         let spoken = ["one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10]
         var run: [(NSTextCheckingResult, Int)] = []
@@ -96,13 +109,7 @@ extension Cleanup {
             guard let n else { continue }
             if n == (run.last?.1 ?? 0) + 1 { run.append((m, n)) } else if n == 1 { if run.count < 2 { run = [(m, 1)] } }
         }
-        guard run.count >= 2 else { return text }
-        var out = text as NSString
-        for (m, n) in run.reversed() {
-            let lead = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces)
-            out = out.replacingCharacters(in: m.range, with: lead + "\n\(n). ") as NSString
-        }
-        return (out as String).replacingOccurrences(of: "^\\n", with: "", options: .regularExpression)
+        return run.count >= 2 ? run : []
     }
 
     // MARK: Vocabulary near misses
@@ -140,9 +147,17 @@ extension Cleanup {
                     let d = AutoLearn.distance(key, target)
                     // Real words are left alone even when only an accent or the case differs ("desire" for "Désiré"); "Mbappe" is
                     // not a word, so it gets its accent.
-                    if d <= target.count / 4, !words[start..<start + width].allSatisfy({ isWord(ns.substring(with: $0)) }) {
-                        found.append((range, term + suffix, d))
+                    guard d <= target.count / 4, !words[start..<start + width].allSatisfy({ isWord(ns.substring(with: $0)) }) else { continue }
+                    // Whatever the window's width, no real word or digit may be swallowed: each must line up with the term's
+                    // letters ("LamineYama is" is not "Lamine Yamal"; "Joan Neves" still is "João Neves").
+                    let lined = matched(key, target)
+                    var at = 0, dropped = false
+                    for word in stem.split(separator: " ") {
+                        let n = folded(String(word)).count
+                        if isWord(String(word)) || word.contains(where: \.isNumber), lined[at..<at + n].filter({ $0 }).count * 2 <= n { dropped = true }
+                        at += n
                     }
+                    if !dropped { found.append((range, term + suffix, d)) }
                 }
             }
         }
@@ -157,6 +172,24 @@ extension Cleanup {
             out = out.replacingCharacters(in: range, with: hold(term)) as NSString
         }
         return out as String
+    }
+
+    /// Which characters of `a` an optimal edit alignment with `b` pairs with an equal character.
+    static func matched(_ a: [Character], _ b: [Character]) -> [Bool] {
+        var d = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1), count: a.count + 1)
+        for i in 0...a.count { d[i][0] = i }
+        for j in 0...b.count { d[0][j] = j }
+        for i in a.indices {
+            for j in b.indices { d[i + 1][j + 1] = a[i] == b[j] ? d[i][j] : 1 + min(d[i][j], d[i][j + 1], d[i + 1][j]) }
+        }
+        var hit = [Bool](repeating: false, count: a.count), i = a.count, j = b.count
+        while i > 0, j > 0 {
+            if a[i - 1] == b[j - 1], d[i][j] == d[i - 1][j - 1] { hit[i - 1] = true; i -= 1; j -= 1 }
+            else if d[i][j] == d[i - 1][j - 1] + 1 { i -= 1; j -= 1 }
+            else if d[i][j] == d[i - 1][j] + 1 { i -= 1 }
+            else { j -= 1 }
+        }
+        return hit
     }
 
     /// A held text's placeholder ("\u{E000}3\u{E001}") is next to or inside the range: its digit is not a word.
