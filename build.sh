@@ -37,6 +37,10 @@ for bundle in "$BIN_DIR"/*.bundle(N); do /usr/bin/ditto "$bundle" "$APP/Contents
 /usr/bin/ditto "$ROOT/Resources/Voices" "$APP/Contents/Resources/Voices"
 # The pinned Breeze licence text, shown before its download and on the Models page (PLAN 0.4.0 Sol rev. 6); never the weights.
 /usr/bin/ditto "$ROOT/Resources/Licences" "$APP/Contents/Resources/Licences"
+# Sparkle (PLAN 0.7.0), found through the app's rpath @executable_path/../Frameworks; ditto keeps its symlinks.
+[[ -d "$BIN_DIR/Sparkle.framework" ]] || { print -u2 "No Sparkle.framework in $BIN_DIR"; exit 1; }
+mkdir -p "$APP/Contents/Frameworks"
+/usr/bin/ditto "$BIN_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 # The Developer ID certificate is installed twice; the SHA-1 picks one explicitly. Ad hoc is the fallback and loses TCC grants on rebuild.
 SIGN_ID="-"
 # The G2 Developer ID certificate (valid to 2031; the older AD9C29D9… one expires 1 Feb 2027). Same team, so macOS
@@ -47,10 +51,19 @@ SIGN_OPTS=(--force --sign "$SIGN_ID")
 [[ "$SIGN_ID" == "-" ]] || SIGN_OPTS+=(--timestamp)   # notarisation needs Apple's secure timestamp
 # The identifiers keep the old "TalkAndRead" spelling: changing them would wipe the app's permissions and settings.
 /usr/bin/codesign "${SIGN_OPTS[@]}" --options runtime --identifier com.juniornkanabassi.TalkAndRead.cli "$APP/Contents/Helpers/talkread"
+# Sparkle's nested code inside-out, as its documentation gives for apps outside the App Store, then the framework.
+# The XPC services keep their own entitlements (the Downloader's network client).
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+/usr/bin/codesign "${SIGN_OPTS[@]}" --options runtime "$SPARKLE/Versions/B/Autoupdate"
+/usr/bin/codesign "${SIGN_OPTS[@]}" --options runtime "$SPARKLE/Versions/B/Updater.app"
+for xpc in "$SPARKLE"/Versions/B/XPCServices/*.xpc(N); do
+  /usr/bin/codesign "${SIGN_OPTS[@]}" --options runtime --preserve-metadata=entitlements "$xpc"
+done
+/usr/bin/codesign "${SIGN_OPTS[@]}" --options runtime "$SPARKLE"
 # No --deep: it would re-sign the helper and drop its identifier.
 /usr/bin/codesign "${SIGN_OPTS[@]}" --options runtime --entitlements "$ROOT/Resources/TalkRead.entitlements" "$APP"
 print "Signed with: $SIGN_ID"
-/usr/bin/codesign --verify --strict "$APP"
+/usr/bin/codesign --verify --deep --strict "$APP"
 /usr/bin/codesign --verify --strict "$APP/Contents/Helpers/talkread"
 # Notarise and staple so other Macs open it without a warning (Junior, 24 Oct: releases are notarised). Uses the
 # "JuniorOS" notarytool keychain profile; TALKREAD_NOTARISE=0 skips it for a quick local build.

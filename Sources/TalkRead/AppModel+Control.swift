@@ -193,6 +193,10 @@ extension AppModel {
             }
             return modelsJSON()
 
+        case "update-check":
+            try Updates.check()   // Sparkle's own window shows the result; installing still needs the user's click
+            return ["started": .bool(true)]
+
         default:
             throw AppError(code: "unknown_command", message: "Unknown command '\(r.command)'.")
         }

@@ -89,6 +89,7 @@ static_checks() {
   [[ $minos == 26.0 ]] && pass E6 "Mach-O minos $minos" || fail E6 "Mach-O minos is '$minos', not 26.0"
   if (( ! BUNDLE )); then
     nrun E6 "Info.plist, Developer ID signature (bare binary)"; nrun B-version "bare binary"; nrun B-signature "bare binary"; nrun B-contents "bare binary"
+    nrun U1 "Sparkle embedding, feed and key (bare binary)"
     return
   fi
   v=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$info" 2>&1)
@@ -111,6 +112,23 @@ static_checks() {
   grep -q "Identifier=com.juniornkanabassi.TalkAndRead.cli" <<<$hsig && pass B-signature "helper keeps its own identifier" || fail B-signature "helper identifier changed or unsigned"
   v=$(/usr/sbin/spctl --assess --type execute -vv "$APP" 2>&1 | tr '\n' ' ')
   pass B-signature "spctl: ${v:0:90} (notarisation is not required for a local install)"
+  # U1 (0.7.0): Sparkle is embedded, each nested part signed by the app's team with hardened runtime and a secure
+  # timestamp; the feed and the EdDSA public key are set (never the placeholder); the app finds the framework.
+  local fw="$APP/Contents/Frameworks/Sparkle.framework" team part psig unsigned="" feed key
+  team=$(sed -nE 's/^TeamIdentifier=//p' <<<$sig)
+  if [[ -d $fw ]] && /usr/bin/codesign --verify --strict "$fw" 2>/dev/null; then
+    for part in "$fw/Versions/B/Autoupdate" "$fw/Versions/B/Updater.app" "$fw"/Versions/B/XPCServices/*.xpc(N) "$fw"; do
+      psig=$(/usr/bin/codesign -dvv "$part" 2>&1)
+      grep -q "^TeamIdentifier=$team\$" <<<$psig && grep -q '^Timestamp=' <<<$psig && grep -q 'flags=0x[0-9a-f]*(.*runtime' <<<$psig || unsigned+="${part:t} "
+    done
+    [[ -z $unsigned ]] && pass U1 "Sparkle $(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$fw/Resources/Info.plist") embedded; Autoupdate, Updater.app, XPC services and the framework signed by team $team, hardened runtime, timestamped" \
+                       || fail U1 "Sparkle parts not signed by team $team with runtime and timestamp: $unsigned"
+  else fail U1 "Contents/Frameworks/Sparkle.framework missing or its signature does not verify"; fi
+  /usr/bin/otool -l "$EXE" | grep -q 'path @executable_path/../Frameworks ' && pass U1 "rpath @executable_path/../Frameworks" || fail U1 "no @executable_path/../Frameworks rpath"
+  feed=$(/usr/bin/plutil -extract SUFeedURL raw -o - "$info" 2>/dev/null); key=$(/usr/bin/plutil -extract SUPublicEDKey raw -o - "$info" 2>/dev/null)
+  [[ $feed == https://* ]] && pass U1 "SUFeedURL $feed" || fail U1 "SUFeedURL missing or not https: '$feed'"
+  if [[ ${#key} == 44 && $key != REPLACE_WITH_* ]] && print -rn -- $key | /usr/bin/base64 -D 2>/dev/null | wc -c | grep -q '^ *32$'; then pass U1 "SUPublicEDKey set (${key:0:6}…, 32-byte EdDSA key)"
+  else fail U1 "SUPublicEDKey missing, the placeholder or not a 32-byte base64 key: '${key:0:30}'"; fi
   local f clip secs
   for f in breeze.us_warm breeze.us_calm qwen.us_warm qwen.us_calm qwen.fr_warm; do
     clip="$APP/Contents/Resources/Voices/$f.wav"
@@ -150,7 +168,7 @@ cli_checks() {
   names=$(print -r -- "$manifest" | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).map(t=>t.name).join(" "))}catch(e){}})')
   n=$(wc -w <<<$names | tr -d ' ')
   local c; for c in ${=names}; do grep -q -- "${c//_/-}" <<<$help || missing+="$c "; done
-  if (( n >= 19 )) && [[ -z $missing ]]; then pass E1 "CLI: $n commands in the manifest, every one in --help"; else fail E1 "CLI: $n commands, missing from --help: $missing"; fi
+  if (( n >= 21 )) && [[ -z $missing ]]; then pass E1 "CLI: $n commands in the manifest, every one in --help"; else fail E1 "CLI: $n commands, missing from --help: $missing"; fi
   grep -q -- '--json' <<<$help && pass E1 "--json documented in --help" || fail E1 "--json is not documented in --help"
   print -r -- $names > "$OUT/cli-commands.txt"
   grep -q -- '--force' <<<$help && pass E1 "--force documented" || fail E1 "--force is not documented"
@@ -499,7 +517,7 @@ row() { local k=$1 s; s=$(status_of $k)
   if [[ $s == NO-RULE ]]; then s=OWED-JUNIOR; EV[$k]="NO CHECKER RULE for this checklist line yet; read it by hand"; NORULE=$(( NORULE + 1 )); fi
   COUNT[$s]=$(( ${COUNT[$s]:-0} + 1 ))
   ROWS+=("$(printf '%-11s %-12s %s' $k $s "${EV[$k]}")"); }
-for k in B-version B-signature B-contents; do [[ -n ${EV[$k]:-} ]] && row $k; done
+for k in B-version B-signature B-contents U1; do [[ -n ${EV[$k]:-} ]] && (( ! ${ids[(Ie)$k]} )) && row $k; done   # U1 until the checklist has its line
 for k in $ids; do row $k; done
 {
   print "\nAcceptance checklist, $(basename "$APP"), $(date '+%d %b %H:%M'), ${ELAPSED} s of tests"

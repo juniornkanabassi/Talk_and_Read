@@ -15,9 +15,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.6.0</string>
+	<string>0.7.0</string>
 	<key>CFBundleVersion</key>
-	<string>6</string>
+	<string>7</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
@@ -28,5 +28,13 @@
 	<string>Junior Nkanabassi</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Talk &amp; Read listens only while you hold the dictation key, and transcribes on this Mac.</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://juniornkanabassi.com/apps/talkandread/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>gSdgCMRgvfUaY9Oy8XBqSS2qJxj8OkLsCTMxPdlYP4g=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>
