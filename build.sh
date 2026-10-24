@@ -28,6 +28,10 @@ cp "$BIN_DIR/TalkRead" "$APP/Contents/MacOS/TalkRead"
 cp "$BIN_DIR/TalkReadCLI" "$APP/Contents/Helpers/talkread"
 cp "$ROOT/mcp/talkread-mcp.mjs" "$APP/Contents/Resources/mcp/talkread-mcp.mjs"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+# The commit this was built from ("-dirty" with uncommitted changes): release.sh publishes only a build of a clean HEAD.
+COMMIT=$(git -C "$ROOT" rev-parse HEAD)
+[[ -z $(git -C "$ROOT" status --porcelain) ]] || COMMIT+="-dirty"
+/usr/libexec/PlistBuddy -c "Add :TRSourceCommit string $COMMIT" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/Resources/MenuBarIcon.png" "$ROOT/Resources/MenuBarIcon@2x.png" "$APP/Contents/Resources/"
 # SwiftPM resource bundles (FluidAudio ships some) must travel with the app.
@@ -41,12 +45,19 @@ for bundle in "$BIN_DIR"/*.bundle(N); do /usr/bin/ditto "$bundle" "$APP/Contents
 [[ -d "$BIN_DIR/Sparkle.framework" ]] || { print -u2 "No Sparkle.framework in $BIN_DIR"; exit 1; }
 mkdir -p "$APP/Contents/Frameworks"
 /usr/bin/ditto "$BIN_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
-# The Developer ID certificate is installed twice; the SHA-1 picks one explicitly. Ad hoc is the fallback and loses TCC grants on rebuild.
+# The Developer ID certificate is installed twice; the SHA-1 picks one explicitly.
 SIGN_ID="-"
 # The G2 Developer ID certificate (valid to 2031; the older AD9C29D9… one expires 1 Feb 2027). Same team, so macOS
 # permissions granted to earlier builds carry over.
 DEV_ID_SHA="C297CD17464A0EF6C93704A59BC2E1D4D1759400"
 if /usr/bin/security find-identity -v -p codesigning 2>/dev/null | grep -q "$DEV_ID_SHA"; then SIGN_ID="$DEV_ID_SHA"; fi
+if [[ "$SIGN_ID" == "-" ]]; then
+  # Ad hoc only on request (it loses TCC grants on rebuild), and never with updates: without a feed the app starts no
+  # updater and shows no update items.
+  [[ "${TALKREAD_ALLOW_ADHOC:-0}" == 1 ]] || { print -u2 "No Developer ID certificate ($DEV_ID_SHA). TALKREAD_ALLOW_ADHOC=1 builds an ad hoc copy without updates."; exit 1; }
+  /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$APP/Contents/Info.plist"
+  print "Ad hoc build: SUFeedURL removed, updates off"
+fi
 SIGN_OPTS=(--force --sign "$SIGN_ID")
 [[ "$SIGN_ID" == "-" ]] || SIGN_OPTS+=(--timestamp)   # notarisation needs Apple's secure timestamp
 # The identifiers keep the old "TalkAndRead" spelling: changing them would wipe the app's permissions and settings.
