@@ -1,6 +1,7 @@
 // 30 Hz tick while reading: the session's current word -> rect from the locator chain -> Overlay (ReadAlong's tick,
-// timed by our own media clock through ReadSession.currentToken). Geometry is queried live every tick; only the
-// sentence tint is cached, and only while its anchor word still reports the rect it had when the cache was filled.
+// timed by our own media clock through ReadSession.currentToken). Geometry is queried live for each new word, after a
+// scroll, activation or window change, and at 10 Hz in between; the sentence tint is cached only while its anchor word
+// still reports the rect it had when the cache was filled.
 // Every third tick first pins the overlay to the source window (H2); while that window is off screen nothing is located.
 // Paused, a 5 Hz follow keeps the box on a moving window and hides it with the window, with no AX work.
 import AppKit
@@ -28,6 +29,10 @@ import TalkReadCore
         return ranges
     }()
     private var lastLogged: Int?
+    /// The word last asked of AX, when, and whether something (scroll, activation, window change) makes the next tick ask.
+    private var shownIndex: Int?
+    private var queriedAt: TimeInterval = 0
+    private var requery = true
     private let debug = ProcessInfo.processInfo.environment["TALKREAD_DEBUG"] == "1"
 
     init(session: ReadSession, style: Overlay.Style) {
@@ -99,6 +104,7 @@ import TalkReadCore
     private func invalidate() {
         locator?.invalidate()
         sentenceCache = nil
+        requery = true
     }
 
     /// The capture's window, matched by its AX frame among the app's on-screen windows (else the app's frontmost);
@@ -126,11 +132,22 @@ import TalkReadCore
         // and app activations and Space changes call follow() at once. Off screen (another Space, minimised, hidden,
         // closed or not yet known): nothing to locate.
         ticks += 1
-        guard ticks % 3 == 1 ? overlay.follow() : overlay.panel != nil else { return }
+        if ticks % 3 == 1 {
+            let frame = overlay.panel?.frame
+            guard overlay.follow() else { return }
+            if overlay.panel?.frame != frame { locator.windowChanged(); requery = true }   // moved or resized
+        } else if overlay.panel == nil {
+            return
+        }
         guard let index = session.currentToken, session.tokens.indices.contains(index) else {
             overlay.show(word: nil, sentence: [])
             return
         }
+        // Each query is AX round trips into the app being read (word bounds, the tint anchor's): at once for a new word,
+        // a scroll, an activation or a window change, otherwise at 10 Hz for scrolls that post no wheel event.
+        let now = ProcessInfo.processInfo.systemUptime
+        guard Self.needsQuery(index: index, shown: shownIndex, forced: requery, sinceLast: now - queriedAt) else { return }
+        (shownIndex, requery, queriedAt) = (index, false, now)
         let token = session.tokens[index]
         let wordRect = locator.rect(forWord: token.range)
         if debug, lastLogged != index {
@@ -151,5 +168,10 @@ import TalkReadCore
             }
         }
         overlay.show(word: wordRect, sentence: sentenceRects)
+    }
+
+    /// Whether a tick asks AX again (efficiency fix 3); 0.09 s is every third 30 Hz tick. Checked by the TTS self-test.
+    nonisolated static func needsQuery(index: Int, shown: Int?, forced: Bool, sinceLast: Double) -> Bool {
+        index != shown || forced || sinceLast >= 0.09
     }
 }

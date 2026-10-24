@@ -1046,6 +1046,17 @@ enum SelfTest {
         let plain = ["harbour", "It's", "I", "A", "Okafor", "l'homme", "été"], looked = ["NHS", "BBC", "forty-two", "2027", "x2", "DON'T"]
         check(plain.allSatisfy(NeuralEngine.isPlainWord) && !looked.contains(where: NeuralEngine.isPlainWord),
               "plain words \(plain.filter { !NeuralEngine.isPlainWord($0) }), looked up \(looked.filter(NeuralEngine.isPlainWord))")
+        // Efficiency fix 3: 30 Hz ticks for 6 s with a new word every 1/6.5 s (2.5x): AX is asked for every new word and
+        // at 10 Hz in between, never on every tick.
+        var shown: Int?, askedAt = -1.0, asks = 0, newWords = 0
+        for k in 0 ..< 180 {
+            let t = Double(k) / 30, word = Int(t * 6.5)
+            if word != shown { newWords += 1 }
+            if Highlighter.needsQuery(index: word, shown: shown, forced: false, sinceLast: t - askedAt) { (shown, askedAt, asks) = (word, t, asks + 1) }
+        }
+        print(String(format: "highlight: AX asked %.1f times/s at 30 ticks/s and 6.5 words/s (every new word, 10 Hz between); clip kept %.2f s",
+                     Double(asks) / 6, Locator.clipLife))
+        check(asks >= newWords && asks <= 6 * 15, "highlight query rate \(asks) in 6 s for \(newWords) words")
 
         // An Objective-C exception (AVFAudio's "player did not see an IO cycle") comes back as an error with its reason.
         let caught = TRCatchException { NSException(name: .genericException, reason: "probe reason", userInfo: nil).raise() }

@@ -86,6 +86,9 @@ import TalkReadCore
         (ocrLocator ?? nil)?.invalidate()
     }
 
+    /// The window moved or was resized: the clip is stale, OCR boxes are window-relative and stay.
+    func windowChanged() { clipCache = nil }
+
     private func succeed(_ path: Path, _ rect: CGRect) -> CGRect {
         (pathUsed, consecutiveFailures, failedRange) = (path, 0, nil)
         return rect
@@ -275,10 +278,12 @@ import TalkReadCore
     /// The resolved (scroll area or window) element for the last start element, so the parent walk only reruns on change.
     private var clipChainCache: (start: AXUIElement, target: AXUIElement?)?
 
-    /// The enclosing AXScrollArea's frame (within six parents), else the window's, in Cocoa coordinates. Cached for one tick.
+    /// The enclosing AXScrollArea's frame (within six parents), else the window's, in Cocoa coordinates. Cached for
+    /// `clipLife` or until a scroll, activation or window change (`invalidate`, `windowChanged`): its AXPosition and AXSize
+    /// were two of the four AX round trips of every 30 Hz tick (efficiency fix 3).
     private func visibleClip(from element: AXUIElement) -> CGRect? {
         let now = Date().timeIntervalSince1970
-        if let c = clipCache, now - c.at < 0.03, CFEqual(c.element, element) { return c.rect } // never last tick's clip
+        if let c = clipCache, now - c.at < Self.clipLife, CFEqual(c.element, element) { return c.rect }
         func walk() -> AXUIElement? {
             var e = element
             for _ in 0..<6 {
@@ -307,6 +312,8 @@ import TalkReadCore
         clipCache = (element, clip, now)
         return clip
     }
+
+    nonisolated static let clipLife = 0.25
 
     static func isAcceptable(_ rect: CGRect) -> Bool {
         if rect.isEmpty || rect.width > 2000 || rect.height > 300 { return false }
