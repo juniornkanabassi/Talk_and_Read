@@ -102,9 +102,12 @@ final class ParagraphsTests: XCTestCase {
 
     func testFrenchClosingGuillemetStaysWithItsQuotation() {
         let middle = "Il a répondu « oui ! » Ensuite nous sommes partis ensemble."
-        let out = Paragraphs.split(padded(middle))
-        XCTAssertTrue(out.contains("« oui ! » Ensuite"))
-        XCTAssertFalse(out.contains("!\n\n»"))
+        XCTAssertFalse(Paragraphs.split(padded(middle)).contains("!\n\n»"))
+        // The sentence after the quotation is still a sentence of its own: a pause before it can break there.
+        let out = Paragraphs.split(padded(middle), pauses: pauses(9, [5: 1.4]))
+        XCTAssertTrue(out.contains("« oui ! »\n\nEnsuite nous sommes partis ensemble."), out)
+        XCTAssertEqual(Paragraphs.sentenceRanges("Il a dit « oui ! » Ensuite nous partons.").count, 2)
+        XCTAssertEqual(Paragraphs.sentenceRanges("Elle a dit (oui !) Ensuite non.").count, 2)
     }
 
     func testFilledAndRepeatedSentenceStartsDoNotMisplaceAPause() {
@@ -188,17 +191,38 @@ final class ParagraphsTests: XCTestCase {
     private let intro = (1...62).map { "word\($0)" }.joined(separator: " ") + "."
 
     func testTidyKeepsListsWhole() {
-        let out = Paragraphs.tidy(intro + "\n\n1. Do the first thing. Then the next one.\n\nMore of the same item.\n2. Second.\n\n3. Third.\n\nAfter the list.")
-        XCTAssertEqual(out, intro + "\n\n1. Do the first thing. Then the next one. More of the same item.\n2. Second.\n3. Third.\n\nAfter the list.")
-        let bullets = Paragraphs.tidy(intro + "\n  - one\n\n  - two\n\n• three\n\n* four\n\n5) five.")
-        XCTAssertEqual(bullets, intro + "\n  - one\n  - two\n• three\n* four\n5) five.")
+        XCTAssertEqual(Paragraphs.tidy(intro + "\n\n1. Do the first thing.\n\n2. Second.\n\n3. Third.\n\nAfter the list."),
+                       intro + "\n\n1. Do the first thing.\n2. Second.\n3. Third.\n\nAfter the list.")
+        XCTAssertEqual(Paragraphs.tidy(intro + "\n  - one\n\n  - two\n\n• three\n\n* four\n\n5) five."), intro + "\n  - one\n  - two\n• three\n* four\n5) five.")
         XCTAssertEqual(Paragraphs.tidy(intro + "\n\nNo list here.\n\nAt all."), intro + "\n\nNo list here.\n\nAt all.")
+    }
+
+    func testTidyRepairsEachListOnItsOwn() {
+        let two = Paragraphs.tidy(intro + "\n1. a\n\n2. b\n\nSome prose in between.\n\n1. c\n\n2. d.")
+        XCTAssertEqual(two, intro + "\n1. a\n2. b\n\nSome prose in between.\n\n1. c\n2. d.", "the prose stays out of both lists")
+        XCTAssertEqual(Paragraphs.tidy(intro + "\n\n1. The only item.\n\nProse after it."), intro + "\n\n1. The only item.\n\nProse after it.", "a one-item list")
+        XCTAssertEqual(Paragraphs.tidy(intro + "\n1. a\n2. b.\n\nThe last item goes on."), intro + "\n1. a\n2. b.\n\nThe last item goes on.", "nothing is pulled into the final item")
+    }
+
+    func testNoAutomaticBreakInsideASpokenList() {
+        let list = "Here is the plan. First, finish the essay. Then check it twice. Second, email Jon about it. Add the draft. Finally, send the invoice. Then rest."
+        let more = (names.prefix(6).map(sentence)).joined(separator: " ")
+        let text = more + " " + list + " " + names[6..<9].map(sentence).joined(separator: " ")
+        let spans = Paragraphs.sentenceRanges(text)
+        let every = [Double?](repeating: 1.5, count: spans.count)
+        let out = Paragraphs.split(text, pauses: every)
+        let cleaned = Cleanup.apply(out, vocabulary: [:], removeFillers: true)
+        XCTAssertTrue(cleaned.contains("1. Finish the essay. Then check it twice.\n2. Email Jon about it. Add the draft.\n3. Send the invoice."), cleaned)
+        XCTAssertFalse(cleaned.contains("check it twice.\n\n"))
+        XCTAssertTrue(out.contains(sentence("Alpha") + "\n\n" + sentence("Bravo")), "ordinary breaks before the list are fine")
     }
 
     func testTidyAddsTheFinalFullStop() {
         XCTAssertEqual(Paragraphs.tidy(intro + " He said \"yes\""), intro + " He said \"yes\".")
         XCTAssertEqual(Paragraphs.tidy(intro + " See you (probably tomorrow)"), intro + " See you (probably tomorrow).")
         XCTAssertEqual(Paragraphs.tidy(intro + " Thanks"), intro + " Thanks.")
+        XCTAssertEqual(Paragraphs.tidy(intro + " Il dit « oui »"), intro + " Il dit « oui ».", "closing space inside the guillemets")
+        XCTAssertEqual(Paragraphs.tidy(intro + " Il dit « oui ! »"), intro + " Il dit « oui ! »")
         XCTAssertEqual(Paragraphs.tidy(intro + " 2. Email Jon"), intro + " 2. Email Jon.")
         for ending in ["Thanks.", "Really?", "Stop!", "He said \"yes!\"", "Wait…", "(done.)", "Why,", "Total £5%"] {
             XCTAssertEqual(Paragraphs.tidy(intro + " " + ending), intro + " " + ending, ending)
