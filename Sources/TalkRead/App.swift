@@ -140,15 +140,29 @@ enum TalkReadMain {
         let service = SMAppService.mainApp
         let path = Bundle.main.bundleURL.path, key = "loginItemRegisteredPath"
         do {
-            if on {
-                // 0.5.0 renamed the bundle: a registration made at the old path is dropped and made again here, once.
-                if service.status == .enabled, UserDefaults.standard.string(forKey: key) != path { try service.unregister() }
-                if service.status != .enabled { try service.register() }
-                UserDefaults.standard.set(path, forKey: key)
-            } else if service.status == .enabled { try service.unregister() }
+            for step in Self.loginItemSteps(on: on, status: service.status, recordedPath: UserDefaults.standard.string(forKey: key), path: path) {
+                switch step {
+                case .unregister: try service.unregister()
+                case .register: try service.register()
+                case .record: UserDefaults.standard.set(path, forKey: key)   // only after the steps before it succeeded
+                }
+            }
         } catch {
             Log.write("login item \(on ? "register" : "unregister") failed: \(error)")
         }
+    }
+
+    enum LoginItemStep: Equatable { case unregister, register, record }
+
+    /// What `updateLoginItem` does, in order (pure; checked by the control self-test). `.requiresApproval` is a
+    /// registration awaiting the user's approval, so it counts as registered (Sol 0.5.0 #5): off unregisters it; on keeps
+    /// a registration for this path as it is (never registering twice); a registration from another path (0.5.0 renamed
+    /// the bundle) or of unknown path is dropped and made again here, and the path is recorded after that succeeded.
+    nonisolated static func loginItemSteps(on: Bool, status: SMAppService.Status, recordedPath: String?, path: String) -> [LoginItemStep] {
+        let registered = status == .enabled || status == .requiresApproval
+        guard on else { return registered ? [.unregister] : [] }
+        if registered, recordedPath == path { return [] }
+        return (registered ? [.unregister] : []) + [.register, .record]
     }
 
     // MARK: Permissions and hotkeys
