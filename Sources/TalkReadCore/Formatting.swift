@@ -111,8 +111,8 @@ extension Cleanup {
     /// "Nkanabassi", "Dembele" → "Dembélé". Letters are compared with case and accents ignored, over windows of one word
     /// fewer to one more than the term; a window within a quarter of the term's letters is replaced, closest first.
     /// Terms under five letters only match exactly, and a window that is a shorter piece of the term ("football" in
-    /// "Kestrelco") is left alone, as is one whose every word `isWord` knows unless only case or accents differ:
-    /// "contact" is meant even when "contract" is taught (Sol inspection 4 #4).
+    /// "Kestrelco") is left alone, as is one whose every word `isWord` knows, case or accents alone included:
+    /// "contact" is meant even when "contract" is taught (Sol inspection 4 #4), "desire" even when "Désiré" is.
     static func correctTerms(in text: String, terms: [String], isWord: (String) -> Bool, hold: (String) -> String) -> String {
         guard !terms.isEmpty, let regex = try? NSRegularExpression(pattern: "[\\p{L}\\p{N}][\\p{L}\\p{N}'’-]*") else { return text }
         let ns = text as NSString
@@ -129,11 +129,19 @@ extension Cleanup {
                     let piece = ns.substring(with: range)
                     let joined = words[start..<start + width].map { ns.substring(with: $0) }.joined(separator: " ")
                     guard piece != term, piece == joined, !touchesPlaceholder(range, in: ns) else { continue }
-                    let key = folded(piece)
+                    // A wider window only joins pieces of the term; it never takes in a neighbouring word ("Yamal is", "Bayern 2–0").
+                    if width > size, isWord(ns.substring(with: first)) || isWord(ns.substring(with: last)) { continue }
+                    // A possessive keeps its ending: "Mbappe's" -> "Mbappé's", while "Mbappé's" itself is left alone.
+                    let suffix = ["'s", "’s", "'", "’"].first { piece.hasSuffix($0) } ?? ""
+                    let stem = String(piece.dropLast(suffix.count))
+                    guard stem != term else { continue }
+                    let key = folded(stem)
                     if key.count < target.count, String(target).contains(String(key)) { continue }
                     let d = AutoLearn.distance(key, target)
-                    if d <= target.count / 4, d == 0 || !words[start..<start + width].allSatisfy({ isWord(ns.substring(with: $0)) }) {
-                        found.append((range, term, d))
+                    // Real words are left alone even when only an accent or the case differs ("desire" for "Désiré"); "Mbappe" is
+                    // not a word, so it gets its accent.
+                    if d <= target.count / 4, !words[start..<start + width].allSatisfy({ isWord(ns.substring(with: $0)) }) {
+                        found.append((range, term + suffix, d))
                     }
                 }
             }
