@@ -1,16 +1,22 @@
 #!/bin/zsh
 # Publishes one Talk & Read release (PLAN 0.7.0 decision 4). Run only on Junior's explicit instruction to publish.
 #
-# Usage: zsh release.sh --website <website checkout> --notes <notes.md> [--zip <zip from build.sh>] [--dry-run]
-#   1. build.sh (sign, notarise, staple), unless --zip names a zip it already made (a retry after a failed upload)
+# Usage: zsh release.sh --website <website checkout> --notes <notes.md> [--zip <zip>] [--resume] [--dry-run [--out <dir>]]
+#   1. build.sh (sign, notarise, staple), unless --zip names a zip it already made. The zipped app must be a notarised
+#      build of this clean HEAD (TRSourceCommit) with the source's bundle id, version, build and SUPublicEDKey.
 #   2. sign_update the zip with the EdDSA key in the login keychain (account $TALKREAD_SPARKLE_ACCOUNT, default
 #      talkandread), then check that signature against the SUPublicEDKey inside the zipped app
-#   3. write the appcast item into <website>/public/apps/talkandread/appcast.xml (created if missing; an item for the
-#      same build is replaced). The notes are Markdown, shown by Sparkle before the user agrees to install.
+#   3. write the appcast item into <website>/public/apps/talkandread/appcast.xml (created if missing). The build number
+#      must be greater than every build already in it (equal only with --resume, for the same version). The notes
+#      are Markdown, shown by Sparkle before the user agrees to install.
 #   4. print the lib/apps.json release object for the website session
-#   5. create the GitHub release v<version> on juniornkanabassi/talkandread-releases, asset Talk_and_Read_<version>.zip
+#   5. create the GitHub release v<version> on juniornkanabassi/talkandread-releases with Talk_and_Read_<version>.zip,
+#      then download the asset back and compare its sha256
 #   6. tag this repository v<version> (pushing the tag is left to the lead)
-# --dry-run: everything except the upload and the tag; the build and the appcast go to /private/tmp/talkread-release-dry.
+# --resume: finish a release a failed run left behind: an existing release and tag are reused only when they match
+#   (its asset, if present, must be this zip byte for byte; the tag must be on HEAD); a missing asset is uploaded.
+# --dry-run: everything except the upload and the tag, into --out or a new /private/tmp/talkread-release-dry.XXXXXX;
+#   identity mismatches are listed as "a real run would refuse" instead of stopping.
 # Every step stops the script on failure. It never commits to or pushes the website: the website session does that.
 set -euo pipefail
 ROOT="${0:A:h}"
@@ -18,53 +24,77 @@ REPO=juniornkanabassi/talkandread-releases
 ACCOUNT="${TALKREAD_SPARKLE_ACCOUNT:-talkandread}"
 BUILD_ROOT="${TALKREAD_BUILD_ROOT:-$HOME/Library/Caches/TalkRead-release-cache}"
 SIGN_UPDATE="$BUILD_ROOT/artifacts/sparkle/Sparkle/bin/sign_update"
-DRY=0 WEBSITE="" NOTES="" ZIP=""
+DRY=0 RESUME=0 WEBSITE="" NOTES="" ZIP="" OUT=""
 die() { print -u2 "release.sh: $*"; exit 1; }
 while (( $# )); do case $1 in
   --dry-run) DRY=1; shift;;
+  --resume) RESUME=1; shift;;
   --website) WEBSITE=${2:-}; shift 2;;
   --notes) NOTES=${2:-}; shift 2;;
   --zip) ZIP=${2:-}; shift 2;;
-  -h|--help) sed -n 2,16p "$0"; exit 0;;
+  --out) OUT=${2:-}; shift 2;;
+  -h|--help) sed -n 2,22p "$0"; exit 0;;
   *) die "unknown argument $1 (see --help)";; esac; done
 [[ -n $WEBSITE && -f $WEBSITE/lib/apps.json ]] || die "--website must be the website checkout (no lib/apps.json in '$WEBSITE')"
 [[ -n $NOTES && -s $NOTES ]] || die "--notes must name a non-empty Markdown file"
 ! grep -q ']]>' "$NOTES" || die "the notes may not contain ]]>"
 [[ -x $SIGN_UPDATE ]] || die "no sign_update at $SIGN_UPDATE (resolve the packages into $BUILD_ROOT first)"
-SRC_VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$ROOT/Resources/Info.plist")
-DRY_ROOT=/private/tmp/talkread-release-dry
+(( DRY )) || [[ -z $OUT ]] || die "--out is for --dry-run only"
+src() { /usr/libexec/PlistBuddy -c "Print $1" "$ROOT/Resources/Info.plist"; }
+SRC_VERSION=$(src CFBundleShortVersionString)
+HEAD=$(git -C "$ROOT" rev-parse HEAD)
+CLEAN=$([[ -z $(git -C "$ROOT" status --porcelain) ]] && print 1 || print 0)
 step() { print "\n== $*"; }
 
+EXISTS=0 TAGGED=0
 if (( ! DRY )); then
-  [[ -z $(git -C "$ROOT" status --porcelain) ]] || die "the source has uncommitted changes; commit them first"
-  ! git -C "$ROOT" rev-parse -q --verify "refs/tags/v$SRC_VERSION" >/dev/null || die "tag v$SRC_VERSION already exists"
+  (( CLEAN )) || die "the source has uncommitted changes; commit them first"
+  if git -C "$ROOT" rev-parse -q --verify "refs/tags/v$SRC_VERSION" >/dev/null; then
+    (( RESUME )) && [[ $(git -C "$ROOT" rev-parse "v$SRC_VERSION^{commit}") == $HEAD ]] \
+      || die "tag v$SRC_VERSION already exists$( (( RESUME )) && print " on another commit" || print "; --resume finishes that release")"
+    TAGGED=1
+  fi
   gh auth status >/dev/null 2>&1 || die "gh is not signed in"
-  ! gh release view "v$SRC_VERSION" --repo $REPO >/dev/null 2>&1 || die "release v$SRC_VERSION already exists on $REPO"
+  if gh release view "v$SRC_VERSION" --repo $REPO >/dev/null 2>&1; then
+    (( RESUME )) || die "release v$SRC_VERSION already exists on $REPO; --resume finishes it if it holds this zip"
+    EXISTS=1
+  fi
+else
+  [[ -n $OUT ]] || OUT=$(mktemp -d /private/tmp/talkread-release-dry.XXXXXX)
+  mkdir -p "$OUT"
 fi
 WORK=$(mktemp -d /private/tmp/talkread-release.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 
 step "1. Build"
 if [[ -z $ZIP ]]; then
-  if (( DRY )); then rm -rf "$DRY_ROOT"; mkdir -p "$DRY_ROOT"; export TALKREAD_OUTPUT_ROOT="$DRY_ROOT/Outputs"; fi
+  (( ! DRY )) || export TALKREAD_OUTPUT_ROOT="$OUT/Outputs"
   zsh "$ROOT/build.sh" || die "build.sh failed (if its zip already exists, pass that zip with --zip)"
   ZIP="${TALKREAD_OUTPUT_ROOT:-$ROOT/../Outputs}/Talk & Read $SRC_VERSION.zip"
 fi
 [[ -f $ZIP ]] || die "no zip at $ZIP"
 /usr/bin/ditto -x -k "$ZIP" "$WORK/app" || die "could not unpack $ZIP"
 APP="$WORK/app/Talk & Read.app"
-plist() { /usr/libexec/PlistBuddy -c "Print $1" "$APP/Contents/Info.plist"; }
+plist() { /usr/libexec/PlistBuddy -c "Print $1" "$APP/Contents/Info.plist" 2>/dev/null || true; }
 VERSION=$(plist CFBundleShortVersionString)
 BUILD=$(plist CFBundleVersion)
-KEY=$(plist SUPublicEDKey 2>/dev/null || true)
+KEY=$(plist SUPublicEDKey)
+COMMIT=$(plist TRSourceCommit)
 /usr/bin/codesign --verify --deep --strict "$APP" || die "the zipped app does not verify"
 if /usr/bin/xcrun stapler validate -q "$APP" 2>/dev/null; then SIGNING=notarised; else SIGNING=not-notarised; fi
-print "Talk & Read $VERSION (build $BUILD), $SIGNING: $ZIP"
-if (( ! DRY )); then
-  [[ $VERSION == $SRC_VERSION ]] || die "the zip is $VERSION but the source is $SRC_VERSION"
-  [[ $SIGNING == notarised ]] || die "the zipped app is not notarised and stapled"
+print "Talk & Read $VERSION (build $BUILD, commit ${COMMIT:-unknown}), $SIGNING: $ZIP"
+[[ -n $KEY && $KEY != REPLACE_WITH_* ]] || die "SUPublicEDKey in the app is not set"
+problems=()
+[[ $COMMIT == $HEAD ]] || problems+=("the zip was built from '${COMMIT:-an unknown commit}', not HEAD $HEAD")
+(( CLEAN )) || problems+=("the source has uncommitted changes")
+for k in CFBundleIdentifier CFBundleShortVersionString CFBundleVersion SUPublicEDKey; do
+  [[ $(plist $k) == $(src $k) ]] || problems+=("$k is '$(plist $k)' in the zip but '$(src $k)' in the source")
+done
+[[ $SIGNING == notarised ]] || problems+=("the zipped app is not notarised and stapled")
+if (( ${#problems} )); then
+  (( DRY )) || die "refusing: ${(j:; :)problems}"
+  for p in $problems; do print "dry run: a real run would refuse: $p"; done
 fi
-[[ $KEY != REPLACE_WITH_* && -n $KEY ]] || die "SUPublicEDKey in the app is not set"
 
 step "2. Sign the zip (EdDSA, keychain account $ACCOUNT)"
 SIG=$("$SIGN_UPDATE" --account "$ACCOUNT" -p "$ZIP") || die "sign_update failed"
@@ -86,26 +116,15 @@ step "3. Appcast"
 URL="https://github.com/$REPO/releases/download/v$VERSION/Talk_and_Read_$VERSION.zip"
 APPCAST="$WEBSITE/public/apps/talkandread/appcast.xml"
 if (( DRY )); then
-  DRY_APPCAST="$DRY_ROOT/appcast.xml"; mkdir -p "$DRY_ROOT"
-  if [[ -f $APPCAST ]]; then cp "$APPCAST" "$DRY_APPCAST"; else rm -f "$DRY_APPCAST"; fi
-  APPCAST=$DRY_APPCAST
+  if [[ -f $APPCAST ]]; then cp "$APPCAST" "$OUT/appcast.xml"; else rm -f "$OUT/appcast.xml"; fi
+  APPCAST="$OUT/appcast.xml"
 fi
 mkdir -p "${APPCAST:h}"
-/usr/bin/python3 -I - "$APPCAST" "$VERSION" "$BUILD" "$URL" "$BYTES" "$SIG" "$NOTES" <<'PY' || die "could not write the appcast"
+/usr/bin/python3 -I - "$APPCAST" "$VERSION" "$BUILD" "$URL" "$BYTES" "$SIG" "$NOTES" "$RESUME" <<'PY' || die "could not write the appcast"
 import email.utils, html, os, re, sys, xml.dom.minidom
-path, version, build, url, length, sig, notes = sys.argv[1:]
+path, version, build, url, length, sig, notes, resume = sys.argv[1:]
 notes = open(notes, encoding="utf-8").read().strip()
 e = lambda s: html.escape(s, quote=True)
-item = f"""    <item>
-      <title>Version {e(version)}</title>
-      <pubDate>{email.utils.formatdate(usegmt=True)}</pubDate>
-      <sparkle:version>{e(build)}</sparkle:version>
-      <sparkle:shortVersionString>{e(version)}</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <description sparkle:format="markdown"><![CDATA[{notes}]]></description>
-      <enclosure url="{e(url)}" length="{e(length)}" type="application/octet-stream" sparkle:edSignature="{e(sig)}"/>
-    </item>
-"""
 if os.path.exists(path):
     feed = open(path, encoding="utf-8").read()
 else:
@@ -119,8 +138,30 @@ else:
   </channel>
 </rss>
 """
-same = re.compile(r"[ \t]*<item>(?:(?!</item>).)*<sparkle:version>" + re.escape(e(build)) + r"</sparkle:version>.*?</item>\n?", re.S)
-feed, replaced = same.subn("", feed)
+# Installed copies compare build numbers, so every release needs a higher one; only a resumed release may repeat its own.
+if not build.isdigit():
+    sys.exit(f"CFBundleVersion '{build}' is not a whole number")
+prior = re.findall(r"<sparkle:version>\s*([^<]*?)\s*</sparkle:version>", feed)
+if any(not p.isdigit() for p in prior):
+    sys.exit(f"the appcast holds a build number that is not a whole number: {prior}")
+top = max(map(int, prior), default=0)
+same = re.compile(r"[ \t]*<item>(?:(?!</item>).)*<sparkle:version>\s*" + build + r"\s*</sparkle:version>.*?</item>\n?", re.S)
+match = same.search(feed)
+resumed = int(build) == top and resume == "1" and match and f"<sparkle:shortVersionString>{e(version)}</sparkle:shortVersionString>" in match.group(0)
+if int(build) <= top and not resumed:
+    sys.exit(f"build {build} must be greater than every build in the appcast (highest {top}); equal only with --resume for the same version")
+if resumed:
+    feed = same.sub("", feed)
+item = f"""    <item>
+      <title>Version {e(version)}</title>
+      <pubDate>{email.utils.formatdate(usegmt=True)}</pubDate>
+      <sparkle:version>{e(build)}</sparkle:version>
+      <sparkle:shortVersionString>{e(version)}</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description sparkle:format="markdown"><![CDATA[{notes}]]></description>
+      <enclosure url="{e(url)}" length="{e(length)}" type="application/octet-stream" sparkle:edSignature="{e(sig)}"/>
+    </item>
+"""
 at = feed.find("<item>")
 at = feed.rfind("\n", 0, at if at >= 0 else feed.index("</channel>")) + 1   # the start of that line
 feed = feed[:at] + item + feed[at:]
@@ -128,7 +169,7 @@ xml.dom.minidom.parseString(feed.encode("utf-8"))   # refuses to write a malform
 tmp = path + ".tmp"
 open(tmp, "w", encoding="utf-8").write(feed)
 os.replace(tmp, path)
-print(f"{'Replaced' if replaced else 'Added'} the item for {version} (build {build}) in {path}")
+print(f"{'Replaced' if resumed else 'Added'} the item for {version} (build {build}) in {path}")
 PY
 
 step "4. Release object for lib/apps.json (newest first in the app's releases)"
@@ -151,18 +192,29 @@ ASSET="$WORK/Talk_and_Read_$VERSION.zip"
 /bin/cp "$ZIP" "$ASSET"
 step "5. GitHub release v$VERSION on $REPO"
 if (( DRY )); then
-  print "dry run, not run: gh release create v$VERSION '$ASSET' --repo $REPO --title 'Talk & Read $VERSION' --notes-file '$NOTES'"
+  print "dry run, not run: gh release create v$VERSION '${ASSET:t}' --repo $REPO --title 'Talk & Read $VERSION' --notes-file '$NOTES'"
 else
-  gh release create "v$VERSION" "$ASSET" --repo $REPO --title "Talk & Read $VERSION" --notes-file "$NOTES" || die "gh release create failed"
-  UPLOADED=$(gh release view "v$VERSION" --repo $REPO --json assets --jq ".assets[] | select(.name == \"${ASSET:t}\") | .size")
-  [[ $UPLOADED == $BYTES ]] || die "the uploaded asset is '${UPLOADED:-missing}' bytes, not $BYTES"
-  print "Uploaded ${ASSET:t} ($BYTES bytes): $URL"
+  if (( EXISTS )); then
+    if gh release view "v$VERSION" --repo $REPO --json assets --jq '.assets[].name' | grep -qx "${ASSET:t}"; then
+      print "v$VERSION already has ${ASSET:t}; checking it is this zip"
+    else
+      gh release upload "v$VERSION" "$ASSET" --repo $REPO || die "gh release upload failed"
+    fi
+  else
+    gh release create "v$VERSION" "$ASSET" --repo $REPO --title "Talk & Read $VERSION" --notes-file "$NOTES" || die "gh release create failed (rerun with --resume)"
+  fi
+  gh release download "v$VERSION" --repo $REPO --pattern "${ASSET:t}" --dir "$WORK/remote" || die "could not download ${ASSET:t} back (rerun with --resume)"
+  [[ $(shasum -a 256 "$WORK/remote/${ASSET:t}" | cut -d' ' -f1) == $SHA ]] \
+    || die "v$VERSION on $REPO holds a different ${ASSET:t} (sha256 differs): refusing a conflicting release"
+  print "Published and verified ${ASSET:t} ($BYTES bytes, sha256 $SHA): $URL"
 fi
 
 step "6. Tag v$VERSION"
 if (( DRY )); then
   print "dry run, not run: git tag -a v$VERSION -m 'Talk & Read $VERSION'"
   print "\nDry run done: appcast $APPCAST"
+elif (( TAGGED )); then
+  print "v$VERSION is already on HEAD. The website session commits $APPCAST and the release object above."
 else
   git -C "$ROOT" tag -a "v$VERSION" -m "Talk & Read $VERSION" || die "git tag failed"
   print "Tagged v$VERSION (not pushed). The website session commits $APPCAST and the release object above."
