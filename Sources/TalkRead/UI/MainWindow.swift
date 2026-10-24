@@ -167,10 +167,7 @@ struct HomePane: View {
                 if let issue = data.setupIssue { SetupBanner(text: issue) { router.openOnboarding() } }
                 editor
                 hint
-                HStack(alignment: .top, spacing: 18) {
-                    recentReads
-                    recentDictations
-                }
+                HomeHistory(model: model, data: data)
             }
             .padding(28)
             .frame(maxWidth: 880)
@@ -219,6 +216,7 @@ struct HomePane: View {
         let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Pasted text"
         let item = model.importText(text, title: String(firstLine.prefix(60)))
         model.read(item, fromToken: nil)
+        model.recordOwnRead(text)
         router.open(item)
     }
 
@@ -233,65 +231,6 @@ struct HomePane: View {
             KeyCaps(display: model.settings.readShortcut.display)
         }
         .card()
-    }
-
-    private var recentReads: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Recent reads").font(.headline)
-            VStack(spacing: 0) {
-                if data.recentReads.isEmpty { EmptyNote(text: "Nothing read yet.") }
-                let reads = Array(data.recentReads.prefix(6))
-                ForEach(reads) { entry in
-                    Button {
-                        try? model.speak(entry.text, title: nil, caller: "user")
-                    } label: {
-                        HStack(spacing: 10) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(Self.preview(entry.text)).lineLimit(1)
-                                Text(Self.caption(entry.app, entry.date)).font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 8)
-                            Image(systemName: "play.circle").font(.title3).foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 14).padding(.vertical, 9)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Read again: \(Self.preview(entry.text))")
-                    if entry.id != reads.last?.id { Divider().padding(.leading, 14) }
-                }
-            }
-            .card(padding: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    private var recentDictations: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Recent dictations").font(.headline)
-            VStack(spacing: 0) {
-                if data.dictations.isEmpty { EmptyNote(text: "Nothing dictated yet. \(holdHint(model.settings)).") }
-                let entries = Array(data.dictations.prefix(6))
-                ForEach(entries) { entry in
-                    HStack(alignment: .top, spacing: 10) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(entry.text).lineLimit(2)
-                            Text(Self.caption(entry.app, entry.date)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 8)
-                        CopyButton(text: entry.text)
-                    }
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    if entry.id != entries.last?.id { Divider().padding(.leading, 14) }
-                }
-            }
-            .card(padding: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    static func preview(_ text: String) -> String {
-        text.split(whereSeparator: \.isNewline).first.map { String($0.prefix(140)) } ?? ""
     }
 
     static func caption(_ app: String?, _ date: Date) -> String {

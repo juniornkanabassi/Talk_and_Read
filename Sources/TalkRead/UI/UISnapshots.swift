@@ -70,6 +70,23 @@ import TalkReadCore
         for tab in SettingsContent.Tab.allCases {
             shots.append(("settings-\(tab.rawValue)", CGSize(width: 760, height: 560), true, AnyView(SettingsContent(model: model, data: data, tab: tab))))
         }
+        // D8: the Home history. The whole page, then the section alone in each state (hover, filters, search, paging, empty).
+        let history = historySample(base: data)
+        shots.append(("main-home-history", CGSize(width: 980, height: 1400), true, AnyView(MainWindowContent(model: model, data: history, router: router(.home)))))
+        func section(_ d: ViewData, _ height: CGFloat, filter: HistoryFilter = .all, search: String = "", hovered: UUID? = nil, page: Int = History.pageSize) -> AnyView {
+            AnyView(HomeHistory(model: model, data: d, filter: filter, search: search, hoveredID: hovered, pageSize: page)
+                .padding(28).frame(width: 880, height: height, alignment: .topLeading).background(Theme.surface))
+        }
+        shots += [
+            ("home-history", CGSize(width: 880, height: 1160), false, section(history, 1160, hovered: history.recentReads[1].id)),
+            ("home-history-read", CGSize(width: 880, height: 700), false, section(history, 700, filter: .read)),
+            ("home-history-dictated", CGSize(width: 880, height: 700), false, section(history, 700, filter: .dictated)),
+            ("home-history-search", CGSize(width: 880, height: 420), false, section(history, 420, search: "ferry")),
+            ("home-history-search-app", CGSize(width: 880, height: 420), false, section(history, 420, search: "NOTES")),
+            ("home-history-no-match", CGSize(width: 880, height: 240), false, section(history, 240, search: "zzzz")),
+            ("home-history-paged", CGSize(width: 880, height: 440), false, section(history, 440, page: 3)),
+            ("home-history-empty", CGSize(width: 880, height: 240), false, section(empty, 240)),
+        ]
         for step in 0..<4 {
             shots.append(("onboarding-\(step + 1)", CGSize(width: 600, height: 540), true,
                           AnyView(OnboardingContent(model: model, data: data, onFinish: {}, step: step))))
@@ -367,6 +384,39 @@ import TalkReadCore
         [ModelRow(title: "Qwen3-TTS 1.7B", megabytes: 3_100, state: installed ? .ready : .missing(megabytes: 3_100)),
          ModelRow(title: "Parakeet v3 word timing", megabytes: 476, state: installed ? .ready : .missing(megabytes: 476)),
          ModelRow(title: "Kokoro French voice", megabytes: 100, state: .ready)]
+    }
+
+    /// Reads and dictations over three days with real bundle ids (Notes, Safari, Chrome, ChatGPT, Claude), an old entry that
+    /// has a name only (Preview), one app that is not installed and one read inside Talk & Read.
+    static func historySample(base: ViewData) -> ViewData {
+        let cal = Calendar.current
+        func at(_ daysAgo: Int, _ hour: Int, _ minute: Int) -> Date {
+            cal.date(byAdding: .minute, value: hour * 60 + minute, to: cal.date(byAdding: .day, value: -daysAgo, to: cal.startOfDay(for: Date()))!)!
+        }
+        func read(_ d: Int, _ h: Int, _ m: Int, _ app: String?, _ id: String?, _ text: String) -> ReadEntry {
+            ReadEntry(id: UUID(), date: at(d, h, m), app: app, text: text, bundleID: id)
+        }
+        func said(_ d: Int, _ h: Int, _ m: Int, _ app: String?, _ id: String?, _ text: String) -> DictationEntry {
+            DictationEntry(id: UUID(), date: at(d, h, m), text: text, app: app, bundleID: id)
+        }
+        let longRead = "The harbour authority has confirmed that the summer ferry timetable will run from the first of May to the end of September, with an extra late sailing on Fridays and Saturdays. Fares are unchanged, but the council has agreed to review concessions for residents after a long debate about the gulls, the car park and the cost of repainting the lighthouse. Visitors are asked to arrive twenty minutes before departure."
+        var data = base
+        data.recentReads = [
+            read(0, 14, 32, "Safari", "com.apple.Safari", "The council agreed the summer ferry timetable after a long debate about the gulls."),
+            read(0, 9, 48, "Google Chrome", "com.google.Chrome", longRead),
+            read(1, 16, 2, "Claude", "com.anthropic.claudefordesktop", "Here is the plan. First, split the work into three bounded tasks, then review each diff before anything is merged."),
+            read(1, 12, 15, nil, nil, "Pasted into Talk & Read to listen to while I made lunch."),
+            read(2, 17, 40, "Preview", nil, "Section 4: the duty of care owed by a harbour authority to visitors."),
+            read(2, 8, 5, "Mail", "com.apple.mail", "Hi Junior, the draft is attached. Could you read it before Thursday?"),
+        ]
+        data.dictations = [
+            said(0, 11, 5, "Notes", "com.apple.Notes", "Remember to book the ferry for the 14th, the early one at 6:10, and ask about the bike space."),
+            said(1, 18, 20, "ChatGPT", "com.openai.chat", "Can you summarise the difference between a licence and a lease in two short paragraphs?"),
+            said(1, 9, 30, "Obscure Editor", "com.example.not-installed", "Rename the variable, then run the tests again."),
+            said(2, 13, 10, "Messages", nil, "Can we move the call to 3 pm?"),
+            said(2, 10, 0, nil, nil, "Dictated with no app known."),
+        ]
+        return data
     }
 
     static func sample() -> ViewData {
