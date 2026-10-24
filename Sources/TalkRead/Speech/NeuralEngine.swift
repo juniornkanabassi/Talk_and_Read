@@ -87,24 +87,16 @@ final class NeuralEngine: SpeechEngine {
         if groups.count != words.count {
             // The phonemiser is per word, so phonemising each word alone tells how many groups it produced
             // (an unlisted hyphenated compound gives one group per part, an unpronounceable token gives none).
-            // Each lookup re-runs FluidAudio's text normaliser (10-20 ms), so a plain word counts one without it and the
-            // rest are cached; only if that does not add up is every word looked up (efficiency fix 2, 24 Oct).
+            // Each lookup re-runs FluidAudio's text normaliser (10-20 ms), so lookups are cached per engine.
             let language = Self.isFrench(voice) ? "fr" : "en"
-            func lookup(_ w: String) async -> Int {
+            counts = await Self.counts(words, total: groups.count) { w in
                 let key = language + " " + w
-                if let n = groupCounts.withLock({ $0[key] }) { return n }
+                if let n = countCache.withLock({ $0[key] }) { return n }
                 let ipa = (try? await manager.phonemes(for: w)) ?? ""
                 let n = ipa.split(separator: " ").filter { $0.contains(where: \.isLetter) }.count
-                groupCounts.withLock { $0[key] = n }
+                countCache.withLock { $0[key] = n }
                 return n
             }
-            var c: [Int] = []
-            for w in words { c.append(Self.isPlainWord(w) ? 1 : await lookup(w)) }
-            if c.reduce(0, +) != groups.count {
-                c = []
-                for w in words { c.append(await lookup(w)) }
-            }
-            counts = c
         }
         let duration = Double(result.samples.count) / rate
         return SynthChunk(samples: result.samples, sampleRate: rate,
@@ -112,19 +104,33 @@ final class NeuralEngine: SpeechEngine {
     }
 
     func unload() {
-        groupCounts.withLock { $0 = [:] }
+        countCache.withLock { $0 = [:] }
         Task { await loader.drop() }
         Task { await frenchLoader.drop() }
     }
 
     /// Phoneme groups per word ("en word" / "fr word"), from `synthesize`'s recount; cleared by `unload()`.
-    private let groupCounts = OSAllocatedUnfairLock<[String: Int]>(initialState: [:])
+    private let countCache = OSAllocatedUnfairLock<[String: Int]>(initialState: [:])
 
     // MARK: - Pure helpers (checked by `--selftest-tts`)
 
-    /// Letters only (inner apostrophes allowed) and not an all-capitals initialism: phonemised as one group.
+    /// Phoneme groups per word when Kokoro's groups and words disagree (efficiency fix 2): a plain word counts one
+    /// without a lookup; if that does not add up to `total`, every word is looked up. Only words that cannot carry a
+    /// wrong guess are plain (Sol 0.5.0 #1: a matching sum of wrong guesses would misplace words).
+    static func counts(_ words: [String], total: Int, lookup: (String) async -> Int) async -> [Int] {
+        var c: [Int] = []
+        for w in words { c.append(isPlainWord(w) ? 1 : await lookup(w)) }
+        guard c.reduce(0, +) != total else { return c }
+        c = []
+        for w in words { c.append(await lookup(w)) }
+        return c
+    }
+
+    /// Letters and ASCII apostrophes only, no modifier letter (U+02BC "ʼ" and kin are folded away by the frontend) and
+    /// at most one capital (so "NHS", "FBI's" and "CDs", which are spelt letter by letter, are looked up).
     static func isPlainWord(_ w: String) -> Bool {
-        w.allSatisfy { $0.isLetter || $0 == "'" } && !(w.count > 1 && w.allSatisfy { !$0.isLetter || $0.isUppercase })
+        w.allSatisfy { $0 == "'" || $0.isLetter && !$0.unicodeScalars.contains { $0.properties.generalCategory == .modifierLetter } }
+            && w.filter(\.isUppercase).count <= 1
     }
 
     /// Word spans in seconds: runs of ids between boundaries (space, BOS/EOS), trimmed of punctuation.

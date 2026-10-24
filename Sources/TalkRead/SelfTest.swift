@@ -1043,9 +1043,18 @@ enum SelfTest {
         let q = NeuralEngine.pair(["a", "b"], [(0, 1), (1, 2), (2, 3), (3, 4)], counts: nil, offset: -0.5, duration: 4)
         check(q.map(\.text) == ["a", "b"] && q[0].start == 0 && q[1].end == 3.5, "pair proportional \(q)")
         // Efficiency fix 2: only these skip the per-word phoneme lookup.
-        let plain = ["harbour", "It's", "I", "A", "Okafor", "l'homme", "été"], looked = ["NHS", "BBC", "forty-two", "2027", "x2", "DON'T"]
+        let plain = ["harbour", "It's", "I", "A", "Okafor", "l'homme", "été"]
+        let looked = ["NHS", "BBC", "forty-two", "2027", "x2", "DON'T", "FBI's", "CDs", "ʼ", "ʻokina", "ʹ"]
         check(plain.allSatisfy(NeuralEngine.isPlainWord) && !looked.contains(where: NeuralEngine.isPlainWord),
               "plain words \(plain.filter { !NeuralEngine.isPlainWord($0) }), looked up \(looked.filter(NeuralEngine.isPlainWord))")
+        // Sol 0.5.0 #1: the whole per-word vector must be right, not just its sum. "FBI's ʼ ʼ" guessed as 1 + 1 + 1 has the
+        // same total as the true 3 + 0 + 0, which would hand two words' time to the wrong words.
+        let truth = ["FBI's": 3, "ʼ": 0, "hello-world": 2, "harbour": 1, "It's": 1, "hello": 2, "world": 1]
+        var asked: Set<String> = []
+        let cancelling = await NeuralEngine.counts(["FBI's", "ʼ", "ʼ", "hello-world", "harbour", "It's"], total: 7) { asked.insert($0); return truth[$0]! }
+        let mismatch = await NeuralEngine.counts(["hello", "world"], total: 3) { truth[$0]! }
+        check(cancelling == [3, 0, 0, 2, 1, 1] && asked == ["FBI's", "ʼ", "hello-world"] && mismatch == [2, 1],
+              "count vectors \(cancelling) (asked \(asked.sorted())), \(mismatch)")
         // Efficiency fix 3: 30 Hz ticks for 6 s with a new word every 1/6.5 s (2.5x): AX is asked for every new word and
         // at 10 Hz in between, never on every tick.
         var shown: Int?, askedAt = -1.0, asks = 0, newWords = 0
