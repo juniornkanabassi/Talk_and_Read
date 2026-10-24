@@ -25,6 +25,9 @@ import Vision
     private var generation = 0
     private var discarded = 0
     private var missingSince: TimeInterval?
+    /// Seconds a spoken word may stay missing before the next capture: 1, 2, 4, then 8 (a read running below the visible
+    /// text otherwise re-runs Vision every second, about 0.9 s of CPU each); back to 1 on a scroll, resize or new window.
+    private var missingWait = 1.0
     private var lastAsked = 0
     /// What the last recognition found, for logs and the self-test.
     private(set) var summary = "no capture yet"
@@ -49,19 +52,20 @@ import Vision
     }
 
     /// Cocoa screen rect for token `index`, or nil. Boxes are kept relative to the window and placed on its current
-    /// frame, so a window move needs no new capture; a resize, a scroll (debounced 150 ms) or a word missing for 1 s does.
+    /// frame, so a window move needs no new capture; a resize, a scroll (debounced 150 ms) or a word missing for 1 s does
+    /// (then 2, 4 and 8 s while it stays missing).
     func rect(forTokenIndex index: Int) -> CGRect? {
         lastAsked = index
         guard let frame = currentWindowFrame() else {
             isPending = false   // no window to capture: nothing to wait for, so the AX paths keep their retries
             return nil
         }
-        if let size = windowSize, size != frame.size { (generation, map, windowSize, stale) = (generation + 1, [:], nil, true) }   // re-laid out
+        if let size = windowSize, size != frame.size { (generation, map, windowSize, stale, missingWait) = (generation + 1, [:], nil, true, 1) }   // re-laid out
         refreshIfNeeded()
         guard let w = map[index] else {
             let now = Date().timeIntervalSince1970
             if let since = missingSince {
-                if now - since > 1 { stale = true; missingSince = now }
+                if now - since > missingWait { stale = true; missingSince = now; missingWait = min(missingWait * 2, 8) }
             } else {
                 missingSince = now
             }
@@ -76,6 +80,7 @@ import Vision
     /// A scroll moved the text: hide now, capture again once scrolling has paused for 150 ms.
     func invalidate() {
         generation += 1
+        missingWait = 1
         let current = generation
         map = [:]
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
@@ -133,6 +138,7 @@ import Vision
     /// The window's current frame in Cocoa coordinates (one CGWindowList lookup, no AX round trip).
     private func currentWindowFrame() -> CGRect? {
         guard let id = windowID ?? findWindowID() else { return nil }
+        if id != windowID { missingWait = 1 }   // a new window
         windowID = id
         guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], id) as? [[String: Any]],
               let dict = list.first?[kCGWindowBounds as String], let rect = CGRect(dictionaryRepresentation: dict as! CFDictionary)
