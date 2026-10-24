@@ -1,6 +1,7 @@
 // `TalkRead --selftest-control [clip.wav]`: drives the control handlers through the real socket and the real CLI.
 // Headless (Junior, 21 Oct): no status item, windows or hotkeys, and reads use a silent engine, so nothing is heard.
 import AppKit
+import ServiceManagement
 import TalkReadCore
 
 /// Speaks silence, `secondsPerWord` per word, so a read stays live long enough to test ownership.
@@ -165,6 +166,25 @@ enum ControlSelfTest {
         let found = target != nil && target?.processIdentifier != getpid()
         print("\(found ? "PASS" : "FAIL")  insert-again target: another app, found in \(Int(Date().timeIntervalSince(t17) * 1000)) ms")
         results.append(found)
+
+        // Sol 0.5.0 #5: the login item plan (pure: nothing is registered here). A registration awaiting approval counts as
+        // registered: off drops it, on at this path leaves it alone, from the old path it is moved; never registered twice.
+        typealias Step = AppDelegate.LoginItemStep
+        let new = "/Applications/JuniorOS Apps/Talk & Read.app", old = "/Applications/JuniorOS Apps/Talk and Read.app"
+        let plans: [(String, Bool, SMAppService.Status, String?, [Step])] = [
+            ("off, awaiting approval", false, .requiresApproval, new, [.unregister]),
+            ("off, enabled", false, .enabled, new, [.unregister]),
+            ("off, not registered", false, .notRegistered, nil, []),
+            ("on, awaiting approval here", true, .requiresApproval, new, []),
+            ("on, enabled here", true, .enabled, new, []),
+            ("on, awaiting approval from the old path", true, .requiresApproval, old, [.unregister, .register, .record]),
+            ("on, enabled from the old path", true, .enabled, old, [.unregister, .register, .record]),
+            ("on, enabled, path unknown", true, .enabled, nil, [.unregister, .register, .record]),
+            ("on, not registered", true, .notRegistered, new, [.register, .record]),
+        ]
+        let wrong = plans.filter { AppDelegate.loginItemSteps(on: $0.1, status: $0.2, recordedPath: $0.3, path: new) != $0.4 }.map(\.0)
+        results.append(wrong.isEmpty)
+        print("\(wrong.isEmpty ? "PASS" : "FAIL")  login item plans: \(plans.count) cases\(wrong.isEmpty ? "" : ", wrong: \(wrong)")")
 
         // E3: with nothing reading or dictating, the model, engines and control server must sit still.
         let cpu0 = cpuSeconds(), t0 = Date()
