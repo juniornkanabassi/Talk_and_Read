@@ -17,7 +17,12 @@ public enum Microphone {
     public static func resolve(_ uid: String?, in devices: [InputDevice]) -> (device: InputDevice?, notice: String?) {
         guard let uid else { return (nil, nil) }
         if let device = devices.first(where: { $0.uid == uid }) { return (device, nil) }
-        return (nil, "Mic not found, using \(devices.first(where: \.isDefault)?.name ?? "the system default")")
+        return (nil, fallbackNotice(devices))
+    }
+
+    /// "Mic not found, using MacBook Pro Microphone": the saved input is gone, the system default records instead.
+    public static func fallbackNotice(_ devices: [InputDevice]) -> String {
+        "Mic not found, using \(devices.first(where: \.isDefault)?.name ?? "the system default")"
     }
 
     /// "System default (MacBook Pro Microphone)", for the pickers.

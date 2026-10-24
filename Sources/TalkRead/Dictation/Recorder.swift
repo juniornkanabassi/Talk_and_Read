@@ -15,6 +15,9 @@ import TalkReadCore
     func start() async throws
     /// Stops the input and returns everything recorded since `start`.
     func stop() -> [Float]
+    /// Set by `start()` when the chosen input could not be opened (unplugged after it was resolved) and the system default
+    /// records instead: the notice the pill shows. nil otherwise.
+    var fallbackNotice: String? { get }
 }
 
 enum RecorderError: LocalizedError {
@@ -67,6 +70,13 @@ final class Recorder: DictationAudio {
     /// CoreAudio UID of the input to record from; nil follows the system default. Read at `start` only, so changing it
     /// never touches a recording in progress.
     var microphoneUID: String?
+    private(set) var fallbackNotice: String?
+    /// Selects `uid` as the engine's input; false when it is gone or will not open. Replaceable so the self-test can inject
+    /// that failure without touching a device.
+    var selectDevice: (String, AVAudioEngine) -> Bool = { uid, engine in
+        guard let device = Microphone.deviceID(uid: uid) else { return false }
+        return (try? engine.inputNode.auAudioUnit.setDeviceID(device)) != nil
+    }
     private var engine: AVAudioEngine?
     private let lock = NSLock()                                 // guards the four below (the tap runs on the audio thread)
     private var samples: [Float] = []
@@ -81,13 +91,9 @@ final class Recorder: DictationAudio {
         _ = stop()
         let id = lock.withLock { session += 1; first = nil; return session }
         let onBuffer = onBuffer, onLevel = onLevel                // this session's consumers
-        let engine = AVAudioEngine()
+        let (engine, notice) = makeEngine()           // before the format is read: it is the chosen device's
+        fallbackNotice = notice
         let input = engine.inputNode
-        if let uid = microphoneUID {                  // before the format is read: it is the chosen device's
-            guard let device = Microphone.deviceID(uid: uid), (try? input.auAudioUnit.setDeviceID(device)) != nil else {
-                throw RecorderError.noDevice
-            }
-        }
         let format = input.outputFormat(forBus: 0)   // the chosen input, else the system default
         guard format.sampleRate > 0, format.channelCount > 0, let converter = StreamConverter(from: format) else {
             throw RecorderError.noDevice
@@ -128,6 +134,15 @@ final class Recorder: DictationAudio {
             if lock.withLock({ session == id }) { _ = stop() }   // its own timeout; after a stop or newer start, not ours
             throw error
         }
+    }
+
+    /// The engine for one recording: on the chosen input, else (it went away after the controller resolved it, or will
+    /// not open) a fresh engine on the system default and the notice; the saved choice is kept for next time (Sol 0.5.0
+    /// #2). Nothing is captured here.
+    func makeEngine() -> (engine: AVAudioEngine, notice: String?) {
+        let engine = AVAudioEngine()
+        guard let uid = microphoneUID, !selectDevice(uid, engine) else { return (engine, nil) }
+        return (AVAudioEngine(), Microphone.fallbackNotice(Microphone.inputs()))
     }
 
     @MainActor func stop() -> [Float] {
