@@ -1042,6 +1042,10 @@ enum SelfTest {
         check(timed.count == 8 && zip(timed, c).allSatisfy { abs($0.start - $1.start) < 1e-9 && abs($0.end - $1.end) < 1e-9 }, "compound timings \(timed)")
         let q = NeuralEngine.pair(["a", "b"], [(0, 1), (1, 2), (2, 3), (3, 4)], counts: nil, offset: -0.5, duration: 4)
         check(q.map(\.text) == ["a", "b"] && q[0].start == 0 && q[1].end == 3.5, "pair proportional \(q)")
+        // Efficiency fix 2: only these skip the per-word phoneme lookup.
+        let plain = ["harbour", "It's", "I", "A", "Okafor", "l'homme", "été"], looked = ["NHS", "BBC", "forty-two", "2027", "x2", "DON'T"]
+        check(plain.allSatisfy(NeuralEngine.isPlainWord) && !looked.contains(where: NeuralEngine.isPlainWord),
+              "plain words \(plain.filter { !NeuralEngine.isPlainWord($0) }), looked up \(looked.filter(NeuralEngine.isPlainWord))")
 
         // An Objective-C exception (AVFAudio's "player did not see an IO cycle") comes back as an error with its reason.
         let caught = TRCatchException { NSException(name: .genericException, reason: "probe reason", userInfo: nil).raise() }
