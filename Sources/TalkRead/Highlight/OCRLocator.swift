@@ -7,6 +7,24 @@ import ScreenCaptureKit
 import TalkReadCore
 import Vision
 
+/// When a spoken word missing from the last recognition asks for a new capture: after 1 s, then 2, 4 and 8 s while it stays
+/// missing (a read running below the visible text otherwise re-ran Vision every second, about 0.9 s of CPU each). A found
+/// word, a scroll, a resize or a new window starts again from 1 s (Sol 0.5.0 #4). Checked by the TTS self-test.
+struct MissingBackoff {
+    private var since: TimeInterval?
+    private(set) var wait = 1.0
+
+    /// Another tick with the word missing: true when a capture is due now.
+    mutating func due(at now: TimeInterval) -> Bool {
+        guard let since else { self.since = now; return false }
+        guard now - since > wait else { return false }
+        (self.since, wait) = (now, min(wait * 2, 8))
+        return true
+    }
+
+    mutating func reset() { (since, wait) = (nil, 1) }
+}
+
 @MainActor final class OCRLocator {
     struct Word { let text: String; let box: CGRect /* normalised, lower-left origin */; let highlighted: Bool }
 
@@ -24,10 +42,7 @@ import Vision
     /// generation, for another window or at another size is discarded when it finishes (Sol #11).
     private var generation = 0
     private var discarded = 0
-    private var missingSince: TimeInterval?
-    /// Seconds a spoken word may stay missing before the next capture: 1, 2, 4, then 8 (a read running below the visible
-    /// text otherwise re-runs Vision every second, about 0.9 s of CPU each); back to 1 on a scroll, resize or new window.
-    private var missingWait = 1.0
+    private var missing = MissingBackoff()
     private var lastAsked = 0
     /// What the last recognition found, for logs and the self-test.
     private(set) var summary = "no capture yet"
@@ -60,18 +75,13 @@ import Vision
             isPending = false   // no window to capture: nothing to wait for, so the AX paths keep their retries
             return nil
         }
-        if let size = windowSize, size != frame.size { (generation, map, windowSize, stale, missingWait) = (generation + 1, [:], nil, true, 1) }   // re-laid out
+        if let size = windowSize, size != frame.size { (generation, map, windowSize, stale) = (generation + 1, [:], nil, true); missing.reset() }   // re-laid out
         refreshIfNeeded()
         guard let w = map[index] else {
-            let now = Date().timeIntervalSince1970
-            if let since = missingSince {
-                if now - since > missingWait { stale = true; missingSince = now; missingWait = min(missingWait * 2, 8) }
-            } else {
-                missingSince = now
-            }
+            if missing.due(at: Date().timeIntervalSince1970) { stale = true }
             return nil
         }
-        missingSince = nil
+        missing.reset()
         let b = words[w].box
         return CGRect(x: frame.minX + b.minX * frame.width, y: frame.minY + b.minY * frame.height,
                       width: b.width * frame.width, height: b.height * frame.height)
@@ -80,7 +90,7 @@ import Vision
     /// A scroll moved the text: hide now, capture again once scrolling has paused for 150 ms.
     func invalidate() {
         generation += 1
-        missingWait = 1
+        missing.reset()
         let current = generation
         map = [:]
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
@@ -138,7 +148,7 @@ import Vision
     /// The window's current frame in Cocoa coordinates (one CGWindowList lookup, no AX round trip).
     private func currentWindowFrame() -> CGRect? {
         guard let id = windowID ?? findWindowID() else { return nil }
-        if id != windowID { missingWait = 1 }   // a new window
+        if id != windowID { missing.reset() }   // a new window
         windowID = id
         guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], id) as? [[String: Any]],
               let dict = list.first?[kCGWindowBounds as String], let rect = CGRect(dictionaryRepresentation: dict as! CFDictionary)

@@ -1078,6 +1078,13 @@ enum SelfTest {
                        scroll([], .began, over: false), scroll([], .changed, over: false), scroll([], .ended, over: false)]
         let other = [scroll(.mayBegin, over: false), scroll(.changed, over: true), scroll([], .changed, over: true)]
         let wheel = [scroll([], over: true), scroll([], over: false)]
+        // Sol 0.5.0 #4: miss, back off (1, 2, 4 s), a match, then a new miss waits 1 s again, not 8.
+        var backoff = MissingBackoff()
+        let episode = [0, 0.9, 1.1, 2.9, 3.2, 7.0, 7.3].map { backoff.due(at: $0) }
+        backoff.reset()                                             // the word was found
+        let next = [10, 10.9, 11.1].map { backoff.due(at: $0) }
+        check(episode == [false, false, true, false, true, false, true] && next == [false, false, true] && backoff.wait == 2,
+              "OCR backoff \(episode) then \(next), wait \(backoff.wait)")
         check(gesture == [true, true, true, true, true, true] && other == [false, false, false] && wheel == [true, false] && hits == 4,
               "scroll destination \(gesture) \(other) \(wheel), hit tests \(hits)")
 
