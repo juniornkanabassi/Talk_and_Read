@@ -5,6 +5,11 @@ import AppKit
 import AVFoundation
 import TalkReadCore
 
+extension DictationController.State {
+    /// Done or failed: the pill shows the result (and Copy when there is something to copy).
+    var showsResult: Bool { if case .done = self { true } else if case .failed = self { true } else { false } }
+}
+
 struct DictationEntry: Codable, Identifiable {
     let id: UUID
     let date: Date
@@ -21,10 +26,22 @@ enum DictationError: LocalizedError, Equatable {
 
 @MainActor final class DictationController: ObservableObject {
     enum State: Equatable { case idle, recording(level: Float, partial: String), transcribing, done(String), failed(String) }
-    @Published private(set) var state: State = .idle
+    @Published private(set) var state: State = .idle {
+        didSet { if !state.showsResult { copyable = nil; copied = false } }
+    }
     @Published private(set) var history: [DictationEntry] = []
     /// The model is loading, or cancelled work is still leaving the recogniser (the pill says "Preparing…").
     @Published private(set) var preparing = false
+    /// What the pill's Copy button copies: the dictation it shows once done, or not typed but kept in the history. nil
+    /// otherwise, and never for a password field.
+    @Published private(set) var copyable: String?
+    /// Copy was just pressed (the button says "Copied" for a moment).
+    @Published private(set) var copied = false
+    /// How long the done and the failed pill stay, and how often a hovered pill checks again (seconds; the self-test
+    /// shortens them). The pointer over the pill holds it.
+    var holdSeconds = (done: 5.0, failed: 8.0, recheck: 0.5)
+    /// The pointer is over the pill (hover pauses its hide); the self-test swaps it.
+    lazy var pointerOverPill: () -> Bool = { [weak self] in self?.pill?.containsPointer ?? false }
     /// The last 11 input levels, newest last (the pill's meter).
     @Published private(set) var levels = [Float](repeating: 0, count: 11)
     /// The latest partial transcript, kept through `.transcribing`.
@@ -59,8 +76,9 @@ enum DictationError: LocalizedError, Equatable {
     private var offered: Set<AutoLearn.Correction> = []
     private var watcher: Task<Void, Never>?
 
-    /// Types `text`; `isCurrent` is checked inside the pasteboard transaction just before the paste.
-    typealias Insert = @MainActor (_ text: String, _ targetPID: pid_t?, _ isCurrent: @MainActor () -> Bool) async -> InsertResult
+    /// Types `text`; `isCurrent` is checked inside the pasteboard transaction just before the paste. `requireField`: the
+    /// end of a dictation, when nothing may be focused (paste last and Insert again are deliberate, so they paste anyway).
+    typealias Insert = @MainActor (_ text: String, _ targetPID: pid_t?, _ requireField: Bool, _ isCurrent: @MainActor () -> Bool) async -> InsertResult
     let audio: DictationAudio
     let asr: DictationASR
     private let insert: Insert
@@ -81,7 +99,7 @@ enum DictationError: LocalizedError, Equatable {
          decode: (@Sendable (URL) throws -> [Float])? = nil) {
         self.audio = audio ?? Recorder()
         self.asr = asr ?? Transcriber()
-        self.insert = insert ?? { await Inserter.insert($0, targetPID: $1, isCurrent: $2) }
+        self.insert = insert ?? { await Inserter.insert($0, targetPID: $1, requireField: $2, isCurrent: $3) }
         self.decode = decode ?? { try Transcriber.samples(of: $0) }
         history = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
         self.asr.onLoadingChange = { [weak self] in self?.updateBusy() }
@@ -114,6 +132,7 @@ enum DictationError: LocalizedError, Equatable {
         let gen = generation
         watcher?.cancel()                                         // a new dictation ends the last one's watch
         offering = nil
+        pillToken += 1                                            // the last result's hide no longer applies
         micNotice = nil
         insertOnStop = true
         levels = levels.map { _ in 0 }
@@ -157,6 +176,29 @@ enum DictationError: LocalizedError, Equatable {
         pill?.hide()
     }
 
+    /// The pill's ✕: cancels a dictation in progress, or closes the result it shows.
+    func dismiss() {
+        if owner != nil { try? cancel(caller: Self.user); return }
+        pillToken += 1
+        state = .idle
+        pill?.hide()
+    }
+
+    /// The pill's Copy: the dictation goes on the clipboard. A deliberate copy, so nothing restores it; written straight
+    /// to the pasteboard the inserter uses (the self-test swaps in a private one), where a running transaction's restore
+    /// leaves it alone as it does any copy made meanwhile.
+    func copyResult() {
+        guard let text = copyable else { return }
+        let pasteboard = Inserter.gate.pasteboard
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        copied = true
+        let token = pillToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            if self?.pillToken == token { self?.copied = false }
+        }
+    }
+
     /// Transcribes an audio file without the microphone and without typing (dictate-file). It takes the same slot as
     /// live dictation: busy while either runs, whoever the caller; the human (or a forced caller) starting a dictation
     /// cancels it, and it then throws `busy` with the new owner.
@@ -182,7 +224,7 @@ enum DictationError: LocalizedError, Equatable {
         guard let last = history.first else { return }
         Task {
             let result = await reinsert(last.id, targetPID: nil)
-            if state == .idle, result != .inserted { show(failure: result) }
+            if state == .idle, result != .inserted { show(failure: result, text: last.text) }
         }
     }
 
@@ -192,7 +234,7 @@ enum DictationError: LocalizedError, Equatable {
         guard let entry = history.first(where: { $0.id == id }) else { return .failed("That dictation is no longer in the history") }
         inserting += 1
         defer { inserting -= 1 }
-        return await insert(entry.text, targetPID, { true })
+        return await insert(entry.text, targetPID, false, { true })
     }
 
     /// Final text of the current or last utterance once it is typed; nil if it was cancelled or failed.
@@ -255,11 +297,11 @@ enum DictationError: LocalizedError, Equatable {
         }
         let app = NSWorkspace.shared.frontmostApplication?.localizedName
         // Re-checked inside the pasteboard transaction right before the paste: a cancelled utterance is never typed.
-        let result = insertOnStop ? await insert(text, nil, { [weak self] in self?.generation == gen }) : .inserted
+        let result = insertOnStop ? await insert(text, nil, true, { [weak self] in self?.generation == gen }) : .inserted
         guard gen == generation else { return nil }
         owner = nil
         if result != .refusedSecure { remember(text, app: app) }   // never keep what was said into a password field
-        if result == .inserted { show(done: text) } else { show(failure: result) }
+        if result == .inserted { show(done: text) } else { show(failure: result, text: text) }
         if result == .inserted, insertOnStop, learnCorrections {
             watcher = Task { [weak self] in
                 let found = await CorrectionWatcher.watch(text: text)
@@ -407,26 +449,38 @@ enum DictationError: LocalizedError, Equatable {
 
     private func show(done text: String) {
         state = .done(text)
-        hideLater()
+        copyable = text
+        hideLater(after: holdSeconds.done)
     }
 
-    private func show(failure: InsertResult) {
+    /// `text`: what was said, kept in the history, so Copy offers it (never after a password field refused it).
+    private func show(failure: InsertResult, text: String? = nil) {
         switch failure {
-        case .refusedSecure: state = .failed(Inserter.refusal())
-        case .failed(let reason): state = .failed(reason)
+        case .refusedSecure: state = .failed(Inserter.refusal()); copyable = nil
+        case .failed(let reason): state = .failed(reason); copyable = text
         case .inserted: return
         }
         showPill()
-        hideLater()
+        hideLater(after: holdSeconds.failed)
     }
 
-    private func hideLater() {
-        let gen = generation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self, gen == self.generation, self.owner == nil else { return }
-            self.state = .idle
-            self.offerOrHide()
+    /// Bumped by every result shown, a new dictation and the ✕: a stale hide or "Copied" reset does nothing.
+    private var pillToken = 0
+
+    /// The result goes after `seconds`; while the pointer is over the pill it waits, checking again every
+    /// `holdSeconds.recheck`.
+    private func hideLater(after seconds: Double) {
+        pillToken += 1
+        let token = pillToken
+        func fire(after seconds: Double) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+                guard let self, token == self.pillToken, self.owner == nil else { return }
+                if self.pointerOverPill() { return fire(after: self.holdSeconds.recheck) }
+                self.state = .idle
+                self.offerOrHide()
+            }
         }
+        fire(after: seconds)
     }
 
     private func showPill() {

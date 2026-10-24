@@ -46,7 +46,7 @@ import TalkReadCore
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false   // ARC owns it; close() frees the window server side
-        // ponytail: the whole panel takes clicks (only the ✕ acts on them); per-region pass-through needs a
+        // ponytail: the whole panel takes clicks (only Copy and the ✕ act on them); per-region pass-through needs a
         // mouse-tracking monitor, add it if clicks on the pill body are ever missed underneath.
         let host = NSHostingView(rootView: DictationPillView(dictation: dictation) { [weak self] in self?.resize(to: $0) })
         host.sizingOptions = []   // the panel follows the content through `resize`, not the other way round
@@ -59,6 +59,9 @@ import TalkReadCore
         panel?.close()
         panel = nil
     }
+
+    /// The pointer is over the pill: its hide waits (hover pauses it).
+    var containsPointer: Bool { panel.map { $0.isVisible && NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? false }
 }
 
 /// Reports the pill's laid-out height so the panel can follow it.
@@ -112,8 +115,11 @@ struct DictationPillView: View {
         case .done: words = true
         default: break
         }
-        return DictationPillStatus(message: message, levels: dictation.levels, recording: recording, words: words) {
-            try? dictation.cancel(caller: DictationController.user)
+        let copyable = dictation.copyable != nil   // done, or not typed: Copy and the paste-last tip
+        return DictationPillStatus(message: message, levels: dictation.levels, recording: recording, words: words,
+                                   copy: copyable ? { dictation.copyResult() } : nil, copied: dictation.copied, closes: dictation.state.showsResult,
+                                   tip: copyable ? DictationPillStatus.pasteTip(TalkReadCore.Settings.load().pasteLastShortcut) : nil) {
+            dictation.dismiss()
         }
     }
 
@@ -128,15 +134,28 @@ struct DictationPillView: View {
     }
 }
 
-/// Text on top (the newest words, up to 3 lines), the level meter underneath, ✕ at the top right. Stateless, so the
-/// UI snapshots can render every state.
+/// One line of text (the newest words), the level meter underneath while recording, ✕ at the top right; once done or
+/// not typed, Copy beside the ✕ and the paste-last tip under the text. Stateless, so the UI snapshots can render every state.
 struct DictationPillStatus: View {
     let message: String
     let levels: [Float]
     let recording: Bool
     /// Spoken words keep their newest end; notices and errors ("Mic not found, using …") keep their start.
     var words = true
+    /// Copies the dictation (nil: no Copy button).
+    var copy: (() -> Void)? = nil
+    /// Copy was just pressed: the button says so.
+    var copied = false
+    /// The ✕ closes a result rather than cancelling a dictation (its VoiceOver label).
+    var closes = false
+    /// "Didn't land? Press ⌃⌘V to paste it" (nil: hidden).
+    var tip: String? = nil
     let cancel: () -> Void
+
+    /// The tip for the paste-last shortcut as the Shortcuts page shows it; nil when that shortcut is turned off.
+    static func pasteTip(_ shortcut: TalkReadCore.Settings.Shortcut) -> String? {
+        shortcut.isOff ? nil : "Didn't land? Press \(shortcut.display) to paste it"
+    }
 
     private static let accent = Color(red: 1, green: 0xD2 / 255, blue: 0x1F / 255)   // #FFD21F
     private static let keep = 44   // characters: one line at this size; the end of the text, never the start
@@ -145,18 +164,32 @@ struct DictationPillStatus: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack(alignment: .top, spacing: 10) {
-                Text(words ? Self.tail(message) : message)
-                    .font(.system(size: 18, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)   // a mic notice fits before it is cut
-                    .truncationMode(words ? .head : .tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityLabel("Dictation: \(message)")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(words ? Self.tail(message) : message)
+                        .font(.system(size: 18, weight: .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)   // a mic notice fits before it is cut
+                        .truncationMode(words ? .head : .tail)
+                        .accessibilityLabel("Dictation: \(message)")
+                    if let tip {
+                        Text(tip).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if let copy {
+                    Button(action: copy) {
+                        Text(copied ? "Copied" : "Copy").font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 9).frame(height: 22)
+                            .background(.quaternary, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(copied ? "Copied" : "Copy the dictation")
+                }
                 Button(action: cancel) {
                     Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Cancel dictation")
+                .accessibilityLabel(closes ? "Close" : "Cancel dictation")
             }
             if recording { meter }
         }
