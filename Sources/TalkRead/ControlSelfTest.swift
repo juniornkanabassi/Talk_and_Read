@@ -187,6 +187,15 @@ enum ControlSelfTest {
         let wrong = plans.filter { AppDelegate.loginItemSteps(on: $0.1, status: $0.2, recordedPath: $0.3, path: new) != $0.4 }.map(\.0)
         results.append(wrong.isEmpty)
         print("\(wrong.isEmpty ? "PASS" : "FAIL")  login item plans: \(plans.count) cases\(wrong.isEmpty ? "" : ", wrong: \(wrong)")")
+        // 0.7.1: a copy dragged into Applications on any Mac registers; builds, test installs and translocated copies never.
+        let places: [(String, Bool)] = [
+            (new, true), ("/Applications/Talk & Read.app", true), ("/Users/someone/Applications/Talk & Read.app", true),
+            ("/private/tmp/tr-test-install/Talk & Read.app", false), ("/Users/someone/Downloads/Talk & Read.app", false),
+            ("/private/var/folders/x/AppTranslocation/ABC/d/Talk & Read.app", false), ("/Users/someone/src/.build/Talk & Read.app", false),
+        ]
+        let misplaced = places.filter { AppDelegate.isInstalledCopy($0.0, home: "/Users/someone") != $0.1 }.map(\.0)
+        results.append(misplaced.isEmpty)
+        print("\(misplaced.isEmpty ? "PASS" : "FAIL")  login item only from Applications: \(places.count) places\(misplaced.isEmpty ? "" : ", wrong: \(misplaced)")")
 
         // E3: with nothing reading or dictating, the model, engines and control server must sit still.
         let cpu0 = cpuSeconds(), t0 = Date()
