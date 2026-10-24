@@ -138,9 +138,9 @@ enum TalkReadMain {
         TalkReadCore.Settings.chords.map { s[keyPath: $0.path] }
     }
 
-    /// Only the installed copy registers as a login item; builds and test runs never touch it.
+    /// Only an installed copy registers as a login item; builds and test runs never touch it.
     private func updateLoginItem(_ on: Bool) {
-        guard Bundle.main.bundleURL.path.hasPrefix("/Applications/JuniorOS Apps/") else { return }
+        guard Self.isInstalledCopy(Bundle.main.bundleURL.path) else { return }
         let service = SMAppService.mainApp
         let path = Bundle.main.bundleURL.path, key = "loginItemRegisteredPath"
         do {
@@ -157,6 +157,13 @@ enum TalkReadMain {
     }
 
     enum LoginItemStep: Equatable { case unregister, register, record }
+
+    /// In /Applications (any folder in it, Junior's "JuniorOS Apps" too) or ~/Applications: where a downloaded copy is
+    /// dragged. Not a build, a test install under /private/tmp, or a copy run from Downloads (macOS translocates it).
+    /// Until 0.7.0 only "JuniorOS Apps" counted, so "Open at login" did nothing on any other Mac (0.7.1).
+    nonisolated static func isInstalledCopy(_ path: String, home: String = NSHomeDirectory()) -> Bool {
+        path.hasPrefix("/Applications/") || path.hasPrefix(home + "/Applications/")
+    }
 
     /// What `updateLoginItem` does, in order (pure; checked by the control self-test). `.requiresApproval` is a
     /// registration awaiting the user's approval, so it counts as registered (Sol 0.5.0 #5): off unregisters it; on keeps
