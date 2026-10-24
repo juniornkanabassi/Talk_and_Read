@@ -1,4 +1,4 @@
-// One dictation at a time: recorder -> streaming transcriber -> Cleanup -> Paragraphs -> optional Polish -> Inserter -> history.
+// One dictation at a time: recorder -> streaming transcriber -> Paragraphs.split -> Cleanup -> Paragraphs.tidy -> optional Polish -> Inserter -> history.
 // Ownership (PLAN decision 19): one owner from `start` until the utterance is inserted, cancelled or failed; another
 // control caller gets `busy` unless it forces; the human (hotkeys, pill, GUI: caller "user") always wins.
 import AppKit
@@ -271,9 +271,11 @@ enum DictationError: LocalizedError, Equatable {
 
     private func clean(_ raw: Transcript) async -> String {
         let settings = Settings.load()
-        var text = Cleanup.apply(raw.text, vocabulary: vocabulary(), removeFillers: settings.removeFillers, isWord: Self.isCommonWord)
+        // Paragraphs are chosen on the raw text, where the pauses line up with its sentences; Cleanup keeps the breaks.
+        let spoken = settings.paragraphs ? Paragraphs.split(raw.text, pauses: raw.pauses) : raw.text
+        var text = Cleanup.apply(spoken, vocabulary: vocabulary(), removeFillers: settings.removeFillers, isWord: Self.isCommonWord)
         if britishSpelling { text = BritishSpelling.apply(text) }
-        if settings.paragraphs { text = Paragraphs.split(text, pauses: raw.pauses) }
+        if settings.paragraphs { text = Paragraphs.tidy(text) }
         return settings.polishWithAppleIntelligence ? await Polish.polish(text) : text
     }
 

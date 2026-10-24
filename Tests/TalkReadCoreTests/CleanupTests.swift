@@ -14,6 +14,12 @@ final class CleanupTests: XCTestCase {
         XCTAssertEqual(clean("I said um."), "I said.")
     }
 
+    func testParagraphBreaksSurviveAndTheNextWordIsCapitalised() {
+        XCTAssertEqual(clean("we are done here.\n\nso um, the next part starts.\n\nuh then it ends."),
+                       "We are done here.\n\nSo the next part starts.\n\nThen it ends.")
+        XCTAssertEqual(clean("it was good. \n\n  \u{00E9}coutons ça."), "It was good.\n\n\u{00C9}coutons ça.")
+    }
+
     func testFillersOnlyAsWholeWords() {
         XCTAssertEqual(clean("the umbrella is humming, ahead of her"), "The umbrella is humming, ahead of her")
     }

@@ -1,7 +1,9 @@
-// Paragraphs for long dictations (F-A, PLAN 0.6.0): a break before a sentence that follows a real pause, a forced break
-// when a run of sentences has none, and a full stop at the end. Pure; the recogniser supplies the pauses. A dictation
-// under `minWords` is returned exactly as it came.
+// Paragraphs for long dictations (F-A, PLAN 0.6.0; F12 rework). `split` runs on the recogniser's raw text, where the pauses
+// line up with the sentences exactly, and puts `\n\n` before a sentence that follows a pause; Cleanup then runs on that text
+// and keeps the breaks. `tidy` runs after Cleanup: it keeps lists whole and gives the last sentence its full stop. A
+// dictation under `minWords` is returned exactly as it came.
 import Foundation
+import NaturalLanguage
 
 public enum Paragraphs {
     // ponytail: constants from the plan, not tuned on Junior's own speech yet; adjust after live use.
@@ -12,60 +14,98 @@ public enum Paragraphs {
     /// With no such pause for this many sentences, a break is forced at the longest pause among sentences 3 to 6.
     static let forceAfter = 5
 
-    /// The silence before a sentence (after the first), with that sentence's first word so it can be found again once
-    /// Cleanup has reshaped the text.
-    public struct Pause: Equatable, Sendable {
-        public var word: String
-        public var seconds: Double
-        public init(word: String, seconds: Double) { self.word = word; self.seconds = seconds }
+    // MARK: Timed words and pauses
+
+    /// A recogniser's sub-word piece: its text (a leading space starts a word) and its times in seconds.
+    public struct Piece: Equatable, Sendable {
+        public var text: String, start: Double, end: Double
+        public init(text: String, start: Double, end: Double) { self.text = text; self.start = start; self.end = end }
     }
 
-    private static let terminator = "[.?!][\"'”’)\\]]*"
-
-    /// The pauses before the sentences of a timed word list: a sentence starts after a word ending in `. ? !`.
-    public static func pauses(of words: [(text: String, start: Double, end: Double)]) -> [Pause] {
-        words.indices.dropFirst().compactMap { i in
-            words[i - 1].text.range(of: "\(terminator)$", options: .regularExpression) == nil ? nil
-                : Pause(word: key(words[i].text), seconds: max(0, words[i].start - words[i - 1].end))
+    /// A word with its extent. `reliable` is false when its pieces' times ran backwards or contradict themselves.
+    public struct Word: Equatable, Sendable {
+        public var text: String, start: Double, end: Double, reliable: Bool
+        public init(text: String, start: Double, end: Double, reliable: Bool = true) {
+            self.text = text; self.start = start; self.end = end; self.reliable = reliable
         }
     }
 
-    /// `text` with `\n\n` before sentences that follow a pause of a second or more, and a forced break in a run of
-    /// sentences with none. Never inside a formatted list line, never next to a line break already there (spoken "new
-    /// paragraph" or "new line"), never leaving a one-sentence paragraph at the end of a stretch. A sentence after a break
-    /// starts with a capital. The last sentence gets a full stop when it has no end mark.
-    public static func split(_ text: String, pauses: [Pause] = []) -> String {
-        guard text.split(whereSeparator: \.isWhitespace).count >= minWords else { return text }
-        var next = 0, first = true
-        let lines = text.components(separatedBy: "\n").map { line -> String in
-            let list = line.range(of: "^\\d{1,3}\\. ", options: .regularExpression)
-            let parts = sentences(list.map { String(line[$0.upperBound...]) } ?? line)
-            // Cleanup can add or drop sentence boundaries ("3 p.m.", fillers); a pause is taken from the next few entries
-            // whose first word matches, else it is unknown (0).
-            var gaps: [Double] = []
-            for part in parts {
-                defer { first = false }
-                let hit = first ? nil : pauses[next...].prefix(3).firstIndex { $0.word == key(part) }
-                gaps.append(hit.map { pauses[$0].seconds } ?? 0)
-                if let hit { next = hit + 1 }
+    /// Groups pieces into words. A punctuation piece joins its word but never moves its end (the model emits a full stop
+    /// late, next to the following word, which would hide the pause). A word's extent only grows: a continuation piece that
+    /// starts before the word or ends before it marks the word unreliable instead of moving its end back.
+    public static func words(from pieces: [Piece]) -> [Word] {
+        var words: [Word] = []
+        for p in pieces where !p.text.isEmpty {
+            let text = p.text.trimmingCharacters(in: .whitespaces)
+            let mark = !text.isEmpty && text.allSatisfy(\.isPunctuation)
+            if let last = words.indices.last, mark || !p.text.hasPrefix(" ") {
+                words[last].text += text
+                guard !mark else { continue }
+                if p.start < words[last].start || p.end < words[last].end || p.end < p.start { words[last].reliable = false }
+                else { words[last].end = p.end }
+            } else {
+                words.append(Word(text: text, start: p.start, end: p.end, reliable: p.end >= p.start))
             }
-            let cuts = list == nil ? breaks(gaps) : []
-            guard !cuts.isEmpty else { return line }
-            return parts.enumerated().map { i, part in cuts.contains(i) ? "\n\n" + capitalised(part) : (i == 0 ? part : " " + part) }.joined()
         }
-        let out = lines.joined(separator: "\n")
-        return out.last.map { $0.isLetter || $0.isNumber } == true ? out + "." : out
+        return words
+    }
+
+    /// The silence before each sentence of `text`, one entry per sentence (the first has none). nil when it is not known:
+    /// a word could not be placed in the text, a word's times are unreliable, or the two words are out of order. Unknown is
+    /// never evidence for a break.
+    public static func pauses(text: String, words: [Word]) -> [Double?] {
+        var at: [String.Index: Int] = [:], cursor = text.startIndex, placed = [Bool](repeating: false, count: words.count)
+        for (k, w) in words.enumerated() {
+            if !w.text.isEmpty, let r = text.range(of: w.text, range: cursor..<text.endIndex) {
+                at[r.lowerBound] = k; placed[k] = true; cursor = r.upperBound
+            }
+        }
+        return sentenceRanges(text).enumerated().map { i, span in
+            // The sentence's first word starts at its first character, or just after an opening quote or bracket.
+            let lexical = text[span].firstIndex { $0.isLetter || $0.isNumber } ?? span.lowerBound
+            guard i > 0, let k = at.first(where: { $0.key >= span.lowerBound && $0.key <= lexical })?.value, k > 0, placed[k - 1],
+                  words[k].reliable, words[k - 1].reliable, words[k].start >= words[k - 1].start else { return nil }
+            return max(0, words[k].start - words[k - 1].end)
+        }
+    }
+
+    // MARK: Split (before Cleanup)
+
+    /// `text` with `\n\n` before sentences that follow a pause of a second or more, and a forced break in a run of sentences
+    /// with none. `pauses` has one entry per sentence of `text` (anything else is ignored: no pauses known). Never inside a
+    /// sentence, never next to a spoken "new paragraph" or "new line" or a line break already there, never leaving a
+    /// one-sentence paragraph at the end of a stretch. Only white space between sentences changes.
+    public static func split(_ text: String, pauses: [Double?] = []) -> String {
+        guard text.split(whereSeparator: \.isWhitespace).count >= minWords else { return text }
+        let spans = sentenceRanges(text)
+        let known = pauses.count == spans.count
+        var cuts: [Int] = [], first = 0
+        while first < spans.count {
+            var end = first + 1                                       // a stretch: sentences with no line break between them
+            while end < spans.count, !text[spans[end - 1].upperBound..<spans[end].lowerBound].contains("\n") { end += 1 }
+            let spoken = (first..<end).filter { text[spans[$0]].range(of: "\\bnew (?:paragraph|line)\\b", options: [.regularExpression, .caseInsensitive]) != nil }
+            let blocked = Set(spoken.flatMap { [$0 - 1 - first, $0 - first, $0 + 1 - first] })
+            cuts += breaks((first..<end).map { known ? (pauses[$0] ?? 0) : 0 }, blocked: blocked).map { $0 + first }
+            first = end
+        }
+        var out = "", from = text.startIndex
+        for i in cuts.sorted() {
+            out += text[from..<spans[i - 1].upperBound] + "\n\n"
+            from = spans[i].lowerBound
+        }
+        return out + text[from...]
     }
 
     /// The sentence indices a paragraph starts at, given the pause before each sentence (`gaps[0]` is unused).
-    static func breaks(_ gaps: [Double]) -> Set<Int> {
+    static func breaks(_ gaps: [Double], blocked: Set<Int> = []) -> Set<Int> {
         var cuts = Set<Int>(), start = 0, i = 1
-        let last = gaps.count - 2                             // a break leaves at least two sentences after it
+        let last = gaps.count - 2                                     // a break leaves at least two sentences after it
+        func allowed(_ k: Int) -> Bool { k <= last && !blocked.contains(k) }
         while i < gaps.count {
-            if i <= last, gaps[i] >= pauseBreak {
+            if allowed(i), gaps[i] >= pauseBreak {
                 cuts.insert(i); start = i
-            } else if i - start == forceAfter {
-                let best = (start + 2...min(i, last)).reversed().max { gaps[$0] < gaps[$1] }!   // the later of equal pauses
+            } else if i - start >= forceAfter,
+                      let best = (start + 2...min(i, last)).reversed().filter(allowed).max(by: { gaps[$0] < gaps[$1] }) {   // the later of equal pauses
                 cuts.insert(best); start = best; i = best
             }
             i += 1
@@ -73,28 +113,46 @@ public enum Paragraphs {
         return cuts
     }
 
-    /// Splits after `. ? !` (and closing quotes or brackets) followed by white space; the white space is dropped.
-    static func sentences(_ line: String) -> [String] {
-        guard let boundary = try? NSRegularExpression(pattern: "(\(terminator))\\s+") else { return [line] }
-        let ns = line as NSString
-        var out: [String] = [], from = 0
-        for m in boundary.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
-            out.append(ns.substring(with: NSRange(location: from, length: NSMaxRange(m.range(at: 1)) - from)))
-            from = NSMaxRange(m.range)
+    /// The sentences of `text` as trimmed ranges. NaturalLanguage knows "Dr.", "No. 5", "p.m." and ellipses; a piece that
+    /// starts with a closing quote or bracket (French « oui ! » Ensuite) belongs to the sentence before it.
+    static func sentenceRanges(_ text: String) -> [Range<String.Index>] {
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        var out: [Range<String.Index>] = []
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { r, _ in
+            var lo = r.lowerBound, hi = r.upperBound
+            while lo < hi, text[lo].isWhitespace { lo = text.index(after: lo) }
+            while hi > lo, text[text.index(before: hi)].isWhitespace { hi = text.index(before: hi) }
+            guard lo < hi else { return true }
+            if let previous = out.last, "»”’)]".contains(text[lo]) { out[out.count - 1] = previous.lowerBound..<hi } else { out.append(lo..<hi) }
+            return true
         }
-        return from < ns.length ? out + [ns.substring(from: from)] : out
+        return out
     }
 
-    /// The first word's letters and digits, lower case: how a pause finds its sentence again.
-    static func key(_ word: String) -> String {
-        String(word.split(whereSeparator: \.isWhitespace).first.map { $0.lowercased().filter { $0.isLetter || $0.isNumber } } ?? "")
-    }
+    // MARK: Tidy (after Cleanup)
 
-    /// Cleanup has capitalised every sentence already; this only catches a plain lower-case word. "iPhone", "bbc.co.uk"
-    /// (vocabulary and addresses Cleanup protected) are left as they are.
-    static func capitalised(_ sentence: String) -> String {
-        guard let first = sentence.first, first.isLowercase else { return sentence }
-        let word = (sentence.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? "").trimmingCharacters(in: .punctuationCharacters)
-        return word.allSatisfy({ $0.isLowercase || "'’-".contains($0) }) ? first.uppercased() + sentence.dropFirst() : sentence
+    private static let item = "^\\s*(?:\\d{1,3}[.)]|[-•*])\\s+\\S"
+
+    /// For 60 words or more: no blank line inside a list (a line starting `1.`, `1)`, `-`, `•` or `*`, indented or not; a
+    /// stray break inside an item joins it back, one between items becomes a plain line break), and a full stop after the
+    /// last word when it has no sentence end, outside any closing quote or bracket ("yes". (probably tomorrow).).
+    public static func tidy(_ text: String) -> String {
+        guard text.split(whereSeparator: \.isWhitespace).count >= minWords else { return text }
+        var lines = text.components(separatedBy: "\n")
+        let isItem = { (line: String) in line.range(of: item, options: .regularExpression) != nil }
+        if let first = lines.firstIndex(where: isItem), let last = lines.lastIndex(where: isItem), first < last {
+            var block: [String] = [], blank = false
+            for line in lines[first...last] {
+                if line.trimmingCharacters(in: .whitespaces).isEmpty { blank = true; continue }
+                if blank, !isItem(line), !block.isEmpty { block[block.count - 1] += " " + line.trimmingCharacters(in: .whitespaces) }
+                else { block.append(line) }
+                blank = false
+            }
+            lines.replaceSubrange(first...last, with: block)
+        }
+        var out = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let word = out.last(where: { !"\"'”’)]»".contains($0) }), word.isLetter || word.isNumber { out += "." }
+        return out
     }
 }
