@@ -4,11 +4,11 @@ import AVFoundation
 import FluidAudio
 import TalkReadCore
 
-/// What a recogniser returns: the text, and the silence before each sentence after the first when it knows (Parakeet;
-/// Apple's recogniser has none). The streaming partials stay plain text.
+/// What a recogniser returns: the text, and the silence before each of its sentences when it knows (Parakeet, unknown
+/// entries nil; Apple's recogniser has none). The streaming partials stay plain text.
 struct Transcript: Sendable {
     var text: String
-    var pauses: [Paragraphs.Pause] = []
+    var pauses: [Double?] = []
 }
 
 /// What the dictation controller needs from a recogniser (the real `Transcriber`, or a fake in the self-test).
@@ -131,10 +131,13 @@ extension DictationASR {
             }
             try Task.checkCancellation()
             if frames < 16_000 { try await m.appendAudio(Self.buffer(ArraySlice(repeating: 0, count: 16_000 - frames))) }
-            let text = try await m.finish()
+            let said = try await m.finish()
             tokens += await m.consumeTokenTimings()
             await m.setPartialTranscriptCallback { _ in }
-            return Transcript(text: text.trimmingCharacters(in: .whitespacesAndNewlines), pauses: Paragraphs.pauses(of: Self.words(from: tokens)))
+            let text = said.trimmingCharacters(in: .whitespacesAndNewlines)
+            return Transcript(text: text, pauses: Paragraphs.pauses(text: text, words: Paragraphs.words(from: tokens.map {
+                .init(text: $0.token, start: $0.startTime, end: $0.endTime + Self.endLag)
+            })))
         }
     }
 
@@ -142,22 +145,6 @@ extension DictationASR {
     /// gaps (24 Oct; 0.4 s inside a paragraph, 1.2 s between) read 0.25 to 0.55 s longer. Word ends are moved on by this much.
     // ponytail: calibrated on synthetic speech only; re-measure on Junior's own dictation before trusting the 1 s threshold.
     nonisolated static let endLag = 0.3
-
-    /// Words with their times for `Paragraphs.pauses`. A punctuation token joins its word but does not move the word's end:
-    /// the model emits a full stop late, next to the following word, which would hide the pause.
-    nonisolated static func words(from tokens: [TokenTiming]) -> [(text: String, start: Double, end: Double)] {
-        var words: [(text: String, start: Double, end: Double)] = []
-        for t in tokens where !t.token.isEmpty {
-            let mark = t.token.trimmingCharacters(in: .whitespaces).allSatisfy(\.isPunctuation)
-            if !words.isEmpty, mark || !t.token.hasPrefix(" ") {
-                words[words.count - 1].text += t.token.trimmingCharacters(in: .whitespaces)
-                if !mark { words[words.count - 1].end = t.endTime + endLag }
-            } else {
-                words.append((t.token.trimmingCharacters(in: .whitespaces), t.startTime, t.endTime + endLag))
-            }
-        }
-        return words
-    }
 
     nonisolated static func buffer(_ samples: ArraySlice<Float>) -> AVAudioPCMBuffer {
         let b = AVAudioPCMBuffer(pcmFormat: StreamConverter.format, frameCapacity: AVAudioFrameCount(max(1, samples.count)))!

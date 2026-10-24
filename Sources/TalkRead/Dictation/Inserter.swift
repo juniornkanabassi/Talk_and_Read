@@ -38,13 +38,15 @@ enum Inserter {
     /// Whether the focused field is secure, whether it is a terminal, whether it is a single-line field, and the UTF-16
     /// unit before its caret (nil = unknown or at the start).
     @MainActor static func focusedField(pid: pid_t?) -> (secure: Bool, previous: unichar?, terminal: Bool, singleLine: Bool) {
-        if pid == getpid() { let own = ownFocusedField(); return (own.secure, own.previous, false, false) }
+        if pid == getpid() { let own = ownFocusedField(); return (own.secure, own.previous, false, own.singleLine) }
         let root = pid.map { AXUIElementCreateApplication($0) } ?? AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(root, 0.25)
         guard let element: AXUIElement = attribute(root, kAXFocusedUIElementAttribute) else { return (false, nil, false, false) }
         let secure = [kAXRoleAttribute, kAXSubroleAttribute].contains { (attribute(element, $0) as String?) == kAXSecureTextFieldSubrole }
         let terminal = isTerminal(element)
-        let single = isSingleLine(role: attribute(element, kAXRoleAttribute), subrole: attribute(element, kAXSubroleAttribute))
+        var settable: DarwinBoolean = false
+        _ = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        let single = isSingleLine(role: attribute(element, kAXRoleAttribute), subrole: attribute(element, kAXSubroleAttribute), editable: settable.boolValue)
         guard !secure, let rangeValue: AXValue = attribute(element, kAXSelectedTextRangeAttribute) else { return (secure, nil, terminal, single) }
         var range = CFRange()
         guard AXValueGetValue(rangeValue, .cfRange, &range), range.location > 0 else { return (false, nil, terminal, single) }
@@ -59,9 +61,16 @@ enum Inserter {
         return (false, range.location <= string.length ? string.character(at: range.location - 1) : nil, terminal, single)
     }
 
-    /// A text field or search field takes one line: a paragraph break would press Return in it (search, submit).
-    static func isSingleLine(role: String?, subrole: String?) -> Bool {
-        role == kAXTextFieldRole || subrole == kAXSearchFieldSubrole || role == "AXSearchField"
+    /// A text field, search field or editable combo box takes one line: a paragraph break would press Return in it (search,
+    /// submit). A combo box that cannot be typed into is not a text field (`editable` = its value can be set).
+    static func isSingleLine(role: String?, subrole: String?, editable: Bool = false) -> Bool {
+        role == kAXTextFieldRole || subrole == kAXSearchFieldSubrole || role == "AXSearchField" || (role == kAXComboBoxRole && editable)
+    }
+
+    /// The field editor of one of our own text fields or combo boxes is an NSTextView, but its owner takes one line; a text
+    /// view of our own that is not a field editor keeps its breaks.
+    static func isSingleLine(editor: NSTextView) -> Bool {
+        editor.isFieldEditor && (editor.delegate is NSTextField || editor.delegate is NSComboBox)
     }
 
     /// Terminal apps, and the terminal panel of an editor such as VS Code (its input is described as "Terminal …").
@@ -93,13 +102,18 @@ enum Inserter {
 
     /// Our own windows (the reader, onboarding, the self-test): AppKit knows the focus even when the window is not
     /// key, where an AX query of our own process returns nothing.
-    @MainActor private static func ownFocusedField() -> (secure: Bool, previous: unichar?) {
+    @MainActor private static func ownFocusedField() -> (secure: Bool, previous: unichar?, singleLine: Bool) {
         let window = NSApp.keyWindow ?? NSApp.windows.first { $0.isVisible && $0.firstResponder is NSTextView }
-        guard let editor = window?.firstResponder as? NSTextView else { return (false, nil) }
-        if editor.delegate is NSSecureTextField { return (true, nil) }
+        guard let editor = window?.firstResponder as? NSTextView else { return (false, nil, false) }
+        return describe(editor)
+    }
+
+    /// What the inserter needs to know about the text view that has our own focus.
+    @MainActor static func describe(_ editor: NSTextView) -> (secure: Bool, previous: unichar?, singleLine: Bool) {
+        if editor.delegate is NSSecureTextField { return (true, nil, true) }
         let caret = editor.selectedRange().location
         let string = editor.string as NSString
-        return (false, caret > 0 && caret <= string.length ? string.character(at: caret - 1) : nil)
+        return (false, caret > 0 && caret <= string.length ? string.character(at: caret - 1) : nil, isSingleLine(editor: editor))
     }
 
     /// A space before the text unless the caret is at the start, after whitespace or an opening bracket/quote, or the

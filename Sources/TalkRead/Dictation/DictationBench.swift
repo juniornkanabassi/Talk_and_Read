@@ -87,7 +87,7 @@ import TalkReadCore
 
     /// Release (the clip's last buffer, then `stop`) to the moment the controller hands the text to the inserter, for
     /// clips of 4–7 s, through the production DictationController (clean-up, settings and vocabulary reads included).
-    private static func releaseToPaste(_ asr: DictationASR, clips: [URL]) async -> (median: Double, max: Double) {
+    static func releaseToPaste(_ asr: DictationASR, clips: [URL]) async -> (median: Double, max: Double) {
         var times: [Double] = []
         for clip in clips {
             guard let samples = try? Transcriber.samples(of: clip), (4 * 16_000...7 * 16_000).contains(samples.count) else { continue }

@@ -17,7 +17,9 @@ import WebKit
         if CommandLine.arguments.contains("--paragraphs") {       // just the paragraph check
             let transcriber = Transcriber()
             guard (try? await transcriber.load(progress: nil)) != nil else { return 1 }
-            return await checkParagraphs(transcriber) ? 0 : 1
+            let clips = ((try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: dir), includingPropertiesForKeys: nil)) ?? [])
+                .filter { ["wav", "m4a"].contains($0.pathExtension) }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            return await checkParagraphs(transcriber, clips: clips) ? 0 : 1
         }
         var ok = checkHotkeys()
         ok = checkTextRules() && ok
@@ -112,10 +114,29 @@ import WebKit
             && british == "The neighbour's colour, centre and organiser; email kestrelco.com or Kestrelco. Realise it."
             && Inserter.terminalApps.isSuperset(of: ["com.apple.Terminal", "com.googlecode.iterm2"])
         // Single-line fields (F-A) get no paragraph breaks; a text area keeps them.
+        let own = ownFieldRules()
         let single = Inserter.isSingleLine(role: "AXTextField", subrole: nil) && Inserter.isSingleLine(role: "AXTextField", subrole: "AXSearchField")
-            && !Inserter.isSingleLine(role: "AXTextArea", subrole: nil) && !Inserter.isSingleLine(role: nil, subrole: nil)
+            && Inserter.isSingleLine(role: "AXComboBox", subrole: nil, editable: true) && !Inserter.isSingleLine(role: "AXComboBox", subrole: nil)
+            && !Inserter.isSingleLine(role: "AXTextArea", subrole: nil) && !Inserter.isSingleLine(role: nil, subrole: nil) && own
         print("text: terminal paste one line \"\(flat)\"; British \"\(british)\"; single-line field rule \(single) \(ok && single ? "ok" : "FAIL")")
         return ok && single
+    }
+
+    /// Our own controls (a window that is never shown): an NSTextField's and an NSComboBox's field editor is one-line, a text
+    /// view is not, and a secure field is still secure.
+    private static func ownFieldRules() -> Bool {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
+        let field = NSTextField(frame: NSRect(x: 0, y: 150, width: 200, height: 24)), combo = NSComboBox(frame: NSRect(x: 0, y: 120, width: 200, height: 24))
+        let secure = NSSecureTextField(frame: NSRect(x: 0, y: 90, width: 200, height: 24)), view = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 80))
+        for v in [field, combo, secure, view] as [NSView] { window.contentView?.addSubview(v) }
+        func state(_ responder: NSResponder) -> (secure: Bool, previous: unichar?, singleLine: Bool)? {
+            guard window.makeFirstResponder(responder), let editor = window.firstResponder as? NSTextView else { return nil }
+            return Inserter.describe(editor)
+        }
+        let results = [state(field)?.singleLine, state(combo)?.singleLine, state(view)?.singleLine, state(secure)?.secure]
+        let ok = results == [true, true, false, true]
+        print("text: own fields (NSTextField, NSComboBox, NSTextView, secure) \(results.map { $0.map(String.init) ?? "none" }) \(ok ? "ok" : "FAIL")")
+        return ok
     }
 
     // MARK: Ownership (PLAN decision 19) with a fake recorder and recogniser
@@ -609,21 +630,21 @@ import WebKit
         let sorted = latencies.sorted()
         print(String(format: "asr: %d clips, %d words; total WER file %.2f%%, live %.2f%% (limit 6%%); latency after last sample median %.0f ms, max %.0f ms",
                      clips.count, words, 100 * fileWER, 100 * liveWER, sorted[sorted.count / 2], sorted.last!))
-        let paragraphs = await checkParagraphs(transcriber)
+        let paragraphs = await checkParagraphs(transcriber, clips: clips)
         let unloaded = controller.unloadModel() && !transcriber.isLoaded
         print("asr: unloaded when idle \(unloaded)")
         return fileWER <= 0.06 && liveWER <= 0.06 && api && unloaded && paragraphs
     }
 
-    // MARK: Paragraphs (F-A)
+    // MARK: Paragraphs (F-A, F12)
 
-    /// Four paragraphs of five sentences, about 250 words, for Kokoro to speak. No spoken list words or commands in it.
+    /// Four paragraphs of 3, 5, 4 and 5 sentences for Kokoro to speak: their starts (sentences 4, 9 and 13) are not where the
+    /// every-five-sentences fallback would cut (6, 11 and 16), so only the real pauses can put the breaks there. No spoken
+    /// list words or commands in it.
     private static let script = [
         ["Welcome back to the channel and thanks for joining me today.",
          "I want to talk about why this season's title race is much closer than anyone expected.",
-         "At the start of the year, almost every pundit picked one club to run away with it.",
-         "Ten games later, the gap at the top is only two points.",
-         "That changes how the rest of the season will feel for everyone watching."],
+         "At the start of the year, almost every pundit picked one club to run away with it."],
         ["One reason is the fixture list, which has been far kinder to the chasing pack.",
          "The leaders have already played most of the toughest away games on their calendar.",
          "Meanwhile their rivals have enjoyed a run of home matches against teams in the bottom half.",
@@ -632,8 +653,7 @@ import WebKit
         ["Injuries have also played a huge part in the story.",
          "The champions lost their captain for six weeks after a clumsy tackle in training.",
          "Their main rivals, on the other hand, have barely lost a single starter.",
-         "Squad depth is usually what decides a long campaign like this one.",
-         "I think that is why the table looks so tight at the moment."],
+         "Squad depth is usually what decides a long campaign like this one."],
         ["So where does that leave us as we head into the winter break?",
          "I expect at least three clubs to stay in contention until the final weeks.",
          "The pressure will build, and that is when mistakes start to appear.",
@@ -659,11 +679,18 @@ import WebKit
         return out
     }
 
-    /// The Parakeet dictation path (file route, no microphone) on a Kokoro-spoken script: the paragraph breaks land at the
-    /// script's paragraph starts (one mistake allowed, a miss or an extra break), a short dictation is untouched, and the
-    /// split costs milliseconds at most.
-    private static func checkParagraphs(_ transcriber: Transcriber) async -> Bool {
+    /// The first three words of each paragraph, for comparing where paragraphs start.
+    private static func starts(_ text: String) -> [String] {
+        text.components(separatedBy: "\n\n").map { normalised($0).prefix(3).joined(separator: " ") }
+    }
+
+    /// The Parakeet dictation path (file route, no microphone) on a Kokoro-spoken script of unequal paragraphs: the breaks
+    /// land at the script's paragraph starts (one mistake allowed, a miss or an extra break) and the same text without its
+    /// pauses breaks elsewhere, so the pauses drive it; `split` + `tidy` take under 5 ms; a short dictation equals the
+    /// cleaned baseline exactly; and the release-to-insertion latency through the whole controller grows by at most 10 ms.
+    private static func checkParagraphs(_ transcriber: Transcriber, clips: [URL]) async -> Bool {
         guard NeuralEngine.modelInstalled() else { print("paragraphs: NOT RUN (the Kokoro voice is not installed)"); return false }
+        guard Paths.dataRoot.path.hasPrefix("/private/tmp") else { print("paragraphs: NOT RUN (data root is not a scratch folder)"); return false }
         let kokoro = NeuralEngine()
         let samples: [Float]
         do { samples = try await speak(script, with: kokoro) } catch { print("paragraphs: could not speak the script: \(error)"); return false }
@@ -676,25 +703,69 @@ import WebKit
         do {
             let raw = try await transcriber.transcribe(samples: samples)
             let text = try await dictate(samples)
-            let short = try await dictate(Array(samples.prefix(16_000 * 8)))
-            let starts = { (paragraphs: [String]) in paragraphs.map { normalised($0).prefix(3).joined(separator: " ") } }
-            let expected = starts(script.map { $0[0] }), found = starts(text.components(separatedBy: "\n\n"))
+            let expected = starts(script.map { $0[0] }.joined(separator: "\n\n")), found = starts(text)
             let missed = expected.dropFirst().filter { !found.contains($0) }.count, extra = found.dropFirst().filter { !expected.contains($0) }.count
-            let clean = Cleanup.apply(raw.text, vocabulary: [:], removeFillers: true)
+            let blind = starts(Paragraphs.split(raw.text, pauses: []))
+            let drives = blind != starts(Paragraphs.split(raw.text, pauses: raw.pauses))
+            let clean = Cleanup.apply(Paragraphs.split(raw.text, pauses: raw.pauses), vocabulary: [:], removeFillers: true)
             let began = Date()
-            for _ in 0..<200 { _ = Paragraphs.split(clean, pauses: raw.pauses) }
-            let splitMs = Date().timeIntervalSince(began) * 1000 / 200
-            print("paragraphs: \(script.joined().joined(separator: " ").split(separator: " ").count) words spoken (gaps 1.2 s before sentences 6, 11, 16, else 0.4 s); the recogniser heard \(raw.pauses.count + 1) sentences, pause before each: " +
-                  raw.pauses.map { "\($0.word) \(String(format: "%.2f", $0.seconds))" }.joined(separator: ", "))
-            print("paragraphs: \(text.components(separatedBy: "\n\n").count) paragraphs, missed \(missed), extra \(extra); Paragraphs.split \(String(format: "%.3f", splitMs)) ms on \(clean.count) characters")
+            for _ in 0..<200 { _ = Paragraphs.tidy(Cleanup.apply(Paragraphs.split(raw.text, pauses: raw.pauses), vocabulary: [:], removeFillers: true)) }
+            let withCleanup = Date().timeIntervalSince(began) * 1000 / 200
+            let began2 = Date()
+            for _ in 0..<200 { _ = Paragraphs.tidy(Paragraphs.split(raw.text, pauses: raw.pauses)) }
+            let splitMs = Date().timeIntervalSince(began2) * 1000 / 200
+            print("paragraphs: \(script.joined().joined(separator: " ").split(separator: " ").count) words in \(script.map(\.count)) sentences (gaps 1.2 s before sentences 4, 9, 13, else 0.4 s); the recogniser heard \(raw.pauses.count) sentences, pause before each: " +
+                  raw.pauses.map { $0.map { String(format: "%.2f", $0) } ?? "?" }.joined(separator: ", "))
+            print("paragraphs: \(text.components(separatedBy: "\n\n").count) paragraphs, missed \(missed), extra \(extra); without pauses the paragraphs start at \(blind.dropFirst().joined(separator: " | ")) (differs: \(drives))")
+            print("paragraphs: split + tidy \(String(format: "%.3f", splitMs)) ms (with Cleanup \(String(format: "%.3f", withCleanup)) ms) on \(clean.count) characters")
             print("paragraphs output: " + text.replacingOccurrences(of: "\n\n", with: " ⏎⏎ "))
-            let untouched = !short.contains("\n") && short.split(separator: " ").count < 60
-            print("paragraphs: short dictation (8 s) \"\(short)\" untouched \(untouched)")
-            return missed + extra <= 1 && untouched && text.hasSuffix(".")
+            let rawShort = try await transcriber.transcribe(samples: Array(samples.prefix(16_000 * 8)))
+            let baseline = BritishSpelling.apply(Cleanup.apply(rawShort.text, vocabulary: [:], removeFillers: true, isWord: DictationController.isCommonWord))
+            let short = try await dictate(Array(samples.prefix(16_000 * 8)))
+            print("paragraphs: short dictation (8 s) \"\(short)\" equals the cleaned baseline: \(short == baseline)")
+            // Release to insertion through the production controller, paragraphs off and on (the same clips, one binary).
+            var settings = Settings.load()
+            let saved = settings.paragraphs
+            defer { settings.paragraphs = saved; try? settings.save() }
+            settings.paragraphs = true; try? settings.save()
+            let on = await DictationBench.releaseToPaste(transcriber, clips: clips)
+            settings.paragraphs = false; try? settings.save()
+            let off = await DictationBench.releaseToPaste(transcriber, clips: clips)
+            let slow = on.median - off.median > 10 || on.median > 50
+            print(String(format: "paragraphs: release to insertion median %.0f ms (max %.0f) with paragraphs, %.0f ms (max %.0f) without; 0.5.0 was 25 to 40 ms%@",
+                         on.median, on.max, off.median, off.max, slow ? "  TOO SLOW" : ""))
+            let regressions = checkSplitRegressions()
+            return missed + extra <= 1 && drives && splitMs < 5 && short == baseline && !slow && text.hasSuffix(".") && regressions
         } catch {
             print("paragraphs: failed: \(error)")
             return false
         }
+    }
+
+    /// Sol's 0.6.0 findings 1, 2 and 5 to 7 on the pure code: no break inside "Dr. Smith", "No. 5", an ellipsis or a French
+    /// quotation; pauses stay with their sentence through filler and repeated sentence starts; lists stay whole.
+    private static func checkSplitRegressions() -> Bool {
+        let names = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet", "Kilo", "Lima"]
+        let plain = { (n: String) in "\(n) goes with eight other plain words to make ten." }
+        func around(_ middle: String) -> String { (names.prefix(4).map(plain) + [middle] + names[4..<7].map(plain)).joined(separator: " ") }
+        var failures: [String] = []
+        for (label, middle, bad) in [("Dr.", "Please ask Dr. Smith about the plan before noon today.", "Dr.\n\n"),
+                                     ("No. 5", "We live at No. 5 on the left side of the road.", "No.\n\n"),
+                                     ("ellipsis", "I thought... perhaps we should wait until the weekend instead.", "...\n\n"),
+                                     ("guillemets", "Il a répondu « oui ! » Ensuite nous sommes partis ensemble.", "!\n\n»")] {
+            let out = Paragraphs.split(around(middle))
+            if out.contains(bad) || !out.contains(middle) { failures.append(label) }
+        }
+        let um = (0..<8).map { $0 >= 1 && $0 <= 3 ? "Um, bit \(names[$0]) goes with eight other plain words to make ten." : plain(names[$0]) }
+        let gaps = { (at: Int) in (0..<8).map { $0 == 0 ? nil : ($0 == at ? 1.3 : 0.2) as Double? } }
+        let split = Paragraphs.split(um.joined(separator: " "), pauses: gaps(4))
+        if !Cleanup.apply(split, vocabulary: [:], removeFillers: true).contains("\n\n" + plain("Echo")) { failures.append("Um, starts") }
+        let so = (0..<8).map { "So, " + plain(names[$0]).lowercased() }
+        if !Paragraphs.split(so.joined(separator: " "), pauses: gaps(5)).contains("\n\nSo, foxtrot goes") { failures.append("repeated starts") }
+        let list = Paragraphs.tidy((1...62).map { "w\($0)" }.joined(separator: " ") + ".\n\n1. One thing.\n\nMore of it.\n2. Two things")
+        if list.contains("\n\n1.") == false || list.contains("thing. More of it.\n2. Two things.") == false { failures.append("list") }
+        print("paragraphs: Sol regressions (Dr., No. 5, ellipsis, guillemets, Um starts, repeated starts, list, full stop) \(failures.isEmpty ? "ok" : "FAIL \(failures)")")
+        return failures.isEmpty
     }
 
     /// The live path: the clip re-sampled to a typical 48 kHz stereo input format, through the Recorder's converter in
