@@ -237,6 +237,7 @@ enum DictationError: LocalizedError, Equatable {
             return nil
         }
         guard gen == generation else { return nil }               // discard() has already stopped the input
+        if let notice = audio.fallbackNotice { micNotice = notice }   // the chosen mic went away after it was resolved
         if case .recording = state {} else { _ = audio.stop() }   // stopped while the microphone was starting
         let raw: String
         do { raw = try await transcript.value } catch {

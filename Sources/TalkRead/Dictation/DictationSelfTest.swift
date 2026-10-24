@@ -16,6 +16,7 @@ import WebKit
         var ok = checkHotkeys()
         ok = checkTextRules() && ok
         if Paths.dataRoot.path.hasPrefix("/private/tmp") {
+            ok = await checkMicFallback() && ok
             ok = await checkOwnership(fixture: URL(fileURLWithPath: dir)) && ok
             ok = await checkDrain(fixture: URL(fileURLWithPath: dir)) && ok
         } else {
@@ -117,6 +118,7 @@ import WebKit
         var onLevel: ((Float) -> Void)?
         var log: ((String) -> Void)?                              // "mic" when an input starts
         var delay = Duration.zero
+        var fallbackNotice: String?                               // what a Recorder whose device would not open reports
         private(set) var starts = 0
         private(set) var running = false
         private var session = 0
@@ -199,6 +201,35 @@ import WebKit
         }
 
         static func uninterruptible(_ d: Duration) async { await Task.detached { try? await Task.sleep(for: d) }.value }
+    }
+
+    /// Sol 0.5.0 #2: the chosen mic is unplugged between the controller resolving it and the Recorder opening it. With an
+    /// injected open failure the Recorder falls back to a fresh engine on the system default and reports the notice; the
+    /// controller shows it in the pill and keeps the saved choice. No device is opened and nothing is captured.
+    private static func checkMicFallback() async -> Bool {
+        let recorder = Recorder()
+        recorder.microphoneUID = "talkread-selftest-unplugged"
+        var tried: [String] = []
+        recorder.selectDevice = { uid, _ in tried.append(uid); return false }
+        let (_, notice) = recorder.makeEngine()
+        let opened = tried == ["talkread-selftest-unplugged"] && notice == Microphone.fallbackNotice(Microphone.inputs())
+            && recorder.microphoneUID == "talkread-selftest-unplugged"
+
+        let audio = FakeAudio()
+        audio.fallbackNotice = "Mic not found, using Selftest Default"
+        let c = DictationController(audio: audio, asr: FakeASR()) { _, _, _ in .inserted }
+        c.quiet = true
+        let saved = Microphone.inputs().first?.uid ?? "talkread-selftest-mic"   // resolves now (read only), fails to open
+        c.microphoneUID = saved
+        try? c.start(caller: "A")
+        let deadline = Date().addingTimeInterval(3)
+        while c.micNotice != audio.fallbackNotice, Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+        let shown = c.micNotice == audio.fallbackNotice && c.microphoneUID == saved && audio.starts == 1
+        try? c.cancel(caller: "A")
+        _ = await c.result()
+        print("mic fallback: Recorder tried the saved mic and fell back with \"\(notice ?? "no notice")\" \(opened ? "ok" : "FAIL"); "
+              + "pill shows \"\(c.micNotice ?? audio.fallbackNotice ?? "")\" while recording, saved choice kept \(shown ? "ok" : "FAIL")")
+        return opened && shown
     }
 
     private static func checkOwnership(fixture dir: URL) async -> Bool {

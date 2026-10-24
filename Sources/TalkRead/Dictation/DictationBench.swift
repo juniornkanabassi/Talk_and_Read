@@ -113,6 +113,7 @@ import TalkReadCore
         var onBuffer: ((AVAudioPCMBuffer) -> Void)?
         var onLevel: ((Float) -> Void)?
         var done: (() -> Void)?
+        let fallbackNotice: String? = nil
         let samples: [Float]
         private var feeding: Task<Void, Never>?
         init(samples: [Float]) { self.samples = samples }
