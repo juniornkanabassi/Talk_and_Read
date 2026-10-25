@@ -73,7 +73,7 @@ final class ShortcutTests: XCTestCase {
 
     func testSpeedStepClamps() {
         var s = Settings()
-        s.speed = 3.0 + 0.05; XCTAssertEqual(s.validated().speed, 3.0)
+        s.speed = 4.0 + 0.05; XCTAssertEqual(s.validated().speed, 4.0)
         s.speed = 0.5 - 0.05; XCTAssertEqual(s.validated().speed, 0.5)
         s.speed = 2.5 + 0.05; XCTAssertEqual(s.validated().speed, 2.55)
         s.speed = 2.5 - 0.05; XCTAssertEqual(s.validated().speed, 2.45)
