@@ -15,7 +15,7 @@
 setopt pipefail
 zmodload zsh/datetime
 
-PROJECT="/Users/junior.nkanabassi/Documents/JuniorOS/02 Projects/Development/Talk & Read"
+PROJECT="${TALKREAD_PROJECT:-$HOME/Documents/JuniorOS/02 Projects/Development/Talk & Read}"
 SRC="$PROJECT/Source"
 CHECKLIST="${TALKREAD_CHECKLIST:-$PROJECT/00 Project State/Acceptance checklist.md}"
 ROOT=/private/tmp/talkread-checker

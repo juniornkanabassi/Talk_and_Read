@@ -14,7 +14,7 @@ swift test  --scratch-path /private/tmp/talkread-build
 
 ## Installing a release (testers)
 
-1. Download `Talk_and_Read_<version>.zip` from the latest release at https://github.com/juniornkanabassi/talkandread-releases (or this repository's Releases), double-click it, and drag **Talk & Read** into Applications. Builds are notarised by Apple, so it opens without a warning.
+1. Download `Talk_and_Read_<version>.zip` from the latest release at https://github.com/juniornkanabassi/Talk_and_Read/releases (0.8.0 and earlier are at https://github.com/juniornkanabassi/talkandread-releases), double-click it, and drag **Talk & Read** into Applications. Builds are notarised by Apple, so it opens without a warning.
 2. Open it. A short setup asks for Accessibility (reading your selection, the highlight, typing) and Microphone (dictation); Screen Recording is optional (the highlight in apps that hide their text).
 3. It offers to download the voice (about 90 MB) and the dictation model (about 580 MB) from Hugging Face. Everything else runs on your Mac; no text, audio or documents leave it.
 4. Read: select text and press ⌃A. Dictate: hold right Option and speak. All shortcuts are in Settings ▸ Shortcuts.
@@ -47,3 +47,7 @@ talkread history-delete <id> --yes  # removals need --yes
 Several agents can work at once. Each MCP adapter has its own caller id; a read or dictation another caller started is refused with `busy` unless `--force` is given, and the person at the Mac always wins. A retried request with the same `--request-id` acts once and replays its answer (the MCP adapter uses the tool call's id). Removals (`library-remove`, `history-delete`, `vocabulary-remove`, `pronunciation-remove`, `shortcuts-reset`) are refused without `--yes` (`yes: true` over MCP).
 
 Left to the app on purpose: granting permissions, onboarding, the screenshot and listen drag, window placement, and downloading the Breeze voices, which only start beside their licence on Settings ▸ Models. `models download --model` fetches the other optional downloads (Qwen3, word timing, French).
+
+## Licence
+
+Copyright © 2026 Junior Nkanabassi. Talk & Read is free software under the GNU General Public License, version 3 or (at your option) any later version (`GPL-3.0-or-later`); see [LICENSE](LICENSE). Bundled third-party components and the optional model downloads keep their own licences.

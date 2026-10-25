@@ -38,6 +38,7 @@ cp "$ROOT/mcp/talkread-mcp.mjs" "$APP/Contents/Resources/mcp/talkread-mcp.mjs"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :TRSourceCommit string $COMMIT" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 cp "$ROOT/Resources/MenuBarIcon.png" "$ROOT/Resources/MenuBarIcon@2x.png" "$APP/Contents/Resources/"
 # SwiftPM resource bundles (FluidAudio ships some) must travel with the app.
 for bundle in "$BIN_DIR"/*.bundle(N); do /usr/bin/ditto "$bundle" "$APP/Contents/Resources/${bundle:t}"; done
