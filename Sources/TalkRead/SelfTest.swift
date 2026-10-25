@@ -199,7 +199,8 @@ enum SelfTest {
                 let cuts = starts.map { s in readings.first { $0.clock >= s }?.index ?? rendered.count } + [rendered.count]
                 var hypothesis: [String] = []
                 for k in chunks.indices where cuts[k + 1] > cuts[k] {
-                    hypothesis.append((try? await asr.transcribe(Array(rendered[cuts[k] ..< cuts[k + 1]]), language: language).text) ?? "")
+                    // A recogniser failure fails R3: an empty transcript would score 100 % for both sides of a comparison.
+                    hypothesis.append(try await asr.transcribe(Array(rendered[cuts[k] ..< cuts[k + 1]]), language: language).text)
                 }
                 return (wer(reference: reference, hypothesis: hypothesis.joined(separator: " "), language: language),
                         Double(rendered.count) / Player.sampleRate, span1x / max(speechSpan(rendered), 0.001))
