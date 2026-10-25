@@ -1,18 +1,13 @@
-// Dictation in more than English (Junior speaks English and French and switches between them). Two candidates behind
-// the same DictationASR interface, compared by `--bench --engines parakeet-v3,nemotron`:
-// - ParakeetV3Transcriber: Parakeet TDT v3 (25 European languages, no language setting: it writes what it hears). Not a
-//   streaming model, so the live preview is the clip so far decoded again about once a second; the final text is one
-//   decode of the whole utterance. Same files as the word-timing aligner (`Aligner`), so one download serves both.
-// - NemotronTranscriber: Nemotron 3.5 streaming multilingual 0.6B, Latin-script build, "auto" language prompt. Streams like
-//   Parakeet Unified, and says which language it heard.
+// Dictation in more than English (Junior speaks English and French and switches mid-sentence): Parakeet TDT v3, 25
+// European languages and no language setting, so it writes what it hears in the language it hears. Not a streaming
+// model: the live text is the clip so far decoded again about once a second, the final text one decode of the whole
+// utterance. Same files as the word-timing aligner (`Aligner`), so one download serves both.
+// Bench on the Mac, 25 Oct (28 English clips, 12 French, 12 switching mid-utterance; the French ones synthetic): WER
+// 5.7 % / 2.2 % / 5.9 % against Parakeet Unified's 6.7 % / 83 % / 45 %, about 50 ms more from release to text, no
+// extra memory. Nemotron 3.5 streaming multilingual scored 16 to 17 % in all three and needed 1.8 GB, so it was dropped.
 import AVFoundation
 import FluidAudio
 import TalkReadCore
-
-/// The multilingual recogniser dictation uses (the bench's winner).
-@MainActor enum MultilingualRecogniser {
-    static func make() -> DictationASR { ParakeetV3Transcriber() }
-}
 
 @MainActor final class ParakeetV3Transcriber: DictationASR {
     let directory: URL
@@ -116,94 +111,5 @@ import TalkReadCore
         var busy = false
         var at = 0
         var task: Task<Void, Never>?
-    }
-}
-
-@MainActor final class NemotronTranscriber: DictationASR {
-    /// 560 ms: the shortest tier, nearest Parakeet Unified's 640 ms for the live text. Its known fault (punctuation
-    /// thinning out over minutes of unbroken speech) does not reach dictation, which starts afresh every utterance.
-    let chunkMs: Int
-    /// ISO 639-1 codes. One language sets the model's prompt to it; more than one leaves it on "auto".
-    var languages: [String] = ["en", "fr"]
-    private var manager: StreamingNemotronMultilingualAsrManager?
-    private(set) var isLoading = false { didSet { onLoadingChange?() } }
-    var onLoadingChange: (() -> Void)?
-    private var loadError: Error?
-    private var loadWaiters: [AsyncStream<Void>.Continuation] = []
-    private let queue = RecogniserQueue()
-    /// The language the model said it heard in the last utterance ("fr-FR"), nil when it said none.
-    private(set) var lastLanguage: String?
-
-    init(chunkMs: Int = 560) { self.chunkMs = chunkMs }
-
-    var isLoaded: Bool { manager != nil }
-    var isDownloaded: Bool {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("FluidAudio/Models/\(Repo.nemotronMultilingual.folderName)/latin/\(chunkMs)ms")
-        return FileManager.default.fileExists(atPath: dir.appendingPathComponent(ModelNames.NemotronMultilingualStreaming.metadata).path)
-    }
-
-    func load(progress: ((Double) -> Void)? = nil) async throws {
-        if manager != nil { return }
-        if !isLoading {
-            isLoading = true
-            let chunkMs = chunkMs
-            Task {
-                do {
-                    // "en" picks the Latin-script build (en, es, fr, it, pt, de); the prompt is set per utterance.
-                    let shared = try await StreamingNemotronMultilingualAsrManager.downloadAndPreloadShared(
-                        languageCode: "en", chunkMs: chunkMs) { p in Task { @MainActor in progress?(p.fractionCompleted * 0.95) } }
-                    let m = StreamingNemotronMultilingualAsrManager()
-                    try await m.loadFromShared(shared)
-                    manager = m
-                    loadError = nil
-                } catch {
-                    loadError = error
-                }
-                isLoading = false
-                for waiter in loadWaiters { waiter.finish() }
-                loadWaiters = []
-            }
-        }
-        let (done, waiter) = AsyncStream.makeStream(of: Void.self)
-        loadWaiters.append(waiter)
-        for await _ in done {}
-        try Task.checkCancellation()
-        guard manager != nil else { throw loadError ?? ASRError.notInitialized }
-        progress?(1)
-    }
-
-    @discardableResult func unload() -> Bool {
-        guard !queue.inUse, !isLoading else { return false }
-        if let m = manager {
-            manager = nil
-            Task { await m.cleanup() }
-        }
-        return true
-    }
-
-    func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> Transcript {
-        try await queue.exclusive {
-            try await load()
-            guard let m = manager else { throw ASRError.notInitialized }
-            await m.reset()
-            await m.setLanguage(languages.count == 1 ? languages[0] : "auto")
-            await m.setPartialCallback { text in Task { @MainActor in partial(text) } }
-            var frames = 0
-            for await buffer in audio {
-                try Task.checkCancellation()
-                frames += Int(buffer.frameLength)
-                _ = try await m.process(audioBuffer: buffer)
-            }
-            try Task.checkCancellation()
-            if frames < 16_000 { _ = try await m.process(audioBuffer: Transcriber.buffer(ArraySlice(repeating: 0, count: 16_000 - frames))) }
-            let (said, timings) = try await m.finishWithTokenTimings()
-            lastLanguage = await m.detectedLanguage()
-            await m.setPartialCallback { _ in }
-            let text = said.trimmingCharacters(in: .whitespacesAndNewlines)
-            return Transcript(text: text, pauses: Paragraphs.pauses(text: text, words: Paragraphs.words(from: timings.map {
-                .init(text: $0.token, start: $0.startTime, end: $0.endTime + Transcriber.endLag)
-            })), language: lastLanguage.map { String($0.prefix(2)).lowercased() })
-        }
     }
 }

@@ -46,6 +46,11 @@ final class CleanupTests: XCTestCase {
     func testPunctuationIsCaseInsensitiveAndAbsorbsTheModelsOwnMark() {
         XCTAssertEqual(clean("Hello Comma world Full Stop."), "Hello, world.")
         XCTAssertEqual(clean("hello comma, world."), "Hello, world.")
+        // A recogniser that punctuates by itself (Parakeet v3) and a spoken mark give one mark, the spoken one.
+        XCTAssertEqual(clean("Hi John, comma how are you?"), "Hi John, how are you?")
+        XCTAssertEqual(clean("Is it ready in five seconds? question mark"), "Is it ready in five seconds?")
+        XCTAssertEqual(clean("It's done. Question mark"), "It's done?")
+        XCTAssertEqual(clean("The end. New paragraph Next part"), "The end.\n\nNext part", "a line break keeps the full stop")
     }
 
     func testNewLineAndNewParagraph() {

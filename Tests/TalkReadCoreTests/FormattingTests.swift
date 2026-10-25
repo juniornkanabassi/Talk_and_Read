@@ -25,6 +25,7 @@ final class FormattingTests: XCTestCase {
     func testNumberCorrections() {
         XCTAssertEqual(clean("Book The Pitch for 7, actually 8, on Friday"), "Book The Pitch for 8 on Friday")
         XCTAssertEqual(clean("meet at 2 sorry 3pm"), "Meet at 3pm")
+        XCTAssertEqual(clean("Kick-off is at 3 30pm."), "Kick-off is at 3:30pm.", "Parakeet v3 writes the time with a space")
         XCTAssertEqual(clean("Book the pitch for seven, actually 8, on Friday."), "Book the pitch for 8 on Friday.")
         XCTAssertEqual(clean("someone, actually one of them"), "Someone, actually one of them")
         XCTAssertEqual(clean("I actually enjoyed 2 of them"), "I actually enjoyed 2 of them")

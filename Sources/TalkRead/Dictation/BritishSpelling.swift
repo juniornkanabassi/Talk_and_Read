@@ -13,10 +13,10 @@ enum BritishSpelling {
     ]
 
     /// Only the English runs of a dictation in several languages (a French "favorite" is not respelt).
-    @MainActor static func apply(_ text: String, languages: [String], fallback: String? = nil) -> String {
+    @MainActor static func apply(_ text: String, languages: [String]) -> String {
         guard languages.contains("en") else { return text }
         guard languages.count > 1 else { return apply(text) }
-        return Language.runs(text, among: languages, fallback: fallback).map { $0.language == "en" ? apply(String($0.text)) : String($0.text) }.joined()
+        return Language.runs(text, among: languages).map { $0.language == "en" ? apply(String($0.text)) : String($0.text) }.joined()
     }
 
     @MainActor static func apply(_ text: String) -> String {

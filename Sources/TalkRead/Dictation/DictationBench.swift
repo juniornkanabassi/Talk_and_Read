@@ -1,4 +1,4 @@
-// `TalkRead --selftest-asr <dir> --bench [--engines parakeet,parakeet-v3,nemotron,nemotron-1120,apple-speech,apple-dictation]
+// `TalkRead --selftest-asr <dir> --bench [--engines parakeet,parakeet-v3,apple-speech,apple-dictation]
 // [--languages en,fr] [--context]`: compares recognisers on a
 // fixture folder through the live streaming path (real-time 100 ms buffers). Per engine: WER of the cleaned text
 // (numbers, £, %, am/pm compared leniently), key terms from terms.txt typed exactly, clips typed exactly, latency from
@@ -30,10 +30,6 @@ import TalkReadCore
             switch name {
             case "parakeet": asr = Transcriber()
             case "parakeet-v3": asr = ParakeetV3Transcriber()
-            case "nemotron", "nemotron-1120":
-                let n = NemotronTranscriber(chunkMs: name == "nemotron" ? 560 : 1120)
-                n.languages = languages
-                asr = n
             case "apple-speech", "apple-dictation":
                 let apple = AppleTranscriber(model: name == "apple-speech" ? .speech : .dictation)
                 if CommandLine.arguments.contains("--context") { apple.contextualStrings = Cleanup.terms(vocabulary) }
@@ -53,16 +49,15 @@ import TalkReadCore
                 peak = max(peak, footprintMB())
                 let text = BritishSpelling.apply(Cleanup.apply(raw, vocabulary: vocabulary, removeFillers: true,
                                                                isWord: { DictationController.isCommonWord($0, languages: languages) }),
-                                                 languages: languages, fallback: (asr as? NemotronTranscriber)?.lastLanguage.map { String($0.prefix(2)) })
+                                                 languages: languages)
                 let ref = lenient(reference), e = DictationSelfTest.editDistance(ref, lenient(text))
                 let wanted = terms.filter { reference.contains($0) }, got = wanted.filter { text.contains($0) }
                 errors += e; words += ref.count; hits += got.count; termTotal += wanted.count; latencies.append(ms)
                 if text == reference { exact += 1 }
                 let missed = Set(wanted).subtracting(got).map { $0.replacingOccurrences(of: "\n", with: "⏎") }.sorted()
-                let heard = (asr as? NemotronTranscriber)?.lastLanguage.map { "[\($0)] " } ?? ""
-                print(String(format: "%@\t%.0f%%\t%.0f\t%d/%d\t%@\t%@%@%@", clip.deletingPathExtension().lastPathComponent,
+                print(String(format: "%@\t%.0f%%\t%.0f\t%d/%d\t%@\t%@%@", clip.deletingPathExtension().lastPathComponent,
                              100 * Double(e) / Double(max(1, ref.count)), ms, got.count, wanted.count, text == reference ? "yes" : "no",
-                             heard, text.replacingOccurrences(of: "\n", with: "⏎"), missed.isEmpty ? "" : "  [missed: \(missed.joined(separator: "; "))]"))
+                             text.replacingOccurrences(of: "\n", with: "⏎"), missed.isEmpty ? "" : "  [missed: \(missed.joined(separator: "; "))]"))
             }
             let e2e = await releaseToPaste(asr, clips: clips)
             let sorted = latencies.sorted()

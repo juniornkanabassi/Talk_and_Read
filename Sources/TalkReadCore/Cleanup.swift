@@ -22,7 +22,10 @@ public enum Cleanup {
         if removeFillers { text = text.replacingOccurrences(of: fillerPattern, with: "", options: .regularExpression) }
 
         for (pattern, replacement) in spoken {
-            text = text.replacingOccurrences(of: "(?i)\\b(?:\(pattern))\\b[.,!?;:]?", with: replacement, options: .regularExpression)
+            // A spoken mark replaces one the recogniser already wrote ("John, comma" is "John,", not "John,,"; Parakeet v3
+            // punctuates by itself). Line breaks, quotes and dashes keep what comes before them.
+            let before = ".,?!;:".contains(replacement) ? "(?:[.,!?;:][ \\t]*)?" : ""
+            text = text.replacingOccurrences(of: "(?i)\(before)\\b(?:\(pattern))\\b[.,!?;:]?", with: replacement, options: .regularExpression)
         }
         text = text.replacingOccurrences(of: "[ \\t]+([.,?!:;])", with: "$1", options: .regularExpression)
         text = text.replacingOccurrences(of: "[ \\t]*\\n[ \\t]*", with: "\n", options: .regularExpression)

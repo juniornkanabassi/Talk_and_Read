@@ -9,9 +9,6 @@ import TalkReadCore
 struct Transcript: Sendable {
     var text: String
     var pauses: [Double?] = []
-    /// The language the recogniser says it heard (ISO 639-1), when it says (Nemotron); the clean-up's fallback for
-    /// sentences too short to place.
-    var language: String? = nil
 }
 
 /// What the dictation controller needs from a recogniser (the real `Transcriber`, or a fake in the self-test).

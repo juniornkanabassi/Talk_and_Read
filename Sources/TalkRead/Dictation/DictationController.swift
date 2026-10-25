@@ -105,7 +105,7 @@ enum DictationError: LocalizedError, Equatable {
          decode: (@Sendable (URL) throws -> [Float])? = nil) {
         self.audio = audio ?? Recorder()
         self.asr = asr ?? Transcriber()
-        self.multilingual = multilingual ?? MultilingualRecogniser.make()
+        self.multilingual = multilingual ?? ParakeetV3Transcriber()
         self.insert = insert ?? { await Inserter.insert($0, targetPID: $1, requireField: $2, isCurrent: $3) }
         self.decode = decode ?? { try Transcriber.samples(of: $0) }
         history = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
@@ -121,7 +121,6 @@ enum DictationError: LocalizedError, Equatable {
     /// Mac yet and Apple's is installed (no download needed).
     private func recogniser() -> DictationASR {
         if languages != ["en"], multilingual.isLoaded || multilingual.isLoading || multilingual.isDownloaded {
-            (multilingual as? NemotronTranscriber)?.languages = languages
             return multilingual
         }
         // ponytail: until the multilingual model is downloaded (Settings ▸ Dictation starts it), dictation stays English.
@@ -343,7 +342,7 @@ enum DictationError: LocalizedError, Equatable {
         let languages = languages
         var text = Cleanup.apply(spoken, vocabulary: vocabulary(), removeFillers: settings.removeFillers,
                                  isWord: { Self.isCommonWord($0, languages: languages) })
-        if britishSpelling { text = BritishSpelling.apply(text, languages: languages, fallback: raw.language) }
+        if britishSpelling { text = BritishSpelling.apply(text, languages: languages) }
         if settings.paragraphs { text = Paragraphs.tidy(text) }
         return settings.polishWithAppleIntelligence ? await Polish.polish(text) : text
     }
