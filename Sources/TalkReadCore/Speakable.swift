@@ -40,17 +40,22 @@ public struct Speakable: Sendable {
         let lo = min(max(range.lowerBound, 0), ns.length)
         let hi = min(max(range.upperBound, lo), ns.length)
         // ponytail: scanned as a slice so regex cost is per chunk, not per document; callers pass chunk-sized ranges.
-        let slice = ns.substring(with: NSRange(location: lo, length: hi - lo))
+        // The slice starts up to 80 characters early, back to its line's start, so a mark at the chunk's start is judged
+        // in context (a footnote "12" the chunker split from "consideration.", a "[12]" glued to the previous chunk's
+        // last word). That context is read, never spoken.
+        var ctx = lo
+        while ctx > 0, lo - ctx < 80, ns.character(at: ctx - 1) != 0x0A, ns.character(at: ctx - 1) != 0x0D { ctx -= 1 }
+        let slice = ns.substring(with: NSRange(location: ctx, length: hi - ctx))
         var maker = Maker(slice, lexicon: lexicon, french: language == "fr")
         maker.citations = skipCitations
         for r in skip.sorted(by: { $0.lowerBound < $1.lowerBound }) {   // into slice coordinates, overlaps merged
-            let a = max(r.lowerBound, lo) - lo, b = min(r.upperBound, hi) - lo
+            let a = max(r.lowerBound, lo) - ctx, b = min(r.upperBound, hi) - ctx
             guard a < b else { continue }
             if let last = maker.skip.last, a <= last.upperBound { maker.skip[maker.skip.count - 1] = last.lowerBound..<max(b, last.upperBound) }
             else { maker.skip.append(a..<b) }
         }
-        maker.scan(0, maker.u.count, lineStart: true)
-        return maker.finish(base: lo)
+        maker.scanAll(from: lo - ctx, sliceStartsLine: ctx == 0 || [0x0A, 0x0D].contains(ns.character(at: ctx - 1)))
+        return maker.finish(base: ctx)
     }
 
     /// Speakable UTF-16 range -> source UTF-16 range: the union of the source characters those units came from.
@@ -177,11 +182,22 @@ private struct Maker {
         return end - p
     }
 
-    /// The end of the skip range holding p, or nil.
-    func skipEnd(_ p: Int) -> Int? {
-        var l = 0, h = skip.count   // first range ending after p
-        while l < h { let m = (l + h) / 2; if skip[m].upperBound > p { h = m } else { l = m + 1 } }
-        return l < skip.count && skip[l].lowerBound <= p ? skip[l].upperBound : nil
+    /// True when p begins its line (only spaces or tabs before it on the line); `sliceStartsLine` says whether index 0 does.
+    func startsLine(_ p: Int, sliceStartsLine: Bool) -> Bool {
+        var i = p
+        while i > 0, u[i - 1] == 0x20 || u[i - 1] == 0x09 { i -= 1 }
+        return i == 0 ? sliceStartsLine : u[i - 1] == 0x0A || u[i - 1] == 0x0D
+    }
+
+    /// Scans the slice from `from` around the skip ranges, one stretch at a time, so no lexicon key, link or address
+    /// match reaches into skipped text (a skipped word would otherwise be spoken and timed).
+    mutating func scanAll(from: Int, sliceStartsLine: Bool) {
+        var a = from
+        for r in skip + [u.count..<u.count] where r.upperBound > a {
+            if r.lowerBound > a { scan(a, r.lowerBound, lineStart: startsLine(a, sliceStartsLine: sliceStartsLine)) }
+            if !r.isEmpty { skippedAt.insert(units.count) }
+            a = max(a, r.upperBound)
+        }
     }
 
     /// Abbreviations of four letters or more that a number follows ("para.4", "arts.8"): the number is read.
@@ -236,7 +252,6 @@ private struct Maker {
         var p = from
         var lineStart = start
         loop: while p < to {
-            if let end = skipEnd(p) { skippedAt.insert(units.count); p = min(end, to); continue }
             let c = u[p]
             if c == 0x0A || c == 0x0D { copy(p, p + 1); p += 1; lineStart = true; continue }
             if lineStart {

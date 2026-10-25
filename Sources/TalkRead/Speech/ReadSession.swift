@@ -277,10 +277,14 @@ import TalkReadCore
             timings += Timeline.timings(chunkTokens: Array(tokens[chunk.tokens]), chunkTokenOffset: chunk.tokens.lowerBound,
                                         speakable: said, spoken: synth.words, offset: start,
                                         chunkDuration: player.queuedUntil - start, language: voice.language)
-            if k == 0 { firstAudio() }
             next = chunk.tokens.upperBound
+            // A chunk with nothing to say (a skipped running head, a lone URL) keeps its zero-length timings but is not
+            // the opening chunk: playback, first audio and the slow engine's opening budget wait for real sound.
+            guard !synth.samples.isEmpty else { continue }
+            if k == 0 { firstAudio() }
             k += 1
         }
+        if k == 0 { firstAudio() }   // nothing audible at all: start the (empty) player so the read finishes
         doneEnqueueing = true
         player.moreComing = false
     }

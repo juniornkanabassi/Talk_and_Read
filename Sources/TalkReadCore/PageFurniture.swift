@@ -13,7 +13,8 @@ public enum PageFurniture {
     /// The ranges (UTF-16, in `text`) of every furniture line. `pageStarts`: where each page begins in `text`, as the
     /// importer joined them (pages separated by "\n\n").
     ///
-    /// Two kinds count, both only in the first or last two lines of a page and only with three pages or more:
+    /// Two kinds count, both only in the first or last two lines of a page (one on a page of under 8 lines), never an
+    /// answer option or list item, and only with three pages or more:
     /// the same line on at least three pages and a fifth of them (a journal title, a running head), and a page number
     /// ("7", "Page 3 of 40", "- 7 -") that moves in step with the page. A numbered line with other words ("Question 2",
     /// "Matchday 3", even a running head like "12 Contract Law") is read: one question per page also counts with the page.
@@ -34,9 +35,13 @@ public enum PageFurniture {
                 if let r = trimmed(u, a..<i) { all.append(r) }
                 a = i + 1
             }
-            let edges = Set(all.prefix(edgeLines).map(\.lowerBound) + all.suffix(edgeLines).map(\.lowerBound))
+            // A short page (a slide, one exam question) gets one edge line a side, so its body is not all "edge".
+            let n = all.count < 8 ? 1 : edgeLines
+            let edges = Set(all.prefix(n).map(\.lowerBound) + all.suffix(n).map(\.lowerBound))
             for r in all where edges.contains(r.lowerBound) && r.count <= maxLength {
                 let s = String(decoding: u[r], as: UTF16.self).lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                // An answer option or list item ("A. Yes", "(b) No", "3) Cost") is body, however often it repeats.
+                guard s.range(of: "^\\(?([a-h]|[ivx]{1,4}|[0-9]{1,2})[.)] ", options: .regularExpression) == nil else { continue }
                 let first = s.split(whereSeparator: { !$0.isASCII || !$0.isNumber }).first
                 lines.append(Line(page: page, range: r, exact: s,
                                   shape: s.replacingOccurrences(of: "[0-9]+", with: "#", options: .regularExpression),
