@@ -8,7 +8,7 @@ I listen to almost everything I read at 2.5× and dictate most of what I write, 
 
 Earlier releases, from before the app moved to this repository, are also kept on [talkandread-releases](https://github.com/juniornkanabassi/talkandread-releases/releases).
 
-Talk & Read is still an early version (0.8.0). It works well enough for me to use every day, but expect rough edges, and please [open an issue](https://github.com/juniornkanabassi/Talk_and_Read/issues) if something goes wrong.
+Talk & Read 1.0 is the first public release. I use it every day, but it is built by one person, so please [open an issue](https://github.com/juniornkanabassi/Talk_and_Read/issues) if something goes wrong.
 
 ## What it does
 
