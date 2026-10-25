@@ -27,6 +27,9 @@ import TalkReadCore
     /// The read fell back to Kokoro (V3): the panel grows by one line for the notice.
     private var hasNotice: Bool { message == nil && model?.session?.fallbackReason != nil }   // as MiniPlayerLive draws it
     private var hideTask: Task<Void, Never>?
+    /// Points `resize` moved the card down to keep it on its display; undone as it shrinks, never saved as a drag.
+    private var fitShift: CGFloat = 0
+    private var fittedOrigin: NSPoint?   // where `resize` last put it (a move to anywhere else is a drag)
     private var sentenceCache: (id: ObjectIdentifier, ranges: [Range<Int>])?
 
     var isVisible: Bool { panel?.isVisible == true }
@@ -83,8 +86,9 @@ import TalkReadCore
         hideTask?.cancel()
         let panel = self.panel ?? makePanel(model)
         if !panel.isVisible {
-            resize()
+            fitShift = 0
             place(panel, saved: model.settings.miniPlayerOrigin)
+            resize()
             panel.orderFrontRegardless()   // never activates the app
         }
         if !isShowing { isShowing = true }
@@ -118,10 +122,16 @@ import TalkReadCore
         guard let panel, let model else { return }
         let height = MiniPlayerView.height(expanded: model.settings.subtitlesExpanded, notice: hasNotice) + dockedHeight
         var frame = panel.frame   // setFrame keeps minY explicitly; the card grows and shrinks at the top
+        frame.origin.y += fitShift   // back where it was put, before fitting again
         frame.size = panel.frameRect(forContentRect: NSRect(origin: .zero, size: NSSize(width: MiniPlayerView.width, height: height))).size
         // Grown past the top of its display (dragged high, then a dictation docked): the whole card moves down to fit.
-        if let area = panel.screen?.visibleFrame, frame.maxY > area.maxY { frame.origin.y = max(area.minY, area.maxY - frame.height) }
+        fitShift = 0
+        if let area = (panel.screen ?? NSScreen.main)?.visibleFrame, frame.maxY > area.maxY {
+            fitShift = max(0, min(frame.maxY - area.maxY, frame.minY - area.minY))   // never below its display either
+            frame.origin.y -= fitShift
+        }
         guard frame != panel.frame else { return }
+        fittedOrigin = frame.origin
         panel.setFrame(frame, display: true)
     }
 
@@ -195,8 +205,11 @@ import TalkReadCore
 
     // ponytail: one remembered origin (Settings.miniPlayerOrigin); falls back to the main screen if that point is gone.
     func windowDidMove(_ notification: Notification) {
-        guard let panel, panel.isVisible, model?.settings.miniPlayerOrigin != panel.frame.origin else { return }
-        model?.settings.miniPlayerOrigin = panel.frame.origin
+        guard let panel, panel.isVisible else { return }
+        if panel.frame.origin != fittedOrigin { fitShift = 0 }   // dragged: where it now is, is where it was put
+        let origin = NSPoint(x: panel.frame.minX, y: panel.frame.minY + fitShift)
+        guard model?.settings.miniPlayerOrigin != origin else { return }
+        model?.settings.miniPlayerOrigin = origin
     }
 }
 
