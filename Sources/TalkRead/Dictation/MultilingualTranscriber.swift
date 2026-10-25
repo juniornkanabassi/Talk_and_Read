@@ -18,6 +18,8 @@ import TalkReadCore
     private var loadWaiters: [AsyncStream<Void>.Continuation] = []
     private let queue = RecogniserQueue()
 
+    // ponytail: its own AsrManager, separate from the Aligner's on the same files. Both loaded cost about 13 MB footprint
+    // and 17 MB resident more than one (measured 25 Oct; the weights are memory-mapped), so they are not shared.
     init(directory: URL? = nil) { self.directory = directory ?? AsrModels.defaultCacheDirectory(for: .v3) }
 
     var isLoaded: Bool { manager != nil }

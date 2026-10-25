@@ -89,13 +89,17 @@ public enum Cleanup {
         ]
         guard languages.contains("fr") else { return english }
         // "point final" and "à la ligne" are also ordinary French ("mettre un point final à", "à la ligne de touche"), so
-        // they count only at the end or before a capital; "deux points" (a score) is not a command at all; "virgule"
-        // between two numbers is a decimal comma ("deux virgule cinq buts attendus").
-        let clauseEnd = "(?=[ \\t]*(?:$|\\n)|[ \\t]+(?-i:\\p{Lu}))"
-        let number = "(?:\\d{1,9}|zéro|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)"
-        return [("nouveau paragraphe", "\n\n"), ("à la ligne\(clauseEnd)", "\n"), ("point final\(clauseEnd)", "."),
+        // they count only at a clause end (the recogniser's own mark, another command, the end, or a capital after them),
+        // "point final" never after an article and "à la ligne" never before a lone capital or a number ("la ligne B");
+        // "deux points" (a score) is not a command at all; "virgule" next to a number is a decimal comma ("deux virgule
+        // cinq buts attendus", "onze virgule 4").
+        let clauseEnd = "(?=[.,!?;:]?[ \\t]*(?:$|\\n|[\\x{E020}-\\x{E03F}])|[.,!?;:]?[ \\t]+(?-i:\\p{Lu}))"
+        let number = "(?:\\d{1,9}|zéro|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingt|trente|quarante|cinquante|soixante|cent|mille)"
+        return [("nouveau paragraphe", "\n\n"),
+                ("à la ligne(?![ \\t]+(?:(?-i:\\p{Lu})\\b|\\d))\(clauseEnd)", "\n"),
+                ("(?<!\\b(?:un|le|du|au)[ \\t]{1,3})point final\(clauseEnd)", "."),
                 ("point[ -]virgule", ";"), ("point d['’]interrogation", "?"), ("point d['’]exclamation", "!"),
-                ("(?<!\\b\(number)[ \\t])virgule|virgule(?![ \\t]+\(number)\\b)", ","),
+                ("(?<!\\b\(number)[ \\t]{1,3})virgule(?![ \\t]+\(number)\\b)", ","),
                 ("ouvrez les guillemets|ouvrir les guillemets", openQuote), ("fermez les guillemets|fermer les guillemets", closeQuote)]
             + english
     }

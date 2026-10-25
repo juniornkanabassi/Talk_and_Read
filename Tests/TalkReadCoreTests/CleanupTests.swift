@@ -66,6 +66,12 @@ final class CleanupTests: XCTestCase {
         XCTAssertEqual(fr("Nous avons deux points de retard."), "Nous avons deux points de retard.")
         XCTAssertEqual(fr("Il faut mettre un point final à ce débat."), "Il faut mettre un point final à ce débat.")
         XCTAssertEqual(fr("Deux virgule cinq buts attendus, 1 virgule 4 xG."), "Deux virgule cinq buts attendus, 1 virgule 4 xG.")
+        XCTAssertEqual(fr("Onze virgule cinq, et deux  virgule trois."), "Onze virgule cinq, et deux  virgule trois.".replacingOccurrences(of: "  ", with: " "))
+        XCTAssertEqual(fr("Revenons à la ligne B du tableau."), "Revenons à la ligne B du tableau.")
+        XCTAssertEqual(fr("Il faut enfin mettre un point final"), "Il faut enfin mettre un point final")
+        // The recogniser's own mark after a command, and commands one after another.
+        XCTAssertEqual(fr("C'est fini point final."), "C'est fini.")
+        XCTAssertEqual(fr("Première partie à la ligne."), "Première partie")
         XCTAssertEqual(fr("Ah, the tricky part is the timing."), "The tricky part is the timing.", "an English ah is still a filler")
         XCTAssertEqual(fr("Hello comma world full stop"), "Hello, world.")
         XCTAssertEqual(clean("Bonjour virgule"), "Bonjour virgule", "French commands only with French on")
