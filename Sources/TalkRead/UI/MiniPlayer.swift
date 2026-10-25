@@ -96,6 +96,7 @@ import TalkReadCore
 
     func hide() {
         hideTask?.cancel()
+        SpeedControl.SpeedButton.closePanel()   // never left hanging off a hidden player
         panel?.orderOut(nil)
         message = nil
         if isShowing { isShowing = false }   // a docked dictation moves back to its own pill
@@ -165,7 +166,9 @@ import TalkReadCore
         guard seconds > 0 else { return }
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
-            while !Task.isCancelled, self?.docked != nil || self?.containsPointer == true { try? await Task.sleep(for: .seconds(0.5)) }
+            while !Task.isCancelled, self?.docked != nil || self?.containsPointer == true || SpeedControl.SpeedButton.panelShown {
+                try? await Task.sleep(for: .seconds(0.5))
+            }
             if !Task.isCancelled { self?.hide() }
         }
     }
@@ -470,17 +473,25 @@ struct SpeedControl: NSViewRepresentable {
         button.setAccessibilityValue(Theme.speed(speed))
     }
 
-    final class SpeedButton: NSButton {
+    final class SpeedButton: NSButton, NSPopoverDelegate {
         var speed = 1.0
         let model: AppModel
         private var scrolled: CGFloat = 0
+        /// The one open panel (one mini player).
+        private static weak var shown: NSPopover?
+        /// The player is usually not in the active app, so `.transient` misses clicks in other apps: this closes on them.
+        private var outsideClicks: Any?
         private lazy var popover: NSPopover = {
             let p = NSPopover()
             p.behavior = .transient
             p.animates = false
+            p.delegate = self
             p.contentViewController = NSHostingController(rootView: LiveSpeedPanel(model: model))
             return p
         }()
+
+        static var panelShown: Bool { shown?.isShown == true }
+        static func closePanel() { shown?.performClose(nil) }
 
         init(model: AppModel) {
             self.model = model
@@ -496,6 +507,15 @@ struct SpeedControl: NSViewRepresentable {
         @objc private func togglePanel() {
             if popover.isShown { return popover.performClose(nil) }
             popover.show(relativeTo: bounds, of: self, preferredEdge: .maxY)
+            Self.shown = popover
+            outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+                MainActor.assumeIsolated { self?.popover.performClose(nil) }
+            }
+        }
+
+        func popoverDidClose(_ notification: Notification) {
+            if let outsideClicks { NSEvent.removeMonitor(outsideClicks) }
+            outsideClicks = nil
         }
 
         override func scrollWheel(with event: NSEvent) {
@@ -503,7 +523,7 @@ struct SpeedControl: NSViewRepresentable {
             let steps = scrolled.rounded(.towardZero)
             guard steps != 0 else { return }
             scrolled -= steps
-            model.setSpeed(Float(speed + Double(steps) * 0.05))   // `validated` snaps to 0.05 within the range
+            model.setSpeed(model.activeSpeed + Float(steps) * 0.05)   // `validated` snaps to 0.05 within the range
         }
     }
 }

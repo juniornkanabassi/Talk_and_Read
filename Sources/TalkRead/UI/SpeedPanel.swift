@@ -11,6 +11,13 @@ struct LiveSpeedPanel: View {
         SpeedPanel(speed: Double(model.activeSpeed), faster: model.settings.increaseSpeedShortcut.display,
                    slower: model.settings.decreaseSpeedShortcut.display,
                    set: { model.setSpeed(Float($0)) }, step: { model.stepSpeed(up: $0) })
+            .background {   // ⌘+ / ⌘− keep working while the panel has the keyboard
+                Group {
+                    Button("Faster") { model.stepSpeed(up: true) }.keyboardShortcut("=", modifiers: .command)
+                    Button("Slower") { model.stepSpeed(up: false) }.keyboardShortcut("-", modifiers: .command)
+                }
+                .opacity(0).accessibilityHidden(true)
+            }
     }
 }
 

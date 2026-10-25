@@ -354,9 +354,9 @@ rules() {
         line=$(grep -E "^(ok  |FAIL) $lab" $OUT/ui.txt | tail -1)
         if [[ $line == ok* ]]; then pass $k "UI: $lab"; elif [[ -n $line ]]; then fail $k "UI: ${line:0:140}"; else fail $k "UI check '$lab' not in the output"; fi; done; }
     ui_ok R9 "text click maps to word" "PDF click maps to word" "click between words"
-    ui_ok R8 "karaoke word" "speed button menu" "mini player grows for the notice"
+    ui_ok R8 "karaoke word" "speed panel presets" "mini player grows for the notice"
     ui_ok S2 "record ⌃⌥R" "record ⇧⌘Space" "refusal messages" "recorder pauses hotkeys"
-    ui_ok S4 "speed button menu"
+    ui_ok S4 "speed panel presets"
     ui_ok V5 "English picker: female, by model" "French picker"
     ui_ok V1 "picking a model starts on"
     ui_ok V3 "voice recovery"
