@@ -6,6 +6,8 @@ I listen to almost everything I read at 2.5× and dictate most of what I write, 
 
 [Download the latest release](https://github.com/juniornkanabassi/Talk_and_Read/releases/latest) · [App page](https://juniornkanabassi.com/apps/talkandread/)
 
+Earlier releases, from before the app moved to this repository, are also kept on [talkandread-releases](https://github.com/juniornkanabassi/talkandread-releases/releases).
+
 Talk & Read is still an early version (0.8.0). It works well enough for me to use every day, but expect rough edges, and please [open an issue](https://github.com/juniornkanabassi/Talk_and_Read/issues) if something goes wrong.
 
 ## What it does
