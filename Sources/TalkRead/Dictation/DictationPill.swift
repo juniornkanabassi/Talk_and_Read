@@ -91,7 +91,11 @@ struct DictationPillView: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button { dictation.acceptSuggestion(offer) } label: {
+            Button {
+                do { try dictation.acceptSuggestion(offer) }
+                catch let error as AppError { MiniPlayer.shared.flash(error.message) }
+                catch { MiniPlayer.shared.flash(error.localizedDescription) }
+            } label: {
                 Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)

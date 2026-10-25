@@ -17,12 +17,15 @@ import TalkReadCore
 
         init() {}
 
-        /// From Settings: `highlightHex`, `tintEnabled`, `opacity`. The tint is the same hue at 35 %.
+        /// From Settings: `highlightHex`, `tintHex`, `tintEnabled`, `opacity`. The tint is its colour (the word's unless
+        /// one is chosen) at 35 %.
         init(_ settings: Settings) {
-            if let rgb = Int(settings.highlightHex.dropFirst(), radix: 16) {
-                wordColor = NSColor(srgbRed: CGFloat(rgb >> 16 & 0xFF) / 255, green: CGFloat(rgb >> 8 & 0xFF) / 255, blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
-                sentenceColor = wordColor.withAlphaComponent(0.35)
+            func colour(_ hex: String) -> NSColor? {
+                guard let rgb = Int(hex.dropFirst(), radix: 16) else { return nil }
+                return NSColor(srgbRed: CGFloat(rgb >> 16 & 0xFF) / 255, green: CGFloat(rgb >> 8 & 0xFF) / 255, blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
             }
+            if let c = colour(settings.highlightHex) { wordColor = c }
+            sentenceColor = (settings.tintHex.flatMap(colour) ?? wordColor).withAlphaComponent(0.35)
             opacity = CGFloat(settings.opacity)
             tintEnabled = settings.tintEnabled
             shape = Shape(rawValue: settings.highlightStyle) ?? .box

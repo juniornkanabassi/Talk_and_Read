@@ -137,6 +137,11 @@ final class SettingsTests: XCTestCase {
         try s.set("dictationHoldKey", to: "off"); XCTAssertEqual(s.dictationHoldKey, .off)
         try s.set("highlightHex", to: "#abcdef"); XCTAssertEqual(s.highlightHex, "#ABCDEF")
         try s.set("historyLimit", to: "1e30"); XCTAssertEqual(s.historyLimit, 5000)
+        try s.set("showHighlight", to: "off"); XCTAssertFalse(s.showHighlight)
+        try s.set("tintHex", to: "#ff66aa"); XCTAssertEqual(s.tintHex, "#FF66AA")
+        try s.set("tintHex", to: "same"); XCTAssertNil(s.tintHex)
+        try s.set("skipCitations", to: "off"); XCTAssertFalse(s.skipCitations)
+        try s.set("skipHeadersAndFooters", to: "no"); XCTAssertFalse(s.skipHeadersAndFooters)
         func code(_ key: String, _ value: String) -> String? {
             var copy = Settings()
             do { try copy.set(key, to: value); return nil } catch { return (error as? ControlError)?.code }
@@ -147,11 +152,47 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(code("tintEnabled", "maybe"), "invalid_value")
         XCTAssertEqual(code("dictationHoldKey", "left"), "invalid_value")
         XCTAssertEqual(code("highlightHex", "red"), "invalid_value")
-        for key in Settings.chords.map(\.key) + ["miniPlayerOrigin"] { XCTAssertEqual(code(key, "x"), "read_only_setting", key) }
+        XCTAssertEqual(code("tintHex", "pink"), "invalid_value")
+        XCTAssertEqual(code("miniPlayerOrigin", "x"), "read_only_setting")
+        XCTAssertEqual(code("dictationMicrophone", "x"), "read_only_setting")   // `talkread mic`
+        for key in Settings.chords.map(\.key) { XCTAssertEqual(code(key, "x"), "invalid_value", key) }
+        // Every setting is known to settings-set (none falls through to unknown_setting), so the CLI reaches them all.
+        for key in Settings.keys { XCTAssertNotEqual(code(key, "\u{1}"), "unknown_setting", key) }
         try s.set("dictationHoldKey", to: "rightCommand"); XCTAssertEqual(s.dictationHoldKey, .rightCommand)
         var untouched = Settings()
         _ = try? untouched.set("speed", to: "fast")
         XCTAssertEqual(untouched, Settings(), "a rejected value changes nothing")
+    }
+
+    func testShortcutsBySettingsSet() throws {
+        let ctrl = Settings.Shortcut.control, opt = Settings.Shortcut.option, cmd = Settings.Shortcut.command, shift = Settings.Shortcut.shift
+        var s = Settings()
+        try s.set("readShortcut", to: "ctrl+option+R")
+        XCTAssertEqual(s.readShortcut, Settings.Shortcut(keyCode: 15, modifiers: ctrl | opt, display: "⌃⌥R"))
+        try s.set("pauseShortcut", to: "⌘⇧F5")
+        XCTAssertEqual(s.pauseShortcut, Settings.Shortcut(keyCode: 96, modifiers: cmd | shift, display: "⇧⌘F5"), "glyph order as the recorder writes it")
+        try s.set("screenshotShortcut", to: " Ctrl+Alt+space ")
+        XCTAssertEqual(s.screenshotShortcut, Settings.Shortcut(keyCode: 49, modifiers: ctrl | opt, display: "⌃⌥Space"))
+        try s.set("skipForwardShortcut", to: "off")
+        XCTAssertTrue(s.skipForwardShortcut.isOff)
+        // Every default parses back to itself, so the table agrees with the recorder's key codes.
+        let d = Settings()
+        for c in Settings.chords {
+            let shortcut = d[keyPath: c.path]
+            XCTAssertEqual(Settings.Shortcut(text: shortcut.display), shortcut, c.key)
+        }
+        func message(_ key: String, _ value: String) -> String? {
+            var copy = Settings()
+            do { try copy.set(key, to: value); return nil } catch { return (error as? ControlError)?.message }
+        }
+        XCTAssertEqual(message("readShortcut", "shift+R"), "⇧R on its own would stop that key typing; add ctrl, option or command.")
+        XCTAssertEqual(message("readShortcut", "cmd+Q"), "⌘Q belongs to macOS.")
+        XCTAssertEqual(message("readShortcut", "option+D"), "⌥D is already used by increaseSpeedShortcut.")
+        XCTAssertNotNil(message("readShortcut", "ctrl+banana"))
+        XCTAssertNotNil(message("readShortcut", "ctrl+"))
+        var untouched = Settings()
+        _ = try? untouched.set("readShortcut", to: "cmd+Q")
+        XCTAssertEqual(untouched, Settings(), "a refused shortcut changes nothing")
     }
 
     func testJSONAndKeys() {
@@ -162,7 +203,10 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃A"))
         XCTAssertEqual(json["skipForwardShortcut"]?.objectValue, ["keyCode": .number(14), "modifiers": .number(524_288), "display": .string("⌥E")])
         XCTAssertNil(json["miniPlayerOrigin"])
-        XCTAssertEqual(Settings.keys.count, 34)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0)
+        XCTAssertEqual(Settings.keys.count, 38)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + showHighlight, tintHex, skipCitations, skipHeadersAndFooters
+        XCTAssertNil(json["tintHex"], "the tint follows the word colour until one is chosen")
+        XCTAssertEqual(json["skipCitations"], .bool(true))
+        XCTAssertEqual(json["skipHeadersAndFooters"], .bool(true))
         XCTAssertEqual(Set(Settings.chords.map(\.key)).count, 9)
         XCTAssertTrue(Settings.chords.allSatisfy { Settings.keys.contains($0.key) }, "every chord is a settings key")
         XCTAssertTrue(Settings.keys.contains("miniPlayerOrigin"))
@@ -189,5 +233,12 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("talkread.1.log")).count, Log.maxBytes)
         XCTAssertTrue(try String(contentsOf: log, encoding: .utf8).hasSuffix(" after rotation\n"))
         XCTAssertLessThan(try Data(contentsOf: log).count, 200)
+    }
+
+    func testShortcutDisplayRoundTrips() {
+        for text in ["ctrl+left", "option+return", "cmd+shift+tab", "ctrl+up", "⌃⌥R", "ctrl+space"] {
+            guard let s = Settings.Shortcut(text: text) else { return XCTFail(text) }
+            XCTAssertEqual(Settings.Shortcut(text: s.display), s, text)
+        }
     }
 }

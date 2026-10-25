@@ -213,11 +213,13 @@ struct HomePane: View {
 
     private func play() {
         guard !isBlank else { return }
-        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Pasted text"
-        let item = model.importText(text, title: String(firstLine.prefix(60)))
-        model.read(item, fromToken: nil)
-        model.recordOwnRead(text)
-        router.open(item)
+        do {
+            router.open(try model.readPasted(text, id: model.reserve("user")).item)
+        } catch let error as AppError {
+            MiniPlayer.shared.flash(error.message)
+        } catch {
+            MiniPlayer.shared.flash(error.localizedDescription)
+        }
     }
 
     private var hint: some View {
@@ -420,8 +422,12 @@ struct WebPageSheet: View {
     @State private var loading = false
     @State private var failure: String?
 
-    private var url: URL? {
-        let t = address.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var url: URL? { Self.address(address) }
+
+    /// What the address field accepts, and `talkread open-url` too: an http or https address with a host; a bare host
+    /// ("example.com/page") gets https.
+    static func address(_ text: String) -> URL? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, let u = URL(string: t.contains("://") ? t : "https://" + t),
               ["http", "https"].contains(u.scheme?.lowercased() ?? ""), u.host != nil else { return nil }
         return u
@@ -533,7 +539,7 @@ struct DictationPane: View {
             } footer: {
                 Text("Polish fixes punctuation and grammar on this Mac. It is off unless you turn it on.").foregroundStyle(.secondary)
             }
-            VocabularySection(dictation: model.dictation)
+            VocabularySection(dictation: model.dictation, revision: model.wordListsRevision)
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
@@ -543,12 +549,14 @@ struct DictationPane: View {
 /// The vocabulary editor with the suggestions learnt from corrections (V-G) listed under it.
 private struct VocabularySection: View {
     @ObservedObject var dictation: DictationController
+    /// `AppModel.wordListsRevision`: the control socket changed a word list.
+    let revision: Int
 
     var body: some View {
         Section {
-            // Rebuilt when a suggestion is added, so the editor re-reads vocabulary.json.
+            // Rebuilt when a suggestion is added or `talkread vocabulary-set` writes, so the editor re-reads vocabulary.json.
             WordMapEditor(url: Paths.vocabulary, keyPrompt: "Heard as", valuePrompt: "Type instead")
-                .id(dictation.suggestions.count)
+                .id([dictation.suggestions.count, revision])
         } header: {
             Text("Vocabulary")
         } footer: {
@@ -563,7 +571,11 @@ private struct VocabularySection: View {
                         Image(systemName: "arrow.right").foregroundStyle(.tertiary).accessibilityHidden(true)
                         Text(c.typed)
                         Spacer()
-                        Button("Add") { dictation.acceptSuggestion(c) }
+                        Button("Add") {
+                            do { try dictation.acceptSuggestion(c) }
+                            catch let error as AppError { MiniPlayer.shared.flash(error.message) }
+                            catch { MiniPlayer.shared.flash(error.localizedDescription) }
+                        }
                         Button("Dismiss") { dictation.dismissSuggestion(c) }
                     }
                 }

@@ -59,6 +59,7 @@ A few examples:
 talkread --help                        # every command, and talkread <command> --help for one
 talkread speak "Hello there" --speed 1.2
 talkread read-file ~/Documents/notes.pdf
+talkread open-url https://example.com/article --read 1
 talkread history --kind dictated --limit 5
 talkread dictate-file ~/Desktop/note.m4a
 ```
@@ -78,6 +79,16 @@ args = ["/Applications/Talk & Read.app/Contents/Resources/mcp/talkread-mcp.mjs"]
 ```
 
 Any other MCP host that runs a local command works the same way. The tool list comes from `talkread mcp-manifest`, so every command is also an MCP tool. The connection is a socket that only your own user account on the same Mac can open.
+
+Nearly everything you can do in the windows and the menu has a command:
+
+- Reading: `speak`, `read-selection`, `read-file`, `read-pasted`, `read-again`, `pause`, `resume`, `stop`, `skip`, `speed`, `voice`, `voices`.
+- Library: `open`, `open-url`, `library`, `library-open`, `library-remove`.
+- Dictation: `dictate-start`, `dictate-stop`, `dictate-cancel`, `dictate-file`, `dictation-last`, `insert-again`, `mic`, `vocabulary`, `vocabulary-set`, `vocabulary-remove`, `vocabulary-suggestion`.
+- History: `history`, `history-delete`.
+- Settings: `settings-get`, `settings-set` (shortcuts included), `shortcuts-reset`, `pronunciations`, `pronunciation-set`, `pronunciation-remove`, `models`, `update-check`, `status`.
+
+Several assistants can work at once. A retried request with the same `--request-id` acts only once, and anything that removes something (`library-remove`, `history-delete`, `vocabulary-remove`, `pronunciation-remove`, `shortcuts-reset`) is refused without `--yes`. A few things stay in the app on purpose: granting permissions, the first-run setup, the screenshot and listen drag, window placement, and downloading the Breeze voices, which only start beside their licence in Settings ▸ Models.
 
 ## Building from source
 
