@@ -81,6 +81,8 @@ final class CleanupTests: XCTestCase {
         XCTAssertEqual(fr("Tu as vu le match point d'interrogation Moi oui"), "Tu as vu le match? Moi oui", "a capital starts the next sentence")
         XCTAssertEqual(fr("Quel but point d'exclamation Quelle soirée point d'exclamation"), "Quel but! Quelle soirée!")
         XCTAssertEqual(fr("Vraiment point d'interrogation point d'exclamation"), "Vraiment?!")
+        XCTAssertEqual(fr("Vraiment point d'exclamation point d'interrogation"), "Vraiment!?")
+        XCTAssertEqual(fr("Point d'interrogation Hakimi avant le Clasico."), "Point d'interrogation Hakimi avant le Clasico.")
         XCTAssertEqual(fr("Il arrive point d'interrogation. Oui"), "Il arrive? Oui", "the recogniser's own mark is replaced")
         XCTAssertEqual(fr("Deux choses colon la vitesse"), "Deux choses: la vitesse", "English colon still works with French on")
         XCTAssertEqual(Cleanup.apply("Le colon réclame.", vocabulary: [:], removeFillers: true, languages: ["fr"]), "Le colon réclame.")

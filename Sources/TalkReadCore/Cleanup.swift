@@ -94,16 +94,17 @@ public enum Cleanup {
         // "le ballon sort à la ligne") and Parakeet v3 punctuates French well by itself, so they are left as words; so is a
         // mark after a determiner or a common adjective ("votre point-virgule", "un grand point d'interrogation", "aucun
         // point d'interrogation"). A spoken "?" or "!" also has to end the clause: end of text, a mark, a new line, a
-        // capital (the recogniser starts the next sentence with one) or another command; "un point d'interrogation demeure
+        // capital (the recogniser starts the next sentence with one) or another command, and not open the text or a line; "un point d'interrogation demeure
         // sur sa participation" is prose. Quotes only as the imperative ("je viens d'ouvrir les guillemets" is prose).
         // English "colon" is French for settler: "le colon réclame" stays. An adjective outside the list ("un immense
         // point d'interrogation.") can still slip through; no word list closes that.
         let noDeterminer = "(?<!\\b(?:un|une|le|la|l['’]|du|au|aux|ce|cet|cette|les|des|mes|tes|ses|nos|vos|leurs|mon|ton|son|notre|votre|leur|aucun|chaque|quel|quelque|grand|gros|petit|vrai|seul|dernier|premier|énorme|immense|ancien|nouveau|autre|même|simple|sacré|véritable|beau|léger|unique|seconde?)[ \\t]{1,3})"
         let frenchCommand = "point d['’](?:interrogation|exclamation)|point[ -]virgule|(?:ouvrez|fermez) les guillemets"
         let englishCommand = english.map(\.0).joined(separator: "|")
-        let endsClause = "(?=[ \\t]*(?:$|[.,!?;:\\n]|(?-i:\\p{Lu})|(?:\(frenchCommand)|\(englishCommand))\\b))"
-        return [("\(noDeterminer)point[ -]virgule", ";"), ("\(noDeterminer)point d['’]interrogation\(endsClause)", "?"),
-                ("\(noDeterminer)point d['’]exclamation\(endsClause)", "!"),
+        let endsClause = "(?=[ \\t]*(?:$|[.,!?;:\\n]|(?-i:\\p{Lu})|[\\x{E020}-\\x{E03F}]|(?:\(frenchCommand)|\(englishCommand))\\b))"
+        let notFirst = "(?<=\\S[ \\t]{1,3})"   // a spoken "?" never opens a text or a line: "Point d'interrogation Hakimi…" is a headline
+        return [("\(noDeterminer)point[ -]virgule", ";"), ("\(notFirst)\(noDeterminer)point d['’]interrogation\(endsClause)", "?"),
+                ("\(notFirst)\(noDeterminer)point d['’]exclamation\(endsClause)", "!"),
                 ("(?<!\\bd['’]|\\bde[ \\t])ouvrez les guillemets", openQuote), ("(?<!\\bd['’]|\\bde[ \\t])fermez les guillemets", closeQuote)]
             + english.map { $0.0 == "colon" ? ("\(noDeterminer)colon", $0.1) : $0 }
     }

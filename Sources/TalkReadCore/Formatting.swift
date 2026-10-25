@@ -66,19 +66,17 @@ extension Cleanup {
         // Times: "3:30 P.M." / "3:30 PM" / "330 p.m." → "3:30pm"; a full stop the abbreviation swallowed is put back.
         // (Case spelt out, not (?i): "[A-Z]" in the full-stop test must stay upper case.)
         text = text.replacingOccurrences(of: "\\b(1[0-2]|[1-9])([0-5]\\d)(\\s?[aApP]\\.?\\s?[mM]\\b)", with: "$1:$2$3", options: .regularExpression)
-        // "at 3 30pm" (Parakeet v3 spaces the minutes) → "at 3:30pm"; only after a word that introduces a time and not a
-        // count, so "book 2 10pm slots" and "choose from 2 10pm screenings" keep theirs.
-        text = text.replacingOccurrences(of: "(?i)\\b(at|until|till) (1[0-2]|[1-9]) ([0-5]\\d)(\\s?[aApP]\\.?\\s?[mM]\\b)",
-                                         with: "$1 $2:$3$4", options: .regularExpression)
+        // "3 30pm" (Parakeet v3 sometimes spaces the minutes) is left as it is: "at 2 10pm screenings" is a count, and
+        // nothing short of the meaning tells the two apart.
         text = replaceAll("\\b(\\d{1,2}(?::\\d{2})?)\\s?([aApP])\\.?\\s?[mM]\\b(?:\\.(?!\\s*$|\\s+[A-Z]|\\s*\\n))?", in: text) {
             $0[1] + $0[2].lowercased() + "m"
         }
-        // A day said as a word ("the fourteenth of March", Parakeet v3) becomes its number first; only with "of", so "the
+        // A day said as a word ("the fourteenth of March", Parakeet v3) becomes "14 March"; only with "of", so "the
         // second May bank holiday" and "the first March I lived here" stay.
         text = replaceAll("\\b[Tt]he ((?:[Tt]wenty|[Tt]hirty)[ -])?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|thirtieth) of (\(months))\\b", in: text) { m in
             let tens = m[1].lowercased().hasPrefix("twenty") ? 20 : m[1].lowercased().hasPrefix("thirty") ? 30 : 0
             let day = tens + (dayOrdinals[m[2].lowercased()] ?? 0)
-            return (1...31).contains(day) && (tens == 0 || day % 10 != 0) ? "\(m[0].prefix(3)) \(day) \(m[3])" : m[0]
+            return (1...31).contains(day) && (tens == 0 || day % 10 != 0) ? "\(day) \(m[3])" : m[0]
         }
         // British dates: "the 14th of March" / "the 14 March" → "14 March"; "Tuesday, 14 March" → "Tuesday 14 March".
         text = text.replacingOccurrences(of: "\\bthe (\\d{1,2})(?:st|nd|rd|th)?(?: of)? (\(months))\\b", with: "$1 $2", options: .regularExpression)

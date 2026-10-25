@@ -156,9 +156,12 @@ enum DictationError: LocalizedError, Equatable {
         lastPartial = ""
         state = .recording(level: 0, partial: "")
         showPill()
-        let asr = recogniser(), languages = languages        // this utterance keeps the languages it started with
+        // This utterance keeps the languages it started with; on the English fallback it is cleaned as English alone.
+        let asr = recogniser()
+        var languages = languages
         if languages != ["en"], asr !== multilingual {
             languageNotice = Self.languageFallback
+            languages = ["en"]
         }
         if !asr.isLoaded { Task { try? await asr.load(progress: nil) } }   // load alongside any drain ("Preparing…")
         let (stream, feed) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
