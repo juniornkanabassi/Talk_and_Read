@@ -68,6 +68,9 @@ enum PointerCapture {
         // then climb past the inline parts (and groups on a line beside their parent's text) to the first element that is
         // a block of its own, stopping below the web area.
         var current = deepest(element, at: point), steps = 0
+        // The descent stopped on a block of blocks with none of them under the point: its padding or a gap, no paragraph.
+        if !inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? ""), !onlyText(current),
+           !((axAttribute(current, kAXChildrenAttribute) as? [AXUIElement]) ?? []).isEmpty { return nil }
         while steps < 12, !CFEqual(current, area), let parent = axElement(current, kAXParentAttribute),
               inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? "") || sharesLine(current, in: parent) {
             current = parent

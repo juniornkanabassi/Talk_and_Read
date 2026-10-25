@@ -401,7 +401,8 @@ extension EngineKind {
     @discardableResult func captureAndRead(id: UUID, app: NSRunningApplication?) async -> ReadSession? {
         let capture = await TextCapture.capture(app: app)
         guard owner?.sessionID == id else {
-            if let capture { AXWake.restore(capture.pid) }   // no Highlighter will end this read (E8)
+            // No Highlighter will end this read (E8); a newer read on the same app keeps its wake.
+            if let capture, liveSession?.capture?.pid != capture.pid { AXWake.restore(capture.pid) }
             return nil
         }
         guard let capture, !capture.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

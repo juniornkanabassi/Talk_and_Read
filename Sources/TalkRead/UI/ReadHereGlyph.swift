@@ -23,6 +23,8 @@ import TalkReadCore
     private(set) var block: PointerCapture.Block?
     private var lastPoint: CGPoint?
     private var looking = false
+    /// Until when a woken app's tree may still be filling in: a still pointer is looked at again each tick until then.
+    private var coldUntil = 0.0
     /// Apps this reveal woke (E8); put back when the glyph hides, unless a read on them is running.
     private var woken = Set<pid_t>()
     private var hoverTimer: Timer?
@@ -133,6 +135,7 @@ import TalkReadCore
             var found = PointerCapture.block(from: hit.element, pid: hit.pid, point: point)
             if found == nil, !woken.contains(hit.pid) {
                 woken.insert(hit.pid)
+                coldUntil = ProcessInfo.processInfo.systemUptime + 1.5
                 await AXWake.wake(AXUIElementCreateApplication(hit.pid), pid: hit.pid)
                 guard timer != nil else {   // the key went up during the wake, after stop() put back what it knew of
                     if hit.pid != model?.liveSession?.capture?.pid { AXWake.restore(hit.pid) }
@@ -141,8 +144,9 @@ import TalkReadCore
                 if let again = PointerCapture.hit(point), again.pid == hit.pid {
                     found = PointerCapture.block(from: again.element, pid: again.pid, point: point)
                 }
-                if found == nil { lastPoint = nil }   // a cold tree fills in over the next ticks: look here again
             }
+            // A cold tree fills in over the next ticks: look here again while it may still be loading.
+            if found == nil, ProcessInfo.processInfo.systemUptime < coldUntil { lastPoint = nil }
             guard timer != nil else { return }   // the key went up meanwhile
             if let found { show(found) } else if block.map({ !Self.band($0).contains(point) }) ?? true { hidePanel(); block = nil }
         }
