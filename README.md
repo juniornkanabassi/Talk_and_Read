@@ -96,4 +96,4 @@ The source folder on my Mac is synced with iCloud, so I always build with a scra
 
 The licence for Talk & Read's own code is in [LICENSE](LICENSE). The name and icon are not covered by it.
 
-The vendored copy of mlx-audio-swift in `Vendor/mlx-audio-swift` keeps its own MIT licence. The optional Breeze TTS 2 voices are under BreezeBlue's research and non-commercial licence, so they are for personal, non-commercial use only. Talk & Read does not include them; the app shows their licence in [Resources/Licences](Resources/Licences) before you choose to download them.
+The vendored copy of mlx-audio-swift in `Vendor/mlx-audio-swift` keeps its own MIT licence. The optional Breeze TTS 2 voices are under BreezeBlue's research and non-commercial licence, so they are for personal, non-commercial use only. Talk & Read does not include the Breeze models; the app shows their licence, kept in [Resources/Licences](Resources/Licences), before you choose to download them. The short Breeze preview samples in `Resources/Voices` were made with Breeze TTS 2 by BreezeBlue and are included as demos, which its licence allows with this credit.
