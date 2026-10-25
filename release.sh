@@ -67,6 +67,12 @@ if (( ! DRY )); then
   # The release is made from the pushed tag, so a tag already on origin must be this HEAD (peeled, for annotated tags).
   RTAG=$(git -C "$ROOT" ls-remote origin "refs/tags/v$SRC_VERSION" "refs/tags/v$SRC_VERSION^{}" | sort -k2 | tail -1 | cut -f1)
   [[ -z $RTAG || $RTAG == $HEAD ]] || die "tag v$SRC_VERSION on origin points at another commit ($RTAG)"
+  # A tag pushed by an earlier run is reused as it is: a fresh annotated tag would be a different object and its push refused.
+  if [[ -n $RTAG ]] && (( ! TAGGED )); then
+    (( RESUME )) || die "tag v$SRC_VERSION is already on origin; --resume finishes that release"
+    git -C "$ROOT" fetch -q origin "refs/tags/v$SRC_VERSION:refs/tags/v$SRC_VERSION" || die "could not fetch tag v$SRC_VERSION from origin"
+    TAGGED=1
+  fi
   if gh release view "v$SRC_VERSION" --repo $REPO >/dev/null 2>&1; then
     (( RESUME )) || die "release v$SRC_VERSION already exists on $REPO; --resume finishes it if it holds this zip"
     EXISTS=1
