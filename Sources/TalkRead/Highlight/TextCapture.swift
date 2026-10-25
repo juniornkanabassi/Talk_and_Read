@@ -154,7 +154,7 @@ enum TextCapture {
     static func withoutHiddenText(_ c: Capture, root: AXUIElement?, selection: AXTextMarkerRange?) -> Capture {
         var text = c.text, removed = 0
         let claude = isClaude(c.pid)
-        let walked = root.flatMap { root in selection.flatMap { hiddenRanges(root: root, selection: $0, text: text, claude: claude) } }
+        let walked = root.flatMap { root in selection.flatMap { hiddenRanges(root: root, selection: $0, text: text, chat: isClaudeChat(root, pid: c.pid)) } }
         if let walked {
             (text, removed) = HiddenText.cut(text, ranges: walked.ranges)
             // the toolbar's buttons leave their placeholders behind
@@ -175,6 +175,12 @@ enum TextCapture {
         NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.anthropic.claudefordesktop"
     }
 
+    /// Claude's own chat: a web area of the Claude app served from claude.ai. An artifact (claudeusercontent.com) or
+    /// any other page is arbitrary content, where a toolbar or a zero-height box may be drawn.
+    static func isClaudeChat(_ webArea: AXUIElement, pid: pid_t) -> Bool {
+        isClaude(pid) && (axAttribute(webArea, "AXURL") as? URL)?.host == "claude.ai"
+    }
+
     /// The ranges in `text` of the hidden nodes inside a web area's selection; nil when the selection's text is not
     /// `text`. Each node is placed on its own (`HiddenText.place`): exactly when its text-marker distances add up and
     /// its text is there, else only where `HiddenText.locate` finds its text once beside that place. A node whose
@@ -182,7 +188,7 @@ enum TextCapture {
     /// (by more than 60 pt, which keeps a toolbar above a message) are skipped.
     // ponytail: up to 4000 nodes, two AX calls each (role, classes) plus a frame for pruning, and five per hidden node;
     // Claude's chat window is about 400 nodes. Walk only the selection's common ancestor if big pages make this slow.
-    private static func hiddenRanges(root: AXUIElement, selection: AXTextMarkerRange, text: String, claude: Bool) -> (ranges: [Range<Int>], complete: Bool)? {
+    private static func hiddenRanges(root: AXUIElement, selection: AXTextMarkerRange, text: String, chat: Bool) -> (ranges: [Range<Int>], complete: Bool)? {
         guard (axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: selection) as? String) == text else { return nil }
         let length = text.utf16.count
         let selStart = AXTextMarkerRangeCopyStartMarker(selection), selEnd = AXTextMarkerRangeCopyEndMarker(selection)
@@ -197,13 +203,13 @@ enum TextCapture {
         }
         let ns = text as NSString
         var ranges: [Range<Int>] = [], complete = true
-        var stack: [(AXUIElement, HiddenText.Visibility)] = [(root, .init())]
+        var stack: [(AXUIElement, HiddenText.Visibility)] = [(root, .init(chat: chat))]
         var visited = 0
         while let (node, parent) = stack.popLast(), visited < 4000 {
             visited += 1
             if let bounds, let frame = axFrame(node), !frame.isEmpty, !frame.intersects(bounds) { continue }
             let visibility = parent.child(role: axAttribute(node, kAXRoleAttribute) as? String,
-                                          classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [], claude: claude)
+                                          classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [])
             guard visibility.drawsText else {
                 guard let own = axParameterizedAttribute(root, "AXTextMarkerRangeForUIElement", parameter: node),
                       CFGetTypeID(own) == AXTextMarkerRangeGetTypeID(),

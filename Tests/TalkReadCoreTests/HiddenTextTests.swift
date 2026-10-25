@@ -90,6 +90,7 @@ final class HiddenTextTests: XCTestCase {
         XCTAssertEqual(HiddenText.cut(hello, ranges: HiddenText.repeatedHeadings(hello)).text, "hello world, hello world,")
         // visible prose that repeats itself is no heading: a heading ends flush against its message (Codex round 3)
         XCTAssertEqual(HiddenText.repeatedHeadings("You said: Never again. Never again. And then you returned."), [])
+        XCTAssertEqual(HiddenText.repeatedHeadings("You said: Never again.\nNever again.\nAnd then you returned."), [])
         // a heading at the very end has no copy to repeat
         XCTAssertEqual(HiddenText.repeatedHeadings("Done. You said: a sentence long enough"), [])
         // a mention of the words, with no copy after it, stays
@@ -121,8 +122,10 @@ final class HiddenTextTests: XCTestCase {
     }
 
     func testVisibility() {
-        let root = V()
-        func child(_ v: V, _ role: String, _ classes: [String], claude: Bool = true) -> V { v.child(role: role, classes: classes, claude: claude) }
+        let root = V(chat: true), page = V()
+        func child(_ v: V, _ role: String, _ classes: [String], claude: Bool = true) -> V {
+            (v == root && !claude ? page : v).child(role: role, classes: classes)
+        }
         XCTAssertTrue(child(root, "AXStaticText", []).drawsText)
         // sr-only, and everything inside it, in any app
         let heading = child(root, "AXHeading", ["sr-only", "select-none"], claude: false)
@@ -130,6 +133,7 @@ final class HiddenTextTests: XCTestCase {
         XCTAssertFalse(child(heading, "AXStaticText", []).drawsText)
         XCTAssertTrue(child(root, "AXGroup", ["visually-hidden"], claude: false).hidden)
         XCTAssertTrue(child(root, "AXGroup", ["sr-only", "md:not-sr-only"]).drawsText)   // shown somewhere
+        XCTAssertTrue(child(root, "AXGroup", ["sr-only", "sr-only-focusable"], claude: false).drawsText)   // shown on focus
         // Claude's hover toolbar and timestamp box; elsewhere a toolbar or an h-0 box may be drawn
         XCTAssertTrue(child(child(root, "AXToolbar", []), "AXStaticText", []).hidden)
         XCTAssertTrue(child(root, "AXToolbar", [], claude: false).drawsText)

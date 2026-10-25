@@ -121,7 +121,7 @@ public enum TextKit {
             return l < kept.count && kept[l].lowerBound < p
         }
         /// Where to cut tokens[a..<b], which is too long: the first token of the next chunk, or nil when it is one token.
-        /// Never inside a link or code span; when the limit falls inside one, the chunk runs on past it.
+        /// Never inside a link, code span or path; when the limit falls inside one, the chunk runs on past it.
         func cut(_ a: Int, _ b: Int, _ limit: Int) -> Int? {
             guard a + 1 < b else { return nil }
             var clause: Int?, space: Int?, any: Int?
@@ -136,7 +136,8 @@ public enum TextKit {
                 // A clause cut that leaves a sliver ("Well, " + 280 characters) is worse than a whitespace cut.
                 if len >= limit / 3, zip(gap, gap.dropFirst()).contains(where: { clauseMarks.contains($0) && $1.isWhitespace }) { clause = i }
             }
-            return clause ?? space ?? any ?? ((a + 1)..<b).first { !insideKept(tokens[$0].range.lowerBound) } ?? a + 1
+            // nil (no cut) when the rest is one link, code span or path: it stays one chunk however long
+            return clause ?? space ?? any ?? ((a + 1)..<b).first { !insideKept(tokens[$0].range.lowerBound) }
         }
 
         var starts = [startToken]   // first token of every chunk

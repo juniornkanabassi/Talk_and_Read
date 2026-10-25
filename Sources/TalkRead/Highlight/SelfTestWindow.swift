@@ -1105,7 +1105,8 @@ enum SelfTestWindow {
             visited += 1
             let role = axAttribute(node, kAXRoleAttribute) as? String
             // never a screen reader heading: the node map rightly boxes none of its words
-            let web = role == "AXWebArea" ? HiddenText.Visibility() : parentWeb.map { $0.child(role: role, classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [], claude: claude) }
+            let web = role == "AXWebArea" ? HiddenText.Visibility(chat: claude && (axAttribute(node, "AXURL") as? URL)?.host == "claude.ai")
+                : parentWeb.map { $0.child(role: role, classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? []) }
             let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome) || web?.drawsText == false
             if role == "AXStaticText", !chrome, let value = axAttribute(node, kAXValueAttribute) as? String {
                 let tokens = TextKit.tokenize(value)

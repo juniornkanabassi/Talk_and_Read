@@ -15,7 +15,10 @@ public enum HiddenText {
         /// thing Claude's chat hangs there; any other text in such a box may be drawn and is kept.
         public var hover = false
 
-        public init(hidden: Bool = false, hover: Bool = false) { self.hidden = hidden; self.hover = hover }
+        /// Inside Claude's own chat (its claude.ai web area, not an artifact), whose furniture is known.
+        public var chat = false
+
+        public init(hidden: Bool = false, hover: Bool = false, chat: Bool = false) { self.hidden = hidden; self.hover = hover; self.chat = chat }
 
         /// Whether `text` belongs in a selection and a highlight.
         public func draws(_ text: String) -> Bool { !hidden && !(hover && HiddenText.isTimestamp(text)) }
@@ -25,19 +28,20 @@ public enum HiddenText {
 
         /// The visibility of a child of this element, from its role and DOM classes.
         ///
-        /// Anywhere: the `sr-only` / `visually-hidden` classes, unless a `not-sr-only` variant shows the node somewhere.
-        /// In Claude (`claude`), whose chat is known: its message toolbar (shown on hover), and a zero-height box (`h-0`),
+        /// Anywhere: the `sr-only` / `visually-hidden` classes, unless a `not-sr-only` variant or a `-focusable` class
+        /// shows the node somewhere. In Claude's own chat (`chat`), which is known: its message toolbar (shown on hover), and a zero-height box (`h-0`),
         /// which is how it hangs a message's hover timestamps below it, unless anything else sets its height
         /// (`min-h-10`, `md:h-auto`, `group-hover:h-auto`, `size-4`), it grows (`flex-1 h-0` is a flex layout's pane)
         /// or it lets its content show (`overflow-visible`). Elsewhere a toolbar or an `h-0` box may well be drawn.
         /// Frames are no guide: Chromium reports visible text 1 pt tall while its window is behind others, and the
         /// text inside an `sr-only` clip at full size.
-        public func child(role: String?, classes: [String], claude: Bool) -> Visibility {
+        public func child(role: String?, classes: [String]) -> Visibility {
             var v = self
             let bases = classes.map { $0.split(separator: ":").last.map(String.init) ?? $0 }
-            if claude, role == "AXToolbar" { v.hidden = true }
-            if classes.contains(where: Self.hiddenClasses.contains), !bases.contains("not-sr-only") { v.hidden = true }
-            if claude, classes.contains("h-0"),
+            if chat, role == "AXToolbar" { v.hidden = true }
+            if classes.contains(where: Self.hiddenClasses.contains), !bases.contains("not-sr-only"),
+               !classes.contains(where: { $0.contains("focusable") }) { v.hidden = true }   // shown on focus: may be on screen
+            if chat, classes.contains("h-0"),
                !zip(classes, bases).contains(where: { full, base in
                    full != "h-0" && ["h-", "min-h-", "max-h-", "size-"].contains(where: base.hasPrefix) }),
                !bases.contains(where: Self.showClasses.contains) { v.hover = true }
@@ -111,8 +115,8 @@ public enum HiddenText {
 
     /// Safety net for Claude text the tree cannot place (a Copy, or a selection without text markers; the caller decides): a screen reader heading straight
     /// before the text it repeats, "Claude responded: X" or "You said: X" followed by X (a long heading is cut short
-    /// with "…", so then X's opening). The heading ends flush against its message, never at a space: so visible prose
-    /// "You said: Never again. Never again." is no heading. The longest X that repeats wins, so "You said: I love you.
+    /// with "…", so then X's opening). The heading ends flush against its message, never at a space or line break: so
+    /// visible prose "You said: Never again. Never again." (or on two lines) is no heading. The longest X that repeats wins, so "You said: I love you.
     /// I love you. Stay." before its message cuts the whole heading, not one "I love you.". Returns the headings' ranges.
     public static func repeatedHeadings(_ text: String) -> [Range<Int>] {
         let u = Array(text.utf16).map(plainQuote)   // the heading has straight quotes where the message has curly ones
@@ -129,7 +133,7 @@ public enum HiddenText {
                 while e >= a + minimum {
                     var h = e - a
                     if u[e - 1] == 0x2026 { h -= 1 }   // "…": the heading was cut short, the body goes on
-                    if h >= minimum, e + h <= u.count, u[e - 1] != 0x20, u[e - 1] != 0x09, u[e - 1] != 0xA0,
+                    if h >= minimum, e + h <= u.count, ![0x20, 0x09, 0xA0, 0x0A, 0x0D].contains(u[e - 1]),
                        u[a..<a + h].elementsEqual(u[e..<e + h]) { hit = e; break }
                     e -= 1
                 }

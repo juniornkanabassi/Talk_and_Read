@@ -149,15 +149,14 @@ import TalkReadCore
         var webAreas: [AXUIElement] = []
         // Inside a web area, text that is never drawn (HiddenText.Visibility: Claude's screen reader headings, a hover
         // toolbar's timestamps) counts as chrome too, so the visible copy of a sentence is the one boxed.
-        let claude = TextCapture.isClaude(capture.pid)
         var stack: [(element: AXUIElement, chrome: Bool, inside: Bool, web: HiddenText.Visibility?)] = [(window, false, false, nil)]
         var visited = 0
         while let (node, parentChrome, parentInside, parentWeb) = stack.popLast(), visited < 8000 {
             visited += 1
             let children = axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]
             let role = axAttribute(node, kAXRoleAttribute) as? String
-            let web = role == "AXWebArea" ? HiddenText.Visibility() : parentWeb.map {
-                $0.child(role: role, classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [], claude: claude)
+            let web = role == "AXWebArea" ? HiddenText.Visibility(chat: TextCapture.isClaudeChat(node, pid: capture.pid)) : parentWeb.map {
+                $0.child(role: role, classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [])
             }
             let value = role == "AXStaticText" || role == "AXTextArea" || role == "AXTextField" ? axAttribute(node, kAXValueAttribute) as? String : nil
             let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome) || web.map { !$0.draws(value ?? "") && ($0.hidden || value != nil) } == true
