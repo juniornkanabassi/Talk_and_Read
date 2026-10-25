@@ -23,7 +23,8 @@ import ApplicationServices
         let probe = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(probe, 0.1)
         for attempt in 0..<6 {
-            if exposesText(probe, until: deadline) { return }
+            // Scoped short timeout for the whole walk: the window and children it reaches are other elements than `probe`.
+            if PointerCapture.bounded({ exposesText(probe, until: deadline) }) { return }
             guard attempt < 5, ContinuousClock.now < deadline else { break }
             try? await Task.sleep(for: .milliseconds(50))
         }
