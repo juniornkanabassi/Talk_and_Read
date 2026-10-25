@@ -94,6 +94,12 @@ extension EngineKind {
 
     /// Replaceable so the control self-test can read with a silent engine.
     var engines = Engines()
+    private(set) var insertingAgain = false
+    var insertAgainTarget: () async -> NSRunningApplication? = { await AppModel.otherFrontmostApp(within: 1) }
+    /// Replaceable so the control self-test can remove an item during tokenisation.
+    var documentWordCount: (String) async -> Int = { text in
+        await Task.detached { TextKit.tokenize(text).count }.value
+    }
     /// PLAN decision 16: who owns the current read. Reserved synchronously when a read is requested, held through
     /// preparing, playing and paused, released at finished, failed or stopped.
     var owner: (caller: String, sessionID: UUID)?
@@ -576,22 +582,35 @@ extension EngineKind {
     func insertAgain(_ id: UUID) {
         NSApp.hide(nil)
         Task {
-            guard let outcome = await reinsertInOtherApp(id) else {
-                return MiniPlayer.shared.flash("Click where the text should go, then try again")
-            }
-            switch outcome.result {
-            case .inserted: break
-            case .refusedSecure: MiniPlayer.shared.flash(Inserter.refusal())
-            case .failed(let reason): MiniPlayer.shared.flash(reason)
+            do {
+                guard let outcome = try await reinsertInOtherApp(id) else {
+                    return MiniPlayer.shared.flash("Click where the text should go, then try again")
+                }
+                switch outcome.result {
+                case .inserted: break
+                case .refusedSecure: MiniPlayer.shared.flash(Inserter.refusal())
+                case .failed(let reason): MiniPlayer.shared.flash(reason)
+                }
+            } catch let error as AppError {
+                MiniPlayer.shared.flash(error.message)
+            } catch {
+                MiniPlayer.shared.flash(error.localizedDescription)
             }
         }
     }
 
+    func checkInsertAgain() throws {
+        guard !insertingAgain else { throw AppError(code: "busy", message: "Insert Again is still typing. Retry when it finishes.") }
+    }
+
     /// Insert again's typing, shared with `talkread insert-again`: hides Talk & Read if it is in front, then types the
     /// entry into the app that is (or comes) forward. nil when no other app comes forward within a second.
-    func reinsertInOtherApp(_ id: UUID) async -> (app: NSRunningApplication, result: InsertResult)? {
+    func reinsertInOtherApp(_ id: UUID) async throws -> (app: NSRunningApplication, result: InsertResult)? {
+        try checkInsertAgain()
+        insertingAgain = true
+        defer { insertingAgain = false }
         if NSApp.isActive { NSApp.hide(nil) }
-        guard let app = await Self.otherFrontmostApp(within: 1) else { return nil }
+        guard let app = await insertAgainTarget() else { return nil }
         return (app, await dictation.reinsert(id, targetPID: app.processIdentifier))
     }
 
@@ -729,10 +748,15 @@ extension EngineKind {
 
     /// Home's play button and `talkread read-pasted`: keeps the text in the Library as pasted text (titled by its first
     /// line unless `title` is given), reads it as the read reserved as `id`, and records it in the History.
-    @discardableResult func readPasted(_ text: String, title: String? = nil, id: UUID) -> (item: LibraryItem, session: ReadSession) {
+    @discardableResult func readPasted(_ text: String, title: String? = nil, id: UUID) throws -> (item: LibraryItem, session: ReadSession) {
         let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Pasted text"
         let item = importText(text, title: title ?? String(firstLine.prefix(60)))
-        let s = startDocument(item, text: text, fromToken: nil, id: id)
+        let savedText: String
+        do { savedText = try documentText(item) } catch {
+            if owner?.sessionID == id { owner = nil }
+            throw AppError(code: "failed", message: "Could not open “\(item.title)”")
+        }
+        let s = startDocument(item, text: savedText, fromToken: nil, id: id)
         recordOwnRead(text)
         return (item, s)
     }
