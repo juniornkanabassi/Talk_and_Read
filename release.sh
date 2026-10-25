@@ -13,11 +13,14 @@
 #      (equal only with --resume, for the same version); unreadable or ambiguous items stop it. Markdown notes.
 #   4. print the lib/apps.json release object for the website session (its url, bytes and sha256 are the DMG's;
 #      the appcast enclosure stays the zip)
-#   5. create the GitHub release v<version> on juniornkanabassi/talkandread-releases with Talk_and_Read_<version>.zip
+#   5. tag this repository v<version> and push the tag to origin, then create the GitHub release v<version> on this
+#      repository (juniornkanabassi/Talk_and_Read) from that tag with Talk_and_Read_<version>.zip
 #      (the Sparkle update) and Talk_and_Read_<version>.dmg (the website download), then download each asset back and
 #      compare its sha256
 #   6. only then replace the website's appcast.xml (refused if it changed since step 3)
-#   7. tag this repository v<version> (pushing the tag is left to the lead)
+#   7. report the tag (made and pushed in step 5, so the release and the source point at the same commit)
+# Releases up to 0.8.0 were published on juniornkanabassi/talkandread-releases, which stays online (archived) so old
+# appcast items and links keep working.
 # --resume: finish a release a failed run left behind: an existing release and tag are reused only when they match
 #   (each asset, if present, must be this file byte for byte; the tag must be on HEAD); a missing asset is uploaded.
 # --dry-run: everything except the upload and the tag, into --out or a new /private/tmp/talkread-release-dry.XXXXXX;
@@ -25,7 +28,7 @@
 # Every step stops the script on failure. It never commits to or pushes the website: the website session does that.
 set -euo pipefail
 ROOT="${0:A:h}"
-REPO=juniornkanabassi/talkandread-releases
+REPO=juniornkanabassi/Talk_and_Read
 ACCOUNT="${TALKREAD_SPARKLE_ACCOUNT:-talkandread}"
 BUILD_ROOT="${TALKREAD_BUILD_ROOT:-$HOME/Library/Caches/TalkRead-release-cache}"
 SIGN_UPDATE="$BUILD_ROOT/artifacts/sparkle/Sparkle/bin/sign_update"
@@ -61,6 +64,9 @@ if (( ! DRY )); then
     TAGGED=1
   fi
   gh auth status >/dev/null 2>&1 || die "gh is not signed in"
+  # The release is made from the pushed tag, so a tag already on origin must be this HEAD (peeled, for annotated tags).
+  RTAG=$(git -C "$ROOT" ls-remote origin "refs/tags/v$SRC_VERSION" "refs/tags/v$SRC_VERSION^{}" | sort -k2 | tail -1 | cut -f1)
+  [[ -z $RTAG || $RTAG == $HEAD ]] || die "tag v$SRC_VERSION on origin points at another commit ($RTAG)"
   if gh release view "v$SRC_VERSION" --repo $REPO >/dev/null 2>&1; then
     (( RESUME )) || die "release v$SRC_VERSION already exists on $REPO; --resume finishes it if it holds this zip"
     EXISTS=1
@@ -256,7 +262,8 @@ typeset -A WANT=("Talk_and_Read_$VERSION.zip" $SHA "Talk_and_Read_$VERSION.dmg" 
 /bin/cp "$DMG" "$WORK/Talk_and_Read_$VERSION.dmg"
 step "5. GitHub release v$VERSION on $REPO"
 if (( DRY )); then
-  print "dry run, not run: gh release create v$VERSION ${(q)NAMES} --repo $REPO --title 'Talk & Read $VERSION' --notes-file '$NOTES'"
+  print "dry run, not run: git tag -a v$VERSION; git push origin refs/tags/v$VERSION"
+  print "dry run, not run: gh release create v$VERSION --verify-tag ${(q)NAMES} --repo $REPO --title 'Talk & Read $VERSION' --notes-file '$NOTES'"
   print "asset Talk_and_Read_$VERSION.zip: $BYTES bytes, sha256 $SHA (Sparkle appcast enclosure)"
   print "asset Talk_and_Read_$VERSION.dmg: $DMG_BYTES bytes, sha256 $DMG_SHA (website download)"
 else
@@ -275,7 +282,12 @@ else
     done
     for name in $missing; do gh release upload "v$VERSION" "$WORK/$name" --repo $REPO || die "gh release upload $name failed"; done
   else
-    gh release create "v$VERSION" "$WORK/Talk_and_Read_$VERSION.zip" "$WORK/Talk_and_Read_$VERSION.dmg" --repo $REPO --title "Talk & Read $VERSION" --notes-file "$NOTES" || die "gh release create failed (rerun with --resume)"
+    if (( ! TAGGED )); then
+      git -C "$ROOT" tag -a "v$VERSION" -m "Talk & Read $VERSION" || die "git tag failed"
+      TAGGED=1
+    fi
+    git -C "$ROOT" push origin "refs/tags/v$VERSION" || die "could not push tag v$VERSION (rerun with --resume)"
+    gh release create "v$VERSION" --verify-tag "$WORK/Talk_and_Read_$VERSION.zip" "$WORK/Talk_and_Read_$VERSION.dmg" --repo $REPO --title "Talk & Read $VERSION" --notes-file "$NOTES" || die "gh release create failed (rerun with --resume)"
   fi
   for name in $NAMES; do
     gh release download "v$VERSION" --repo $REPO --pattern "$name" --dir "$WORK/remote" || die "could not download $name back (rerun with --resume)"
@@ -305,7 +317,7 @@ if (( DRY )); then
   print "dry run, not run: git tag -a v$VERSION -m 'Talk & Read $VERSION'"
   print "\nDry run done: appcast $APPCAST"
 elif (( TAGGED )); then
-  print "v$VERSION is already on HEAD. The website session commits $APPCAST and the release object above."
+  print "v$VERSION is on HEAD. The website session commits $APPCAST and the release object above."
 else
   git -C "$ROOT" tag -a "v$VERSION" -m "Talk & Read $VERSION" || die "git tag failed"
   print "Tagged v$VERSION (not pushed). The website session commits $APPCAST and the release object above."
