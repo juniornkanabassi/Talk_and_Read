@@ -82,7 +82,8 @@ enum ControlSelfTest {
 
         // Documents: `open` imports into the library (copy + text beside it) without showing a window; `read-file` reads.
         let docs = URL(fileURLWithPath: "Tests/Fixtures/documents")
-        await step("a open sample.pdf", ["open", docs.appendingPathComponent("sample.pdf").path, "--caller", "a"], .ok)
+        let opened = await call(cli, ["open", docs.appendingPathComponent("sample.pdf").path, "--caller", "a"])
+        results.append(check("a open sample.pdf", opened, .ok) && opened.response?.data?["shown"] == .bool(true))
         let item = model.library.first
         let copied = item.map { FileManager.default.fileExists(atPath: Paths.documents.appendingPathComponent($0.fileName).path) } ?? false
         let text = item.flatMap { try? model.documentText($0) } ?? ""
@@ -97,6 +98,10 @@ enum ControlSelfTest {
         await step("a skip 10001", ["skip", "10001", "--caller", "a"], .badArgs)
         await step("a skip -2 (still reading)", ["skip", "-2", "--caller", "a"], .ok)
         await step("a stop", ["stop", "--caller", "a"], .ok)
+        await librarySteps(cli, model, &results)
+        await admissionSteps(cli, model, &results)
+        await importReplaySteps(model, &results)
+        await wordListSteps(cli, model, &results)
 
         // Two callers transcribe at once: the shared transcriber admits one, the other is told busy.
         // Sol #16: with a 1 s idle unload, nothing may be pending while the file keeps dictation busy; after it, the
@@ -264,6 +269,14 @@ enum ControlSelfTest {
         if let deleted { model.deleteRead(deleted) }
         let afterDelete = await call(cli, ["history", "--kind", "read", "--search", "second read"])
         record("a deleted read is gone from history", deleted != nil && entries(afterDelete).isEmpty, "\(model.recentReads.count) reads")
+        // history-delete: by the id `history` lists, only with --yes, and an unknown id is not_found.
+        let listed = entries(await call(cli, ["history", "--kind", "read", "--search", "first read"])).first?["id"]?.stringValue ?? "-"
+        let unconfirmed = await call(cli, ["history-delete", listed])
+        let removed = await call(cli, ["history-delete", listed, "--yes"])
+        let again = await call(cli, ["history-delete", listed, "--yes"])
+        record("history-delete removes by id with --yes", unconfirmed.status == 2 && removed.response?.ok == true
+               && !model.recentReads.contains { $0.id.uuidString == listed } && again.response?.code == "not_found",
+               "\(unconfirmed.status) \(removed.text) \(again.response?.code ?? "-")")
 
         // Control characters encode as six bytes each (\u0001): a full history (200 reads) of 5,000 of them is about 6 MB on the
         // wire from 1 MB of text. The reply must stay inside its budget, say it was cut, and never fail as response_too_large.
@@ -278,6 +291,251 @@ enum ControlSelfTest {
         let few = await call(cli, ["history", "--kind", "read", "--limit", "10"])
         record("history within the budget is not cut", few.response?.ok == true && entries(few).count == 10 && few.response?.data?["truncated"]?.boolValue == false, "\(entries(few).count) entries")
         for id in ids { model.deleteRead(id) }
+    }
+
+    /// The Library through the CLI: list, open, read from the start, remove (refused under another caller's read and
+    /// without --yes), paste and listen, and read again. Uses the sample.pdf `open` imported.
+    @MainActor private static func librarySteps(_ cli: URL, _ model: AppModel, _ results: inout [Bool]) async {
+        func record(_ label: String, _ pass: Bool, _ detail: String) { results.append(pass); print("\(pass ? "PASS" : "FAIL")  \(label.padding(toLength: 36, withPad: " ", startingAt: 0)) \(detail)") }
+        guard let item = model.library.first else { return record("library steps", false, "the library is empty") }
+        let id = item.id.uuidString
+        let list = await call(cli, ["library"])
+        let ids = (list.response?.data?["items"]?.arrayValue ?? []).compactMap { $0.objectValue?["id"]?.stringValue }
+        record("library lists the imported PDF", list.response?.ok == true && ids.first == id, "\(ids.count) items")
+        let shown = await call(cli, ["library-open", id])
+        let words = shown.response?.data?["words"]?.numberValue ?? 0
+        record("library-open shows it, with words", shown.response?.ok == true && words > 0 && WindowRouter.shared.libraryPath.last?.id == item.id,
+               "\(Int(words)) words")
+        let badFrom = await call(cli, ["library-open", id, "--read", "1", "--from", String(Int(words) + 5)])
+        record("library-open refuses a word past the end", badFrom.response?.code == "bad_args", badFrom.text)
+        let o1 = await call(cli, ["library-open", id, "--read", "1", "--from", "start", "--caller", "a"])
+        results.append(check("a library-open --read 1 --from start", o1, .audio))
+        let reading = await call(cli, ["status"]).response?.data?["reading"]?.objectValue?["item"]?.stringValue
+        record("status names the item being read", reading == id, reading ?? "-")
+        let unconfirmed = await call(cli, ["library-remove", id, "--caller", "b"])
+        record("library-remove without --yes", unconfirmed.status == 2 && model.library.contains { $0.id == item.id }, "exit \(unconfirmed.status)")
+        let o2 = await call(cli, ["library-remove", id, "--yes", "--caller", "b"])
+        results.append(check("b library-remove while a reads it", o2, .busy))
+        let o3 = await call(cli, ["stop", "--caller", "a"])
+        results.append(check("a stop", o3, .ok))
+        let removed = await call(cli, ["library-remove", id, "--yes", "--caller", "b"])
+        let gone = !model.library.contains { $0.id == item.id }
+            && !FileManager.default.fileExists(atPath: Paths.documents.appendingPathComponent(item.fileName).path)
+        record("b library-remove after a stopped", removed.response?.ok == true && gone, removed.text)
+        let missing = await call(cli, ["library-open", id])
+        record("library-open of a removed item", missing.response?.code == "not_found", missing.text)
+
+        let text = "Pasted for the control test, about the harbour."
+        let o4 = await call(cli, ["read-pasted", text, "--caller", "a"])
+        results.append(check("a read-pasted", o4, .audio))
+        let pasted = model.library.first
+        record("read-pasted keeps Library and History", pasted?.kind == "pasted" && pasted?.title == text && model.recentReads.first?.text == text
+               && WindowRouter.shared.libraryPath.last?.id == pasted?.id && model.sessionInfo.item == pasted?.id
+               && pasted.flatMap { try? model.documentText($0) } == text,
+               pasted?.title ?? "-")
+        let o5 = await call(cli, ["read-again", "--caller", "b"])
+        results.append(check("b read-again while a reads", o5, .busy))
+        let o6 = await call(cli, ["read-again", "--caller", "a"])
+        results.append(check("a read-again (the latest read)", o6, .audio))
+        let o7 = await call(cli, ["stop", "--caller", "a"])
+        results.append(check("a stop", o7, .ok))
+        if let pasted { model.remove(pasted) }
+    }
+
+    @MainActor private static func admissionSteps(_ cli: URL, _ model: AppModel, _ results: inout [Bool]) async {
+        func record(_ label: String, _ pass: Bool) {
+            results.append(pass)
+            print("\(pass ? "PASS" : "FAIL")  \(label)")
+        }
+        let item = model.importText("A document for admission tests.", title: "Admission")
+        let path = WindowRouter.shared.libraryPath
+        let active = await call(cli, ["speak", "Keep reading while navigation is refused.", "--caller", "a"])
+        record("navigation fixture is reading", active.response?.ok == true && model.liveSession != nil)
+        let before = model.library.count
+        for args in [["library-open", item.id.uuidString], ["library-open", item.id.uuidString, "--read", "1"],
+                     ["open", "Tests/Fixtures/documents/sample.txt"], ["open", "Tests/Fixtures/documents/sample.txt", "--read", "1"],
+                     ["open-url", "https://example.com"], ["open-url", "https://example.com", "--read", "1"]] {
+            let result = await call(cli, args + ["--caller", "b"])
+            record("navigation refuses another owner: \(args.joined(separator: " "))",
+                   result.response?.code == "busy" && WindowRouter.shared.libraryPath == path && model.library.count == before)
+        }
+        model.stopSession()
+        for read in ["1", "0"] {
+            do {
+                let data = try await model.openImported(ControlRequest(command: "open", args: ["read": read], caller: "a"), name: "test") {
+                    await Task.yield()
+                    _ = model.reserve("b")
+                    return item
+                }
+                record("import keeps item without navigation (read \(read))", data["shown"] == .bool(false)
+                       && data["id"] == .string(item.id.uuidString) && data["title"] == .string(item.title)
+                       && data["kind"] == .string(item.kind) && data["notice"]?.stringValue?.contains("b is reading") == true
+                       && model.owner?.caller == "b" && model.liveSession == nil && WindowRouter.shared.libraryPath == path)
+            } catch { record("import keeps item without navigation (read \(read))", false) }
+            model.stopSession()
+        }
+
+        let countWords = model.documentWordCount
+        model.documentWordCount = { text in
+            await Task.yield()
+            model.remove(item)
+            return TextKit.tokenize(text).count
+        }
+        let removed = await call(cli, ["library-open", item.id.uuidString, "--read", "1", "--caller", "a"])
+        model.documentWordCount = countWords
+        record("library-open rechecks removal after tokenisation", removed.response?.code == "not_found"
+               && model.liveSession == nil && WindowRouter.shared.libraryPath == path)
+        let removedImport = model.importText("Removed during import.", title: "Removed")
+        do {
+            _ = try await model.openImported(ControlRequest(command: "open", args: ["read": "1"], caller: "a"), name: "test") {
+                await Task.yield()
+                model.remove(removedImport)
+                return removedImport
+            }
+            record("import rechecks removal after await", false)
+        } catch let error as AppError {
+            record("import rechecks removal after await", error.code == "not_found" && model.owner == nil && WindowRouter.shared.libraryPath == path)
+        } catch { record("import rechecks removal after await", false) }
+
+        let target = model.insertAgainTarget
+        var release: CheckedContinuation<NSRunningApplication?, Never>?
+        model.insertAgainTarget = { await withCheckedContinuation { release = $0 } }
+        let insertion = Task { try await model.reinsertInOtherApp(UUID()) }
+        let entered = await waitUntil(1) { release != nil }
+        record("insert-again reserves before awaiting target", entered && model.insertingAgain)
+        let second = await call(cli, ["insert-again", "--caller", "b"])
+        let dictate = await call(cli, ["dictate-start", "--caller", "b"])
+        record("concurrent insert-again is busy", second.response?.code == "busy")
+        record("dictate-start during insert-again is busy", dictate.response?.code == "busy" && model.dictation.owner == nil)
+        do {
+            _ = try await model.reinsertInOtherApp(UUID())
+            record("GUI shares insert-again guard", false)
+        } catch let error as AppError { record("GUI shares insert-again guard", error.code == "busy") }
+        catch { record("GUI shares insert-again guard", false) }
+        release?.resume(returning: nil)
+        _ = try? await insertion.value
+        model.insertAgainTarget = target
+        record("insert-again releases its guard", !model.insertingAgain)
+
+        let saved = Paths.documents.appendingPathExtension("admission-backup")
+        let historyCount = model.recentReads.count
+        do {
+            try FileManager.default.moveItem(at: Paths.documents, to: saved)
+            defer {
+                try? FileManager.default.removeItem(at: Paths.documents)
+                try? FileManager.default.moveItem(at: saved, to: Paths.documents)
+            }
+            try Data().write(to: Paths.documents)   // a file blocks the directory even when running as root
+            let failed = await call(cli, ["read-pasted", "Cannot persist this text.", "--caller", "a"])
+            record("read-pasted reports persistence failure", failed.response?.code == "failed"
+                   && failed.response?.message == "Could not open “Cannot persist this text.”"
+                   && model.liveSession == nil && model.owner == nil && model.recentReads.count == historyCount
+                   && WindowRouter.shared.libraryPath == path)
+            if let failedItem = model.library.first { model.remove(failedItem) }
+        } catch { record("read-pasted persistence fixture", false) }
+        do {
+            let text = "Home play still records and opens the saved text."
+            let (homeItem, session) = try model.readPasted(text, id: model.reserve("user"))
+            WindowRouter.shared.open(homeItem)
+            record("Home play reads, records History and opens its item", model.session === session
+                   && model.sessionInfo.item == homeItem.id && model.recentReads.count == historyCount + 1
+                   && model.recentReads.first?.text == text && WindowRouter.shared.libraryPath.last?.id == homeItem.id
+                   && (try? model.documentText(homeItem)) == text)
+            model.stopSession()
+            model.remove(homeItem)
+        } catch { record("Home play reads, records History and opens its item", false) }
+    }
+
+    @MainActor private static func importReplaySteps(_ model: AppModel, _ results: inout [Bool]) async {
+        let path = WindowRouter.shared.libraryPath
+        let before = Set(model.library.map(\.id))
+        let socket = Paths.dataRoot.appendingPathComponent("import-test.sock")
+        do {
+            let server = try ControlServer(path: socket) { r in
+                await Task { @MainActor in
+                    do {
+                        let data = try await model.openImported(r, name: "test") {
+                            let item = model.importText("Imported exactly once.", title: "Import retry")
+                            await Task.yield()
+                            _ = await model.handle(ControlRequest(command: "speak", args: ["text": "Another caller owns this read."], caller: "b", force: true))
+                            return item
+                        }
+                        return ControlResponse(ok: true, data: data)
+                    } catch let error as AppError {
+                        return ControlResponse(ok: false, code: error.code, message: error.message)
+                    } catch { return ControlResponse(ok: false, code: "failed", message: error.localizedDescription) }
+                }.value
+            }
+            defer { server.stop() }
+            let request = ControlRequest(id: UUID().uuidString, command: "open", args: ["read": "1"], caller: "a")
+            let first = try await Task.detached { try ControlClient.send(request, to: socket, timeout: 5) }.value
+            let retry = try await Task.detached { try ControlClient.send(request, to: socket, timeout: 5) }.value
+            let added = model.library.filter { !before.contains($0.id) }
+            var expected = first.data ?? [:]
+            expected["replayed"] = .bool(true)
+            let pass = first.ok && first.data?["shown"] == .bool(false) && first.data?["notice"] != nil
+                && retry.ok && retry.data == expected && added.count == 1
+                && first.data?["id"] == added.first.map { .string($0.id.uuidString) }
+                && model.owner?.caller == "b" && model.liveSession != nil && WindowRouter.shared.libraryPath == path
+            results.append(pass)
+            print("\(pass ? "PASS" : "FAIL")  committed import replays once after another caller starts reading")
+        } catch {
+            results.append(false)
+            print("FAIL  import replay: \(error)")
+        }
+        model.stopSession()
+        for item in model.library where !before.contains(item.id) { model.remove(item) }
+    }
+
+    /// Vocabulary, pronunciations and shortcuts through the CLI: written where the Settings editors read them.
+    @MainActor private static func wordListSteps(_ cli: URL, _ model: AppModel, _ results: inout [Bool]) async {
+        func record(_ label: String, _ pass: Bool, _ detail: String) { results.append(pass); print("\(pass ? "PASS" : "FAIL")  \(label.padding(toLength: 36, withPad: " ", startingAt: 0)) \(detail)") }
+        let revision = model.wordListsRevision
+        let set = await call(cli, ["vocabulary-set", "marlow key", "Marlowe", "Quay"])
+        let listed = await call(cli, ["vocabulary"])
+        let rows = (listed.response?.data?["entries"]?.arrayValue ?? []).compactMap(\.objectValue)
+        record("vocabulary-set then vocabulary", set.response?.ok == true && WordMapEditor.load(Paths.vocabulary)["marlow key"] == "Marlowe Quay"
+               && rows.contains { $0["heard"]?.stringValue == "marlow key" && $0["typed"]?.stringValue == "Marlowe Quay" }
+               && model.wordListsRevision > revision, listed.text)
+        let removed = await call(cli, ["vocabulary-remove", "Marlow Key", "--yes"])
+        let missing = await call(cli, ["vocabulary-remove", "marlow key", "--yes"])
+        record("vocabulary-remove ignores case", removed.response?.ok == true && WordMapEditor.load(Paths.vocabulary)["marlow key"] == nil
+               && missing.response?.code == "not_found", removed.text)
+        let say = await call(cli, ["pronunciation-set", "Nguyen", "win"])
+        let gone = await call(cli, ["pronunciation-remove", "Nguyen", "--yes"])
+        record("pronunciation-set, pronunciation-remove", say.response?.ok == true && gone.response?.ok == true
+               && WordMapEditor.load(Paths.pronunciations)["Nguyen"] == nil, gone.text)
+        let suggestion = await call(cli, ["vocabulary-suggestion", "accept", "--heard", "nobody", "--typed", "Nobody"])
+        record("vocabulary-suggestion of an unknown one", suggestion.response?.code == "not_found", suggestion.text)
+
+        let correction = AutoLearn.Correction(heard: "okafor", typed: "Okafor")
+        for _ in 0..<AutoLearn.threshold { model.dictation.learn([correction]) }
+        do {
+            let saved = try Data(contentsOf: Paths.vocabulary)
+            try FileManager.default.removeItem(at: Paths.vocabulary)
+            try FileManager.default.createDirectory(at: Paths.vocabulary, withIntermediateDirectories: false)
+            defer {
+                try? FileManager.default.removeItem(at: Paths.vocabulary)
+                try? saved.write(to: Paths.vocabulary, options: .atomic)
+            }
+            let failed = await call(cli, ["vocabulary-suggestion", "accept", "--heard", correction.heard, "--typed", correction.typed])
+            let listed = await call(cli, ["vocabulary"])
+            let offers = listed.response?.data?["suggestions"]?.arrayValue ?? []
+            record("suggestion save failure keeps suggestion", failed.response?.ok == false && failed.response?.code == "failed"
+                   && model.dictation.suggestions.contains(correction)
+                   && offers.contains { $0.objectValue?["heard"] == .string(correction.heard) }, failed.text)
+        } catch { record("suggestion persistence failure fixture", false, "\(error)") }
+        let accepted = await call(cli, ["vocabulary-suggestion", "accept", "--heard", correction.heard, "--typed", correction.typed])
+        record("suggestion saved before dismissal", accepted.response?.ok == true
+               && WordMapEditor.load(Paths.vocabulary)[correction.heard] == correction.typed
+               && !model.dictation.suggestions.contains(correction), accepted.text)
+
+        let bound = await call(cli, ["settings-set", "readShortcut", "ctrl+option+R"])
+        let refused = await call(cli, ["settings-set", "readShortcut", "cmd+Q"])
+        record("settings-set rebinds a shortcut", bound.response?.ok == true && model.settings.readShortcut.display == "⌃⌥R"
+               && refused.response?.code == "bad_args", refused.text)
+        let reset = await call(cli, ["shortcuts-reset", "--yes"])
+        record("shortcuts-reset", reset.response?.ok == true && model.settings.readShortcut == TalkReadCore.Settings().readShortcut, reset.text)
     }
 
     private static func check(_ label: String, _ o: Outcome, _ expect: Expect) -> Bool {

@@ -20,3 +20,30 @@ swift test  --scratch-path /private/tmp/talkread-build
 4. Read: select text and press ⌃A. Dictate: hold right Option and speak. All shortcuts are in Settings ▸ Shortcuts.
 
 Requirements: Apple silicon, macOS 26 or later. The optional Breeze voices are for personal, non-commercial use only (their licence is shown before download). Talk & Read is an α build for testing; please report problems to Junior.
+
+## CLI and MCP
+
+The app installs a `talkread` helper (`Contents/Helpers/talkread`) that controls the running app over a local socket; `mcp/talkread-mcp.mjs` turns the same commands into MCP tools for AI agents (one tool per command, from `talkread mcp-manifest`). Nearly everything a person does in the windows and the menu is reachable (the exceptions are below), and changes show in the running app at once.
+
+```sh
+talkread --help                     # every command; talkread <command> --help for one, with an example
+talkread speak "Hello there" --speed 1.2
+talkread open-url https://example.com/article --read 1
+talkread library                    # ids for library-open and library-remove
+talkread library-open <id> --read 1 --from start
+talkread history --kind dictated --limit 5
+talkread insert-again               # types the latest dictation where the cursor is
+talkread vocabulary-set "marlow key" Marlowe Quay
+talkread settings-set readShortcut ctrl+option+R
+talkread history-delete <id> --yes  # removals need --yes
+```
+
+- Reading: `speak`, `read-selection`, `read-file`, `read-pasted` (Home's paste and listen), `read-again`, `pause`, `resume`, `stop`, `skip`, `speed`, `voice`, `voices`.
+- Library: `open`, `open-url`, `library`, `library-open`, `library-remove`.
+- Dictation: `dictate-start`, `dictate-stop`, `dictate-cancel`, `dictate-file`, `dictation-last`, `insert-again`, `mic`, `vocabulary`, `vocabulary-set`, `vocabulary-remove`, `vocabulary-suggestion`.
+- History: `history`, `history-delete`.
+- Settings: `settings-get`, `settings-set` (every setting, shortcuts included), `shortcuts-reset`, `pronunciations`, `pronunciation-set`, `pronunciation-remove`, `models`, `update-check`, `status`.
+
+Several agents can work at once. Each MCP adapter has its own caller id; a read or dictation another caller started is refused with `busy` unless `--force` is given, and the person at the Mac always wins. A retried request with the same `--request-id` acts once and replays its answer (the MCP adapter uses the tool call's id). Removals (`library-remove`, `history-delete`, `vocabulary-remove`, `pronunciation-remove`, `shortcuts-reset`) are refused without `--yes` (`yes: true` over MCP).
+
+Left to the app on purpose: granting permissions, onboarding, the screenshot and listen drag, window placement, and downloading the Breeze voices, which only start beside their licence on Settings ▸ Models. `models download --model` fetches the other optional downloads (Qwen3, word timing, French).

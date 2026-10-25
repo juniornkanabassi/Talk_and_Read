@@ -218,6 +218,7 @@ struct SettingsContent: View {
         Form {
             Section {
                 WordMapEditor(url: Paths.pronunciations, keyPrompt: "Word", valuePrompt: "Say it as")
+                    .id(model.wordListsRevision)   // reloads after `talkread pronunciation-set`
             } footer: {
                 Text("For names and words the voice gets wrong, for example Nguyen → win. The word on screen stays as written.")
                     .foregroundStyle(.secondary)
@@ -483,9 +484,14 @@ struct WordMapEditor: View {
             let k = r.key.trimmingCharacters(in: .whitespaces)
             return k.isEmpty ? nil : (k, r.value.trimmingCharacters(in: .whitespaces))
         }
+        try? save(Dictionary(pairs, uniquingKeysWith: { _, last in last }), to: url)
+    }
+
+    /// The file as a whole map (also `AppModel.updateWordList`, for the control socket).
+    static func save(_ map: [String: String], to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? encoder.encode(Dictionary(pairs, uniquingKeysWith: { _, last in last })).write(to: url, options: .atomic)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try encoder.encode(map).write(to: url, options: .atomic)
     }
 }
