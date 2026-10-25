@@ -239,6 +239,7 @@ lane_speech() {   # timing-sensitive speech runs, one at a time
   st long 300 --selftest-tts $F --long
   st en25 600 --selftest-tts $F --voice af_heart --rate 2.5
   st en2 600 --selftest-tts $F --voice af_heart --rate 2
+  st en4 600 --selftest-tts $F --voice af_heart --rate 4
   st emma 400 --selftest-tts $F --voice bf_emma
   st fr 400 --selftest-tts Tests/Fixtures/reading-fr.txt --voice ff_siwis
   st fake 400 --selftest-tts $F --fake-slow
@@ -295,8 +296,8 @@ rules() {
     grep -q 'system voice keeps reading ok' $OUT/long.txt && pass R11 "system voice keeps reading (no download)" || fail R11 "system voice check missing or failed"
   fi
 
-  # ---- English Kokoro at 2.5x and 2x: R2, R3
-  for f in en25 en2; do
+  # ---- English Kokoro at 2.5x, 2x and the 4x top of the speed panel: R2, R3
+  for f in en25 en2 en4; do
     R $f || continue
     if [[ $f == en25 ]]; then
       line=$(L $OUT/en25.txt '^R2: ')
@@ -306,11 +307,14 @@ rules() {
     line=$(L $OUT/$f.txt '^R3: ')
     if [[ $line == 'R3: PASS'* ]]; then
       w=$(num $OUT/$f.txt '^WER at .*Player graph: ([0-9.]+) %.*')
-      if [[ $f == en25 ]]; then pass R3 "2.5x WER ${w} % through the Player graph, below Kokoro's own 2.5x ($(num $OUT/en25.txt '^reference: Kokoro.*WER ([0-9.]+) %.*') %)"
-      else pass R3 "2x WER ${w} % (limit 8)"; fi
+      case $f in
+        en25) pass R3 "2.5x WER ${w} % through the Player graph, below Kokoro's own 2.5x ($(num $OUT/en25.txt '^reference: Kokoro.*WER ([0-9.]+) %.*') %)" ;;
+        en4) pass R3 "4x WER ${w} % through the Player graph, below Kokoro's own 4x ($(num $OUT/en4.txt '^reference: Kokoro.*WER ([0-9.]+) %.*') %)" ;;
+        *) pass R3 "2x WER ${w} % (limit 8)" ;;
+      esac
     elif [[ -n $line ]]; then fail R3 "$line; $(L $OUT/$f.txt '^WER at')"; else crash R3 $f; fi
   done
-  R en25 && pass R3 "clock max |err| $(grep -oE 'max \|err\| [0-9.]+ ms' $OUT/en25.txt | sed -E 's/max \|err\| //; s/ ms//' | sort -n | tail -1) ms over 0.5-3x (limit 20)"
+  R en25 && pass R3 "clock max |err| $(grep -oE 'max \|err\| [0-9.]+ ms' $OUT/en25.txt | sed -E 's/max \|err\| //; s/ ms//' | sort -n | tail -1) ms over 0.5-4x (limit 20)"
 
   # ---- British voice and French
   if R emma; then
@@ -483,7 +487,7 @@ if [[ -f $BATCH_DIR/home/Models/breeze-tts-2-8bit/LICENSE && -f $BATCH_DIR/home/
 fi
 if (( ${#NETDENY} )) && (( ! STATIC_ONLY )); then
   clean=1
-  for name in long en25 en2 emma fr fake switchfake import ui control asr; do [[ -f $OUT/$name.rc ]] || continue; [[ $(<"$OUT/$name.rc") == 0 ]] || clean=0; done
+  for name in long en25 en2 en4 emma fr fake switchfake import ui control asr; do [[ -f $OUT/$name.rc ]] || continue; [[ $(<"$OUT/$name.rc") == 0 ]] || clean=0; done
   (( clean )) && pass E5 "every self-test passed with outbound IP traffic denied (models were already on disk, nothing needed the network)" \
               || nrun E5 "a run failed under the network deny: see its .err file before reading this as a network use (rerun with --no-netdeny to compare)"
 else

@@ -14,7 +14,7 @@ Talk & Read 1.0 is the first public release. I use it every day, but it is built
 
 Select text in almost any app and press ⌃A. Talk & Read reads it aloud and highlights each word in place as it is spoken, following the page when it scrolls. Where an app hides its text from the rest of the system, the words show in the player instead. The reader also opens PDFs, Word documents, EPUBs, Markdown, RTF and web pages, and remembers where you stopped.
 
-The default voices are Kokoro, with American and British accents. You can also download the Qwen3-TTS and Breeze voices. Once you download the French voice files (about 100 MB), French text is detected and read by a French voice. Speed runs from 0.5× to 3× and keeps each voice's natural pitch.
+The default voices are Kokoro, with American and British accents. You can also download the Qwen3-TTS and Breeze voices. Once you download the French voice files (about 100 MB), French text is detected and read by a French voice. Speed runs from 0.5× to 4× in steps of 0.25×, from a YouTube-style speed panel in the reader and the mini player, and keeps each voice's natural pitch.
 
 Hold right Option, speak and let go, and your words are typed wherever the cursor is. Dictation uses NVIDIA's Parakeet model on your Mac. Filler words are removed, spoken punctuation becomes punctuation, and web addresses, sums of money and dates are written properly. Long dictations are split into paragraphs at your pauses. You can add the names and terms you use to a personal vocabulary, and near misses are corrected to match.
 

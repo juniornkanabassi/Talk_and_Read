@@ -169,7 +169,7 @@ enum SelfTest {
             // Revised R3 (PLAN.md): clock within 20 ms at every rate; WER <= 8 % up to 2x; above 2x, lower than Kokoro
             // speaking natively at that rate (the recogniser's own floor on fast speech).
             var clockOK = true
-            for r in Set<Float>([0.5, 1, 1.5, 2, 2.5, 3, rate]).sorted() {   // offline burst trains: cheap, so every rate
+            for r in Set<Float>([0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, rate]).sorted() {   // offline burst trains: cheap, so every rate
                 let c = try clockError(rate: r)
                 clockOK = clockOK && c.maxAbs <= 0.020 && c.count >= 10
                 print("clock vs rendered bursts at \(r)x (heard time): mean \(String(format: "%.1f", c.mean * 1000)) ms, max |err| \(String(format: "%.1f", c.maxAbs * 1000)) ms (\(c.count) bursts)")
@@ -206,7 +206,7 @@ enum SelfTest {
                 rule = "WER \(pct(werR)) < native \(pct(werNative))"
             }   // ponytail: a system voice above 2x has no native reference, so it keeps the 8 % bar
             let ok = clockOK && werOK
-            print("R3: \(ok ? "PASS" : "FAIL") (clock within 20 ms at 0.5-3x; \(rule))")
+            print("R3: \(ok ? "PASS" : "FAIL") (clock within 20 ms at 0.5-4x; \(rule))")
             pass = pass && ok
         }
         print("wrote \(outDir.path)/tts.wav, tts-words.tsv")
@@ -660,11 +660,11 @@ enum SelfTest {
             _ = await until(2) { p.state == .paused }
             var changes = 0
             let watch = model.objectWillChange.sink { changes += 1 }
-            model.stepSpeed(0.05)   // what ⌥D does
+            model.stepSpeed(up: true)   // what ⌥D does
             watch.cancel()
             check("fake: ⌥D on a paused preview notifies the display (\(changes) change(s))", p.state == .paused && changes > 0)
-            check("fake: ⌥D during a 1x preview gives 1.05x and the saved 2.5x stays (rate \(p.player.rate)x, shown \(model.activeSpeed)x, saved \(model.settings.speed)x)",
-                  abs(p.player.rate - 1.05) < 0.001 && abs(model.activeSpeed - 1.05) < 0.001 && model.settings.speed == 2.5)
+            check("fake: ⌥D during a 1x preview gives 1.25x and the saved 2.5x stays (rate \(p.player.rate)x, shown \(model.activeSpeed)x, saved \(model.settings.speed)x)",
+                  abs(p.player.rate - 1.25) < 0.001 && abs(model.activeSpeed - 1.25) < 0.001 && model.settings.speed == 2.5)
         } else { check("fake: the second preview started", false) }
         model.stopReading()
         model.settings.speed = 1

@@ -107,6 +107,15 @@ import TalkReadCore
             ("mini-player-preparing", CGSize(width: 488, height: 144), false, player(nil, .preparing, "Preparing voice… 34 %")),
             ("mini-player-nothing-selected", CGSize(width: 488, height: 144), false, player(nil, nil, "Select some text first")),
         ]
+        // The speed panel at Junior's 2.5x, at a speed off the 0.25 grid (scrolled), above 3x (the blur note) and at both ends.
+        func speedPanel(_ speed: Double) -> AnyView {
+            AnyView(SpeedPanel(speed: speed, faster: "⌥D", slower: "⌥S", set: { _ in }, step: { _ in })
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous)).padding(24))
+        }
+        for (name, speed, height) in [("speed-panel", 2.5, 330.0), ("speed-panel-off-grid", 2.6, 330), ("speed-panel-fast", 3.5, 370),
+                                      ("speed-panel-min", 0.5, 330), ("speed-panel-max", 4.0, 370)] {
+            shots.append((name, CGSize(width: SpeedPanel.width + 48, height: height), false, speedPanel(speed)))
+        }
 
         // The dictation pill (340 pt wide, one line): newest words shown, meter underneath; Copy and the tip once done.
         let wave: [Float] = [0.1, 0.35, 0.6, 0.9, 0.5, 0.25, 0.7, 1, 0.55, 0.3, 0.45]
@@ -321,10 +330,8 @@ import TalkReadCore
         check(paused == [true, true, true, false], "recorder pauses hotkeys", "begin a, begin b, end a, end b → \(paused)")
         let key = MenuBarMenu.keyEquivalent(TalkReadCore.Settings().readShortcut)
         check(key?.0 == "a" && key?.1 == [.control], "menu key equivalent", "\(key.map { "\($0.0) \($0.1.rawValue)" } ?? "nil")")
-        let items = SpeedControl.SpeedButton.presetItems(current: 2.5)
-        let ticked = items.filter(\.on).map(\.value)
-        check(items.map(\.value) == [1, 1.5, 2, 2.5, 3] && ticked == [2.5], "speed button menu",
-              items.map { $0.on ? "[\($0.title)]" : $0.title }.joined(separator: " "))
+        check(Theme.speedPresets == [1, 1.5, 2, 2.5, 2.75, 3] && Theme.wordsPerMinute(2.5) == Int((Theme.wordsPerMinuteAt1x * 2.5 / 5).rounded()) * 5,
+              "speed panel presets", Theme.speedPresets.map { Theme.speed($0) }.joined(separator: " "))
 
         // 0.3.0 pickers (V1, V2, V5): female model voices only, by model, American first; French separately.
         let voices = sampleVoices

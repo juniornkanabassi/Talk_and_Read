@@ -43,7 +43,7 @@ import TalkReadCore
 
         let speed = Double(model.activeSpeed)   // a 1x preview shows 1x
         let speeds = NSMenu()
-        for p in Theme.quickSpeeds { add(Theme.speed(p), on: abs(p - speed) < 0.001, to: speeds) { [model] in model.setSpeed(Float(p)) } }
+        for p in Theme.speedPresets { add(Theme.speed(p), on: abs(p - speed) < 0.001, to: speeds) { [model] in model.setSpeed(Float(p)) } }
         submenu("Speed  \(Theme.speed(speed))", speeds)
 
         submenu("Voice  \(VoiceGroups.name(s.voiceID, in: model.voices))", voiceMenu(model.voices, english: s.voiceID, french: s.frenchVoiceID))

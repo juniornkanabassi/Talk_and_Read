@@ -186,7 +186,7 @@ private struct ReaderPage: View {
             SymbolButton(symbol: "forward.fill", label: "Next sentence (⌘])") { model.skip(1) }
                 .keyboardShortcut("]", modifiers: .command).disabled(!live)
             Divider().frame(height: 22).padding(.horizontal, 6)
-            SpeedMenu(speed: Double(model.activeSpeed)) { model.setSpeed(Float($0)) }
+            SpeedMenu(model: model)
             VoiceMenu(voices: data.voices, english: model.settings.voiceID, french: model.settings.frenchVoiceID) { model.setVoice($0) }
             if doc.pdf == nil {
                 SymbolButton(symbol: "textformat.size", label: wider ? "Normal spacing" : "Wider spacing") { wider.toggle() }
@@ -195,16 +195,14 @@ private struct ReaderPage: View {
         }
         .padding(.leading, 10).padding(.trailing, 12).padding(.vertical, 7)
         .panelSurface(Capsule())
-        .background {   // ⌘+ / ⌘− change speed by 0.1
+        .background {   // ⌘+ / ⌘− step the speed by 0.25
             Group {
-                Button("Faster") { nudgeSpeed(0.1) }.keyboardShortcut("=", modifiers: .command)
-                Button("Slower") { nudgeSpeed(-0.1) }.keyboardShortcut("-", modifiers: .command)
+                Button("Faster") { model.stepSpeed(up: true) }.keyboardShortcut("=", modifiers: .command)
+                Button("Slower") { model.stepSpeed(up: false) }.keyboardShortcut("-", modifiers: .command)
             }
             .opacity(0).accessibilityHidden(true)
         }
     }
-
-    private func nudgeSpeed(_ delta: Double) { model.stepSpeed(Float(delta)) }
 
     private func playPause() {
         switch state {
@@ -219,18 +217,21 @@ private struct ReaderPage: View {
     }
 }
 
+/// The reader's speed button; opens the speed panel.
 struct SpeedMenu: View {
-    let speed: Double
-    let set: (Double) -> Void
+    @ObservedObject var model: AppModel
+    @State private var open = false
+
     var body: some View {
-        Menu {
-            ForEach(Theme.speedPresets, id: \.self) { p in
-                Toggle(Theme.speed(p), isOn: Binding(get: { abs(speed - p) < 0.001 }, set: { _ in set(p) }))
-            }
-        } label: {
+        let speed = Double(model.activeSpeed)   // a preview shows its own speed
+        Button { open.toggle() } label: {
             Text(Theme.speed(speed)).font(.callout.weight(.semibold).monospacedDigit())
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(open ? Theme.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .buttonStyle(.plain)
+        .popover(isPresented: $open, arrowEdge: .top) { LiveSpeedPanel(model: model) }
         .accessibilityLabel("Speed \(Theme.speed(speed))")
         .help("Speed (⌘+ / ⌘−)")
     }

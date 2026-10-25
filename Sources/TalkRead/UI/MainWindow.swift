@@ -681,14 +681,14 @@ struct VoicesPane: View {
             }
             HStack(spacing: 10) {
                 Text("0.5×").font(.caption).foregroundStyle(.secondary)
-                Slider(value: Binding(get: { speed }, set: { model.setSpeed(Float(($0 * 20).rounded() / 20)) }), in: 0.5...3.0)
+                Slider(value: Binding(get: { speed }, set: { model.setSpeed(Float(($0 * 4).rounded() / 4)) }), in: SpeedPanel.range, step: 0.25)
                     .labelsHidden()
                     .accessibilityLabel("Reading speed")
                     .accessibilityValue(Theme.speed(speed))
-                Text("3×").font(.caption).foregroundStyle(.secondary)
+                Text("4×").font(.caption).foregroundStyle(.secondary)
             }
             HStack(spacing: 8) {
-                ForEach([1.0, 1.5, 2.0, 2.5], id: \.self) { p in
+                ForEach(Theme.speedPresets, id: \.self) { p in
                     Button(Theme.speed(p)) { model.setSpeed(Float(p)) }.buttonStyle(ChipStyle(selected: abs(speed - p) < 0.001))
                 }
                 Spacer()

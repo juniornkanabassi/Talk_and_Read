@@ -125,7 +125,8 @@ final class SettingsTests: XCTestCase {
 
     func testValidatedClamps() {
         var s = Settings()
-        s.speed = 9; XCTAssertEqual(s.validated().speed, 3.0)
+        s.speed = 9; XCTAssertEqual(s.validated().speed, 4.0)
+        s.speed = 3.5; XCTAssertEqual(s.validated().speed, 3.5)
         s.speed = 0.1; XCTAssertEqual(s.validated().speed, 0.5)
         s.speed = 1.234; XCTAssertEqual(s.validated().speed, 1.25)
         s.speed = .nan; XCTAssertEqual(s.validated().speed, 2.5)
@@ -139,16 +140,30 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(s.validated().voiceID, "af_heart")
     }
 
+    func testSpeedSteps() {
+        XCTAssertEqual(Settings.steppedSpeed(2.5, up: true), 2.75)
+        XCTAssertEqual(Settings.steppedSpeed(2.5, up: false), 2.25)
+        XCTAssertEqual(Settings.steppedSpeed(2.6, up: true), 2.75)    // off the grid: to the next mark, not +0.25
+        XCTAssertEqual(Settings.steppedSpeed(2.6, up: false), 2.5)
+        XCTAssertEqual(Settings.steppedSpeed(1.05, up: false), 1.0)
+        XCTAssertEqual(Settings.steppedSpeed(3.75, up: true), 4.0)
+        XCTAssertEqual(Settings.steppedSpeed(4.0, up: true), 4.0)
+        XCTAssertEqual(Settings.steppedSpeed(0.5, up: false), 0.5)
+        XCTAssertEqual(Settings.steppedSpeed(0.6, up: false), 0.5)
+        XCTAssertEqual(Settings.speedPresets, [1, 1.5, 2, 2.5, 2.75, 3])
+        XCTAssertTrue(Settings.speedPresets.allSatisfy { Settings.speedRange.contains($0) })
+    }
+
     func testSavedFileIsAlwaysValid() throws {
         var s = Settings(); s.speed = 50
         try s.save(to: file)
-        XCTAssertEqual(Settings.load(from: file).speed, 3.0)
+        XCTAssertEqual(Settings.load(from: file).speed, 4.0)
     }
 
     func testSetByKey() throws {
         var s = Settings()
         try s.set("speed", to: "1.5"); XCTAssertEqual(s.speed, 1.5)
-        try s.set("speed", to: "99"); XCTAssertEqual(s.speed, 3.0)
+        try s.set("speed", to: "99"); XCTAssertEqual(s.speed, 4.0)
         try s.set("voiceID", to: "bf_emma"); XCTAssertEqual(s.voiceID, "bf_emma")
         try s.set("showMiniPlayer", to: "off"); XCTAssertFalse(s.showMiniPlayer)
         try s.set("removeFillers", to: "TRUE"); XCTAssertTrue(s.removeFillers)

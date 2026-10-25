@@ -13,9 +13,13 @@ enum Theme {
     static let surface = Color(nsColor: .dynamic(light: "#F7F7F4", dark: "#16181D"))
     static let card = Color(nsColor: .dynamic(light: "#FFFFFF", dark: "#1F2229"))
     static let readingWidth: CGFloat = 680
-    static let speedPresets: [Double] = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3]
-    /// One click away in the mini player and the menu bar menu (S4).
-    static let quickSpeeds: [Double] = [1, 1.5, 2, 2.5, 3]
+    /// The speed panel's chips, the menu bar's Speed menu and the Voices page.
+    static let speedPresets: [Double] = TalkReadCore.Settings.speedPresets.map(Double.init)
+    // ponytail: words a minute at 1x, Kokoro af_heart on the selftest-tts fixture; the panel's "about N words a minute".
+    // Re-measure if the default voice changes.
+    static let wordsPerMinuteAt1x = 155.0
+    /// Rounded to 5, as the panel shows it.
+    static func wordsPerMinute(_ speed: Double) -> Int { Int((wordsPerMinuteAt1x * speed / 5).rounded()) * 5 }
 
     static func speed(_ s: Double) -> String { String(format: "%.2f×", s) }
 

@@ -1,4 +1,4 @@
-// AVAudioEngine playback: AVAudioPlayerNode -> Apple's time-domain stretcher 'ipto' (rate 0.5-3.0) -> main mixer,
+// AVAudioEngine playback: AVAudioPlayerNode -> Apple's time-domain stretcher 'ipto' (rate 0.5-4.0) -> main mixer,
 // 24 kHz mono Float32 (PLAN decision 3). 'ipto' is the engine AVPlayer and QuickTime use for sped-up speech; unlike
 // AVAudioUnitTimePitch (a phase vocoder) it keeps voices natural at 2-3x, passes 1x through unchanged and costs a
 // tenth of the CPU (spike, 23 Oct: WER at 2.5x 9.4 % vs 11.0 %, at 3x 31.9 % vs 35.4 %). The media clock the highlight reads is the player node's sample time minus the graph's latency.
@@ -17,7 +17,7 @@ import TalkReadCore
     nonisolated static func graphLatency(rate: Float) -> Double { 0.022 + 0.017 * Double(rate) }
 
     var rate: Float = 1.0 {
-        didSet { rate = min(max(rate, 0.5), 3.0); applyRate() }
+        didSet { rate = min(max(rate, TalkReadCore.Settings.speedRange.lowerBound), TalkReadCore.Settings.speedRange.upperBound); applyRate() }
     }
     private(set) var isPlaying = false
     private(set) var queuedUntil: Double = 0
@@ -41,7 +41,8 @@ import TalkReadCore
     /// Internal so the self-test can post its configuration-change notification.
     let engine = AVAudioEngine()
     private let node = AVAudioPlayerNode()
-    // 'ipto' (kAudioUnitSubType_AUiPodTimeOther); parameter 0 is the rate. It declares 0.5-2.0 but renders correctly to 3.0.
+    // 'ipto' (kAudioUnitSubType_AUiPodTimeOther); parameter 0 is the rate. It declares 0.5-2.0 but renders correctly to 4.0
+    // (R3 self-test; 3.25-4x added 25 Oct for the speed panel).
     private let timePitch = AVAudioUnitTimeEffect(audioComponentDescription: AudioComponentDescription(
         componentType: kAudioUnitType_FormatConverter, componentSubType: kAudioUnitSubType_AUiPodTimeOther,
         componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0))
