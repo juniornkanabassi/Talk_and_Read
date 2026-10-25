@@ -309,7 +309,7 @@ rules() {
       w=$(num $OUT/$f.txt '^WER at .*Player graph: ([0-9.]+) %.*')
       case $f in
         en25) pass R3 "2.5x WER ${w} % through the Player graph, below Kokoro's own 2.5x ($(num $OUT/en25.txt '^reference: Kokoro.*WER ([0-9.]+) %.*') %)" ;;
-        en4) pass R3 "4x WER ${w} % through the Player graph, below Kokoro's own 4x ($(num $OUT/en4.txt '^reference: Kokoro.*WER ([0-9.]+) %.*') %)" ;;
+        en4) pass R3 "4x WER ${w} % (Kokoro at 4x itself), within 3 points of the reference ($(num $OUT/en4.txt '^reference: Kokoro.*WER ([0-9.]+) %.*') %)" ;;
         *) pass R3 "2x WER ${w} % (limit 8)" ;;
       esac
     elif [[ -n $line ]]; then fail R3 "$line; $(L $OUT/$f.txt '^WER at')"; else crash R3 $f; fi

@@ -169,13 +169,14 @@ public struct Settings: Codable, Equatable, Sendable {
     public static let speedPresets: [Float] = [1, 1.5, 2, 2.5, 2.75, 3]
 
     /// The fastest the Player stretches a voice that can speak faster itself (Kokoro). Measured 25 Oct on the M3 Max
-    /// (af_heart, R3 fixture, Parakeet word errors): stretched 1x audio 11.7 % at 2.5x but 47 % at 3x and 91 % at 4x,
-    /// against 29-34 % for Kokoro speaking at 3-4x itself.
+    /// (R3 fixture, Parakeet word errors, af_heart): stretched 1x audio 11.7 % at 2.5x (Kokoro at 2.5x itself 24.9 %),
+    /// but 47 % at 3x and 91 % at 4x, against 29-34 % for Kokoro speaking at 3-4x itself. Splits (Kokoro faster, then
+    /// stretched 2-3x) were no better: 3.5x 61-80 %, 4x 74-88 %; bf_emma at 3.5x the same.
     public static let stretchLimit: Float = 2.5
 
-    /// How fast such a voice speaks itself at `rate`: 1 up to `stretchLimit`, above it the rest, so the Player never
-    /// stretches it past `stretchLimit` (4x = Kokoro at 1.6x, stretched 2.5x).
-    public static func nativeSpeed(for rate: Float) -> Float { max(1, rate / stretchLimit) }
+    /// How fast such a voice speaks itself at `rate`: 1 (the Player stretches) up to `stretchLimit`, the whole rate
+    /// above it (the Player plays at 1x).
+    public static func nativeSpeed(for rate: Float) -> Float { rate > stretchLimit ? rate : 1 }
 
     /// The next 0.25 mark above or below `speed`, so 2.6 goes to 2.75 or 2.5 and 2.5 to 2.75 or 2.25; clamped to `speedRange`.
     public static func steppedSpeed(_ speed: Float, up: Bool) -> Float {

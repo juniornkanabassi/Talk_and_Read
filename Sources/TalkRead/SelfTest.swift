@@ -177,7 +177,7 @@ enum SelfTest {
             // The production graph, all chunks queued back to back. The output is cut where the clock reaches each
             // chunk's media start (inside the pause between sentences) and each piece is transcribed on its own, so the
             // recogniser's 15 s window seams cannot drop words from 2.5x speech. Kokoro above `Settings.stretchLimit`
-            // speaks faster itself and is stretched the rest, as ReadSession does.
+            // speaks the whole rate itself and the Player plays it at 1x, as ReadSession does.
             func playedWER(native: Float, wav: String?) async throws -> (wer: Double, seconds: Double) {
                 var chunks = synths
                 if native != 1 { chunks = []; for t in speakables { chunks.append(try await engine.synthesize(t, voice: voice, speed: native)) } }
@@ -197,13 +197,9 @@ enum SelfTest {
             }
             let native = engine.speaksFaster ? TalkReadCore.Settings.nativeSpeed(for: rate) : 1
             let (werR, seconds) = try await playedWER(native: native, wav: "tts-\(rate)x.wav")
-            let how = native == 1 ? "" : String(format: " (Kokoro at %gx, stretched %gx)", native, rate / native)
+            let how = native == 1 ? "" : String(format: " (Kokoro at %gx itself)", native)
             print("WER at \(rate)x through the Player graph\(how): \(pct(werR)) (\(fmt(seconds)) s rendered)")
-            if native != 1 {   // the other splits, to keep `stretchLimit` honest
-                for limit: Float in [2, 3] where rate > limit {
-                    let alt = try await playedWER(native: rate / limit, wav: nil)
-                    print(String(format: "split check at %gx: Kokoro at %gx, stretched %gx: WER ", rate, rate / limit, limit) + pct(alt.wer))
-                }
+            if native != 1 {   // what stretching would have given, to keep `stretchLimit` honest
                 let stretched = try await playedWER(native: 1, wav: nil)
                 print("split check at \(rate)x: stretched 1x audio alone: WER \(pct(stretched.wer))")
             }
@@ -219,8 +215,13 @@ enum SelfTest {
                 }
                 let werNative = wer(reference: reference, hypothesis: heardNative.joined(separator: " "))
                 print("reference: Kokoro speaking natively at \(rate)x, same recogniser: WER \(pct(werNative))")
-                werOK = werR < werNative
-                rule = "WER \(pct(werR)) < native \(pct(werNative))"
+                if native == rate {   // the read is Kokoro at this rate itself: through the 1x graph it should match the reference
+                    werOK = werR <= werNative + 0.03
+                    rule = "WER \(pct(werR)) within 3 points of native \(pct(werNative))"
+                } else {
+                    werOK = werR < werNative
+                    rule = "WER \(pct(werR)) < native \(pct(werNative))"
+                }
             }   // ponytail: a system voice above 2x has no native reference, so it keeps the 8 % bar
             let ok = clockOK && werOK
             print("R3: \(ok ? "PASS" : "FAIL") (clock within 20 ms at 0.5-4x; \(rule))")

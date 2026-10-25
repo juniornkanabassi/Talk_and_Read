@@ -21,6 +21,9 @@ import TalkReadCore
     private(set) var rate: Float
     /// How fast an engine that `speaksFaster` (Kokoro) speaks the chunks queued since the last restart; 1 for the others.
     private(set) var nativeSpeed: Float = 1
+    /// Where the last restart began, until playback reports a word: a speed change before then restarts there, not at a
+    /// word from before a paused skip or seek.
+    private var restartToken: Int?
     private(set) var voice: Voice
     /// The voice actually speaking now: `voice`, or the Kokoro fallback once the engine fell behind (V3). The UI shows it.
     @Published private(set) var effectiveVoice: Voice
@@ -205,7 +208,7 @@ import TalkReadCore
         rate = r
         let native = speakingSpeed(for: effectiveVoice)
         guard native != nativeSpeed, state != .finished, !tokens.isEmpty else { return player.rate = r / nativeSpeed }
-        restart(from: currentToken ?? startToken)
+        restart(from: restartToken ?? currentToken ?? startToken)
     }
 
     private func speakingSpeed(for v: Voice) -> Float { engines.engine(for: v).speaksFaster ? TalkReadCore.Settings.nativeSpeed(for: rate) : 1 }
@@ -236,6 +239,7 @@ import TalkReadCore
         // A hand-over to Kokoro after this keeps 1: the slow engine's chunks already queued are at its natural pace.
         nativeSpeed = speakingSpeed(for: effectiveVoice)
         player.rate = rate / nativeSpeed
+        restartToken = token
         timings = []
         made = []
         chunkEnds = []
@@ -307,6 +311,14 @@ import TalkReadCore
                 let spoken = said!.text, started = Date()
                 do {
                     synth = try await synthesize(spoken)
+                } catch let failed as FastPaceFailed {
+                    // The system voice's 1x audio would play at the Player's 1x here: the read goes on with it from the word
+                    // playing, at a pace it can keep (the restart sets nativeSpeed 1, the Player the whole rate).
+                    guard gen == generation else { return }
+                    Log.write("read: neural voice failed at \(nativeSpeed)x (\(failed.underlying.localizedDescription)); \(systemVoice.name) reads on")
+                    effectiveVoice = systemVoice
+                    fallbackReason = "Switched to \(systemVoice.name) because Kokoro could not read at \(String(format: "%g", rate))×"
+                    return restart(from: restartToken ?? currentToken ?? chunk!.tokens.lowerBound)
                 } catch {
                     guard gen == generation else { return }
                     Log.write("read: chunk \(k) failed: \(error.localizedDescription)")
@@ -474,11 +486,15 @@ import TalkReadCore
         do {
             return try await engine.synthesize(speakable, voice: effectiveVoice.id, speed: nativeSpeed)
         } catch let error where engine.kind == .neural && !(error is CancellationError) {
+            if nativeSpeed != 1 { throw FastPaceFailed(underlying: error) }
             let retry = systemVoice
             Log.write("read: neural voice failed (\(error.localizedDescription)); retrying the chunk with \(retry.name)")
             return try await engines.system.synthesize(speakable, voice: retry.id)
         }
     }
+
+    /// Kokoro failed while speaking faster itself, so a 1x retry cannot join its queue.
+    private struct FastPaceFailed: Error { let underlying: Error }
 
     /// The installed system voice of the read's language (French stays French, Sol inspection 4 #3); "" (the best English
     /// voice) only if that language has none.
@@ -506,6 +522,7 @@ import TalkReadCore
         // Zero-length sentinels (removed or unspoken tokens) are never lit; the previous word stays.
         if let i = Timeline.index(at: t, in: timings), timings[i].end > timings[i].start, currentToken != timings[i].token {
             currentToken = timings[i].token
+            restartToken = nil
             currentSentence = tokens[timings[i].token].sentence
         }
         if doneEnqueueing, t >= player.queuedUntil - 0.0005 { finish() }
