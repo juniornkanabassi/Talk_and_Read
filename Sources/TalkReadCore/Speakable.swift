@@ -114,7 +114,7 @@ enum Rx {   // internal: the chunker protects the same constructs (TextKit.chunk
     /// What may be an absolute file path or file URL: "/" or "~/" then two components or more, up to the next space,
     /// a trailing "/" allowed. `Maker.pathLength` decides whether it is one. A path in backticks may hold spaces
     /// (`codePath`).
-    static let path = make("(?:file://(?:localhost)?)?~?/(?:[^\\s/<>\"'`|\\[\\]]+/)*[^\\s/<>\"'`|\\[\\]]+/?", .caseInsensitive)
+    static let path = make("(?:file://(?:localhost)?)?~?/(?:[^\\s/<>\"`|\\[\\]]+/)*[^\\s/<>\"`|\\[\\]]+/?", .caseInsensitive)
     /// A fenced code block's opening line; the block runs to a line that starts with ``` again.
     static let fence = make("```[^\\n]*(?:\\n|$)")
     static let codePath = make("`((?:file://(?:localhost)?)?~?/(?:[^/\\n`]+/)*[^/\\n`]+/?)`", .caseInsensitive)
@@ -232,7 +232,8 @@ private struct Maker {
     /// The source a file path at p uses (trailing punctuation and an unbalanced closing bracket left out), or nil when
     /// there is none: a file URL, a "~/" path, an absolute path from a known root, or one ending in a file name.
     func pathLength(_ p: Int, limit: Int) -> Int? {
-        guard pathStart(p), let m = match(Rx.path, p, limit) else { return nil }
+        // bounded: a path longer than `context` is read as written anyway (`fits`), so never match further
+        guard pathStart(p), let m = match(Rx.path, p, min(limit, p + Maker.context + 1)) else { return nil }
         let end = Maker.trimmedEnd(u, p, p + m.range.length)
         return end > p && Maker.isFilePath(String(decoding: u[p..<end], as: UTF16.self)) ? end - p : nil
     }
@@ -253,8 +254,14 @@ private struct Maker {
     static func trimmedEnd(_ u: [UInt16], _ p: Int, _ end: Int) -> Int {
         var end = end
         let pairs: [UInt16: UInt16] = [0x29: 0x28, 0x5D: 0x5B, 0x7D: 0x7B]
+        var count: [UInt16: Int] = [:]   // brackets in p..<end, counted once and updated as the end moves
+        for c in u[p..<end] where pairs[c] != nil || pairs.values.contains(c) { count[c, default: 0] += 1 }
         while end > p, ".,;:!?)]}'\"".utf16.contains(u[end - 1]) {
-            if let open = pairs[u[end - 1]], u[p..<end - 1].filter({ $0 == open }).count > u[p..<end - 1].filter({ $0 == u[end - 1] }).count { break }
+            let c = u[end - 1]
+            if let open = pairs[c] {
+                if count[open, default: 0] >= count[c, default: 0] { break }   // it closes one of the path's own
+                count[c, default: 0] -= 1
+            }
             end -= 1
         }
         return end
@@ -385,7 +392,9 @@ private struct Maker {
             if c == 0x0A || c == 0x0D { copy(p, p + 1); p += 1; lineStart = true; continue }
             // A fenced code block is read as written (no path, link or emphasis rules), without its fence lines; the
             // state carries across chunks (`make` works out whether the chunk starts inside one).
-            if lineStart, c == 0x60, let m = match(Rx.fence, p, to) { p += m.range.length; fenced.toggle(); lineStart = true; continue }
+            if c == 0x60, p == 0 || u[p - 1] == 0x0A || u[p - 1] == 0x0D, let m = match(Rx.fence, p, to) {   // column 0, as `insideFence`
+                p += m.range.length; fenced.toggle(); lineStart = true; continue
+            }
             if fenced { copy(p, p + 1); p += 1; lineStart = false; continue }
             if lineStart {
                 if c == 0x20 || c == 0x09 { copy(p, p + 1); p += 1; continue }

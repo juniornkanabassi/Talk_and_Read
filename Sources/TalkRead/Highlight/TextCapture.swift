@@ -222,8 +222,10 @@ enum TextCapture {
                 guard let own = axParameterizedAttribute(root, "AXTextMarkerRangeForUIElement", parameter: node),
                       CFGetTypeID(own) == AXTextMarkerRangeGetTypeID(),
                       let string = axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: own) as? String else { complete = false; continue }
-                if !visibility.hidden, visibility.draws(string) {
-                    // a hover box whose text is no timestamp is drawn: look inside it for hidden text of its own
+                let leaf = (axAttribute(node, kAXChildrenAttribute) as? [AXUIElement])?.isEmpty ?? true
+                if !visibility.hidden, !leaf || visibility.draws(string) {
+                    // a hover box is never cut whole: a descendant may set its own height and be drawn, so only its
+                    // timestamp-shaped text leaves go; look inside it
                     if let children = axAttribute(node, kAXChildrenAttribute) as? [AXUIElement] { stack.append(contentsOf: children.reversed().map { ($0, visibility) }) }
                     continue
                 }

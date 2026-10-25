@@ -128,6 +128,8 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(make("In /mnt/project-files/brief.pdf").text, "In brief.pdf")
         XCTAssertEqual(make("The folder /Users/j/Talk/ is new").text, "The folder Talk is new")   // no stray "/"
         XCTAssertEqual(make("See /Users/j/Law_(UK) now").text, "See Law_(UK) now")
+        XCTAssertEqual(make("In /Users/j/O'Brien/report.md now").text, "In report.md now")   // Codex round 7
+        XCTAssertEqual(make("('/Users/j/a/b.md')").text, "('b.md')")
         XCTAssertEqual(make("(see /Users/j/a/b.md), then").text, "(see b.md), then")
         XCTAssertEqual(make("Kept in /a/b/report.final.pdf.").text, "Kept in report.final.pdf.")
         XCTAssertEqual(make("Open ~/notes.md and file:///notes.md").text, "Open notes.md and notes.md")
@@ -193,6 +195,12 @@ final class SpeakableTests: XCTestCase {
         let read = TextKit.chunks(s, tokens: TextKit.tokenize(s)).map { Speakable.make(s, range: $0.range, lexicon: [:]).text }
             .filter { !$0.isEmpty }.joined(separator: " ")
         XCTAssertEqual(read, "cat /Users/j/notes.md. Done.")
+        // a fence counts only at a line's start, in a scan and when a chunk works out its state
+        XCTAssertEqual(make("Text  ```sh and /Users/j/a.md").text, "Text sh and a.md")   // no fence mid-line: the path is still a name
+        // a single-component ~/ path is kept whole by the chunker too: its name is said once
+        let home = "~/" + String(repeating: "ab-", count: 50) + "notes.md"
+        let homeRead = TextKit.chunks(home, tokens: TextKit.tokenize(home)).map { Speakable.make(home, range: $0.range, lexicon: [:]).text }.joined()
+        XCTAssertEqual(homeRead, String(repeating: "ab-", count: 50) + "notes.md")
     }
 
     /// A path too long to keep whole is read as written, never as a cut-short name or twice (Codex round 6).
@@ -206,6 +214,9 @@ final class SpeakableTests: XCTestCase {
 
     /// An unclosed "[" on a long line costs linear time, not a rescan from every bracket (Codex round 5).
     func testManyOpenBracketsStayFast() {
+        let start = Date()   // a path then 50,000 closing brackets: one pass (Codex round 7)
+        _ = make("/Users/j/notes.md" + String(repeating: ")", count: 50_000))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
         for s in [String(repeating: "[word ", count: 20_000), String(repeating: "[x](word ", count: 20_000) + ")"] {
             let start = Date()
             _ = TextKit.chunks(s, tokens: TextKit.tokenize(s))

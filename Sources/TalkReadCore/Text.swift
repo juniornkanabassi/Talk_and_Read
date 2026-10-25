@@ -30,7 +30,7 @@ public enum TextKit {
     // ponytail: one pass over the text per chunks() call; a read recuts from a token, so a huge document pays it per recut.
     // The constructs Speakable reads as one name, by its own patterns: links, backticked paths and bare paths. Not
     // ordinary code spans, whose words are all spoken: a long one must still be cut to chunk size.
-    private static let protectedSpans = try! NSRegularExpression(pattern: "\(Rx.link.pattern)|\(Rx.codePath.pattern)|(?:file:/|~)?/[^\\s/\\[\\]]+/\\S+",
+    private static let protectedSpans = try! NSRegularExpression(pattern: "\(Rx.link.pattern)|\(Rx.codePath.pattern)|(?:file:/+|~/)\\S+|/[^\\s/\\[\\]]+/\\S+",
                                                                   options: .caseInsensitive)
     /// Longer constructs are cut like prose: one that long is no single name, and a chunk must stay short enough to voice.
     private static let longestProtected = 600
