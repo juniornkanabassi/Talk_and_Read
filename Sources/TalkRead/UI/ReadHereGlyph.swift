@@ -23,6 +23,8 @@ import TalkReadCore
     private(set) var block: PointerCapture.Block?
     private var lastPoint: CGPoint?
     private var looking = false
+    /// Until when hover keeps asking about a still pointer: an app just asked to build its tree is still filling it in.
+    private var hoverColdUntil = 0.0
     /// Until when a woken app's tree may still be filling in: a still pointer is looked at again each tick until then.
     private var coldUntil = 0.0
     /// Apps this reveal woke (E8); put back when the glyph hides, unless a read on them is running.
@@ -202,10 +204,14 @@ import TalkReadCore
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid(), let hit = PointerCapture.hit(point) else { return }
         if !asked.contains(hit.pid) {
             asked.insert(hit.pid)
+            hoverColdUntil = now + 1.5
             _ = AXUIElementSetAttributeValue(AXUIElementCreateApplication(hit.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
         }
         // Web pages only: in native text views the glyph would follow every click and caret.
-        guard let found = PointerCapture.block(from: hit.element, pid: hit.pid, point: point), found.start == nil else { return }
+        guard let found = PointerCapture.block(from: hit.element, pid: hit.pid, point: point), found.start == nil else {
+            if now < hoverColdUntil { rest?.looked = false }   // a cold tree: a fresh hit test on the next tick
+            return
+        }
         show(found)
     }
 
@@ -219,9 +225,11 @@ import TalkReadCore
     static func glyphFrame(_ block: PointerCapture.Block) -> CGRect {
         let line = min(block.frame.height, 26)
         var x = block.frame.minX - size - gap
-        let screen = NSScreen.screens.map { Locator.convert(topLeftScreenRect: $0.frame) }.first { $0.contains(block.frame.origin) }
+        var y = block.frame.minY + (line - size) / 2
+        if let view = block.viewport, y < view.minY + 2 { y = min(view.minY + 2, block.frame.maxY - size) }   // first line scrolled away
+        let screen = NSScreen.screens.map { Locator.convert(topLeftScreenRect: $0.frame) }.first { $0.contains(CGPoint(x: block.frame.minX, y: y)) }
         if let screen { x = max(screen.minX + 2, x) }
-        return CGRect(x: x, y: block.frame.minY + (line - size) / 2, width: size, height: size)
+        return CGRect(x: x, y: y, width: size, height: size)
     }
 
     /// The pointer in AX (top-left) coordinates.

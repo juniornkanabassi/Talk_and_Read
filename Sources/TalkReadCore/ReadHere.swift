@@ -73,24 +73,31 @@ public enum ReadHere {
     /// end. Nodes on the same line or the next one are joined with a space; a gap below the last node of more than 0.4 of a
     /// line (a new paragraph, heading or list item) becomes a blank line, so sentences and paragraphs read as they are
     /// drawn. A line is the shorter of the two nodes' heights, 8 to 40 pt, since a wrapped node spans several lines.
-    /// `top` and `bottom` are each node's frame edges in top-left coordinates, nil when unknown.
-    public static func join(_ nodes: [(text: String, top: Double?, bottom: Double?)]) -> String {
+    /// Two nodes touching on one line with no space at their edges are one word split by styling
+    /// ("inter<b>national</b>", "word" "."), joined with nothing between them.
+    /// `top`, `bottom`, `left` and `right` are each node's frame edges in top-left coordinates, nil when unknown.
+    public static func join(_ nodes: [(text: String, top: Double?, bottom: Double?, left: Double?, right: Double?)]) -> String {
         var out = ""
-        var last: (top: Double, bottom: Double)?
+        var last: (top: Double, bottom: Double)?, lastRight: Double?, lastSpaced = true
         for node in nodes {
             let text = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
             let frame = node.top.flatMap { top in node.bottom.map { (top: top, bottom: max(top, $0)) } }
             if !out.isEmpty {
-                var gap = false
+                var gap = false, touching = false
                 if let frame, let last {
                     let line = min(40, max(8, min(frame.bottom - frame.top, last.bottom - last.top)))
                     gap = frame.top - last.bottom > 0.4 * line
+                    let sameLine = frame.top < last.bottom - 0.5 * line && last.top < frame.bottom - 0.5 * line
+                    if sameLine, let left = node.left, let lastRight { touching = abs(left - lastRight) < 1.5 }
                 }
-                out += gap ? "\n\n" : " "
+                let spaced = lastSpaced || node.text.first?.isWhitespace == true
+                out += gap ? "\n\n" : touching && !spaced ? "" : " "
             }
             out += text
             if let frame { last = frame }
+            lastRight = node.right
+            lastSpaced = node.text.last?.isWhitespace == true
         }
         return out
     }

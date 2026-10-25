@@ -19,6 +19,8 @@ enum PointerCapture {
         /// Native text: the paragraph's first character within the element's value, and the paragraph's length.
         let start: Int?
         var length = 0
+        /// The visible part of the page or view holding it (web), where the glyph stays when the first line is scrolled away.
+        var viewport: CGRect?
     }
 
     private static let maxText = 200_000
@@ -80,7 +82,7 @@ enum PointerCapture {
         guard !CFEqual(current, area), let frame = axFrame(current), !frame.isEmpty,
               frame.height < max(240, areaFrame.height * 0.6) || onlyText(current), frame.insetBy(dx: -4, dy: -4).contains(point),
               !isContainer(current, frame: frame), hasText(current, area: area) else { return nil }
-        return Block(pid: pid, element: current, frame: frame, start: nil)
+        return Block(pid: pid, element: current, frame: frame, start: nil, viewport: areaFrame)
     }
 
     /// The deepest descendant of `element` (itself when none) whose frame holds the point; ten levels, 200 children each.
@@ -217,7 +219,7 @@ enum PointerCapture {
         let nodes = textNodes(under: end, from: block.element, limit: 6000)
         let text = ReadHere.join(nodes.map { node in
             let f = axFrame(node.element)
-            return (node.text, f.map { Double($0.minY) }, f.map { Double($0.maxY) })
+            return (node.text, f.map { Double($0.minY) }, f.map { Double($0.maxY) }, f.map { Double($0.minX) }, f.map { Double($0.maxX) })
         })
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         let ns = text as NSString

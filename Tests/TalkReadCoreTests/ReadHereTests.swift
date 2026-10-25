@@ -54,15 +54,18 @@ final class ReadHereTests: XCTestCase {
 
     func testJoinKeepsLinesTogetherAndParagraphsApart() {
         let joined = ReadHere.join([
-            ("Talk & Read reads the paragraph ", 100, 140),   // two lines of 20 pt
-            ("under the pointer", 120, 140),                  // a link on the second line
-            (" to the end.", 120, 140),
-            ("A new paragraph after a 16 pt gap.", 156, 176),
-            ("   ", 180, 190),                                // whitespace only: dropped
-            ("No frame, so a space.", nil, nil),
+            ("Talk & Read reads the paragraph ", 100, 140, nil, nil),   // two lines of 20 pt
+            ("under the pointer", 120, 140, nil, nil),                  // a link on the second line
+            (" to the end.", 120, 140, nil, nil),
+            ("A new paragraph after a 16 pt gap.", 156, 176, nil, nil),
+            ("   ", 180, 190, nil, nil),                                // whitespace only: dropped
+            ("No frame, so a space.", nil, nil, nil, nil),
         ])
         XCTAssertEqual(joined, "Talk & Read reads the paragraph under the pointer to the end.\n\nA new paragraph after a 16 pt gap. No frame, so a space.")
         XCTAssertEqual(ReadHere.join([]), "")
+        // One word split by styling, and punctuation in a node of its own, touch: nothing between them. Apart, a space.
+        XCTAssertEqual(ReadHere.join([("inter", 100, 120, 10, 40), ("national", 100, 120, 40, 90), (".", 100, 120, 90.5, 93),
+                                      ("Next", 100, 120, 98, 130)]), "international. Next")
     }
 
     func testSettings() throws {
