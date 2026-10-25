@@ -51,6 +51,18 @@ final class HiddenTextTests: XCTestCase {
         }
     }
 
+    func testSafetyNetForACopy() {
+        // what Chromium's Copy gives for a selection across a message start: no tree to place the heading
+        let copied = "so leave it open.\u{FFFC}Quick note\n" + heading + body
+        let net = HiddenText.safetyNet(copied)
+        XCTAssertEqual(net.text, "so leave it open. Quick note\n" + body)
+        XCTAssertEqual(net.removed, copied.utf16.count - net.text.utf16.count)
+        // nothing repeated: untouched, placeholders included
+        XCTAssertEqual(HiddenText.safetyNet("a\u{FFFC}b").text, "a\u{FFFC}b")
+        XCTAssertEqual(HiddenText.safetyNet("a\u{FFFC}b").removed, 0)
+        XCTAssertEqual(HiddenText.safetyNet("x", removed: 3).text, "x")
+    }
+
     func testVisibility() {
         let root = V()
         XCTAssertTrue(root.child(role: "AXStaticText", classes: []).drawsText)

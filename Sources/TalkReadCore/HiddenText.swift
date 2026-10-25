@@ -98,6 +98,16 @@ public enum HiddenText {
         return found.sorted { $0.lowerBound < $1.lowerBound }
     }
 
+    /// After the tree cut (`removed` units so far), or alone for text the tree cannot reach (an Edit ▸ Copy, which
+    /// Chromium serialises with its screen reader text): the repeated headings go, and after any cut the button
+    /// placeholders (U+FFFC) too. Returns the text and the total removed.
+    public static func safetyNet(_ text: String, removed: Int = 0) -> (text: String, removed: Int) {
+        var (out, n) = cut(text, ranges: repeatedHeadings(text))
+        n += removed
+        if n > 0 { let objects = cut(out, ranges: objectReplacements(out)); (out, n) = (objects.text, n + objects.removed) }
+        return (out, n)
+    }
+
     public static let prefixes = ["Claude responded: ", "You said: "]
 
     /// ’ ‘ as ', “ ” as ": the same length, so offsets hold.

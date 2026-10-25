@@ -60,7 +60,12 @@ enum TextCapture {
         if !secure {
             switch await copySelection(appElement: appElement) {
             case .text(let text):
-                return Capture(text: text, pid: pid, element: focused, window: window, selectionStart: nil, source: .copied)
+                // Chromium's Copy serialises the screen reader headings too; the tree cannot place them in a copy.
+                let net = HiddenText.safetyNet(text)
+                var c = Capture(text: net.removed > 0 && !net.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? net.text : text,
+                                pid: pid, element: focused, window: window, selectionStart: nil, source: .copied)
+                c.hiddenRemoved = c.text == text ? 0 : net.removed
+                return c
             case .clipboardChanged:
                 Log.write("capture aborted: the clipboard changed while copying the selection")
                 return nil   // someone else copied meanwhile: neither their text nor ours is safe to read
@@ -150,12 +155,7 @@ enum TextCapture {
             let cut = hidden.exact ? HiddenText.cut(text, ranges: hidden.ranges) : HiddenText.cut(text, strings: hidden.strings)
             (text, removed) = (cut.text, cut.removed)
         }
-        let net = HiddenText.cut(text, ranges: HiddenText.repeatedHeadings(text))
-        (text, removed) = (net.text, removed + net.removed)
-        if removed > 0 {   // the hidden toolbar's buttons leave their placeholders behind
-            let objects = HiddenText.cut(text, ranges: HiddenText.objectReplacements(text))
-            (text, removed) = (objects.text, removed + objects.removed)
-        }
+        (text, removed) = HiddenText.safetyNet(text, removed: removed)
         guard removed > 0, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return c }
         var out = Capture(text: text, pid: c.pid, element: c.element, window: c.window, selectionStart: nil, source: c.source)
         out.hiddenRemoved = removed
