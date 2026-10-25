@@ -28,15 +28,38 @@ public struct Speakable: Sendable {
     /// `language`: "en" or "fr". French text also gets French spoken forms: numbers ("4,2 millions", years), dates
     /// ("14 novembre", "1er", "14/11/2027"), times ("11h20"), `%` ("pour cent"), `°C` ("degrés Celsius"), `€ $ £`, `&` ("et"),
     /// "point" and "arobase" in addresses. English is unchanged (the engine's own normaliser reads English digits).
-    public static func make(_ source: String, range: Range<Int>, lexicon: [String: String], language: String = "en") -> Speakable {
+    /// `skip`: source ranges never spoken (a PDF's running headers, footers and page numbers).
+    /// `skipCitations`: reference marks are dropped: "[12]", "[3, 5–7]", "[citation needed]" glued to the word or
+    /// punctuation before them (a spaced "at [45]" or a line's "[23]" is a paragraph reference and is read), superscript
+    /// digits after punctuation or a long word, and 1 to 3 plain digits glued to the full stop after a word of four
+    /// letters or more and followed by a capital ("consideration.12 The"), which is how a PDF's footnote marks come out;
+    /// "s.12", "para.4", "Goals:12", "3.5" and "1,000" are kept.
+    public static func make(_ source: String, range: Range<Int>, lexicon: [String: String], language: String = "en",
+                            skip: [Range<Int>] = [], skipCitations: Bool = false) -> Speakable {
         let ns = source as NSString
         let lo = min(max(range.lowerBound, 0), ns.length)
         let hi = min(max(range.upperBound, lo), ns.length)
         // ponytail: scanned as a slice so regex cost is per chunk, not per document; callers pass chunk-sized ranges.
-        let slice = ns.substring(with: NSRange(location: lo, length: hi - lo))
+        // The slice starts up to 80 characters early, back to its line's start, so a mark at the chunk's start is judged
+        // in context (a footnote "12" the chunker split from "consideration.", a "[12]" glued to the previous chunk's
+        // last word); it also runs up to 80 characters past the chunk, so what follows a mark at the chunk's end is the
+        // real next word, not the cut ("scored;12" | "points"). That context is read, never spoken.
+        var ctx = lo
+        while ctx > 0, lo - ctx < 80, ns.character(at: ctx - 1) != 0x0A, ns.character(at: ctx - 1) != 0x0D { ctx -= 1 }
+        let tail = min(ns.length, hi + 80)
+        let slice = ns.substring(with: NSRange(location: ctx, length: tail - ctx))
         var maker = Maker(slice, lexicon: lexicon, french: language == "fr")
-        maker.scan(0, maker.u.count, lineStart: true)
-        return maker.finish(base: lo)
+        maker.citations = skipCitations
+        maker.end = hi - ctx
+        maker.endsText = tail == ns.length
+        for r in skip.sorted(by: { $0.lowerBound < $1.lowerBound }) {   // into slice coordinates, overlaps merged
+            let a = max(r.lowerBound, lo) - ctx, b = min(r.upperBound, hi) - ctx
+            guard a < b else { continue }
+            if let last = maker.skip.last, a <= last.upperBound { maker.skip[maker.skip.count - 1] = last.lowerBound..<max(b, last.upperBound) }
+            else { maker.skip.append(a..<b) }
+        }
+        maker.scanAll(from: lo - ctx, sliceStartsLine: ctx == 0 || [0x0A, 0x0D].contains(ns.character(at: ctx - 1)))
+        return maker.finish(base: ctx)
     }
 
     /// Speakable UTF-16 range -> source UTF-16 range: the union of the source characters those units came from.
@@ -70,6 +93,7 @@ private enum Rx {
     static let link = make("\\[([^\\]]*)\\]\\([^)\\s]*(?:\\s+\"[^\"]*\")?\\)")
     static let email = make("[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+")
     static let url = make("https?://[^\\s<>\"]+", .caseInsensitive)
+    static let citation = make("\\[\\s*(?:[0-9]{1,3}[a-z]?(?:\\s*[,–—-]\\s*[0-9]{1,3}[a-z]?)*|(?:citation|clarification) needed)\\s*\\]", .caseInsensitive)
     static let www = make("www\\.[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+(?:[/?#][^\\s<>\"]*)?", .caseInsensitive)
     // French. Digit groups: "12 345" (space, no-break or narrow no-break), "1.000.000" (two or more dot groups); "," or "." then digits is a decimal.
     // ponytail: a plain space groups too, so a list "100 200 300" reads as one number; French text writes thousands that way.
@@ -87,6 +111,15 @@ private struct Maker {
     let french: Bool
     let lexicon: [(NSRegularExpression, String)]
     var units: [UInt16] = [], lows: [Int] = [], highs: [Int] = []
+    /// Slice ranges never spoken, sorted by start.
+    var skip: [Range<Int>] = []
+    /// Output positions where skipped text was: a line break there joins two halves of one sentence (a page break
+    /// with its footer and running head removed), so it gets no full stop.
+    var skippedAt: Set<Int> = []
+    var citations = false
+    /// Where the chunk ends in the slice (the rest is look-ahead context), and whether the slice reaches the text's end.
+    var end = 0
+    var endsText = true
 
     init(_ slice: String, lexicon: [String: String], french: Bool) {
         self.slice = slice
@@ -156,6 +189,74 @@ private struct Maker {
         return end - p
     }
 
+    /// True when p begins its line (only spaces or tabs before it on the line); `sliceStartsLine` says whether index 0 does.
+    func startsLine(_ p: Int, sliceStartsLine: Bool) -> Bool {
+        var i = p
+        while i > 0, u[i - 1] == 0x20 || u[i - 1] == 0x09 { i -= 1 }
+        return i == 0 ? sliceStartsLine : u[i - 1] == 0x0A || u[i - 1] == 0x0D
+    }
+
+    /// Scans the slice from `from` around the skip ranges, one stretch at a time, so no lexicon key, link or address
+    /// match reaches into skipped text (a skipped word would otherwise be spoken and timed).
+    mutating func scanAll(from: Int, sliceStartsLine: Bool) {
+        var a = from
+        for r in skip + [end..<end] where r.upperBound > a {
+            if r.lowerBound > a { scan(a, r.lowerBound, lineStart: startsLine(a, sliceStartsLine: sliceStartsLine)) }
+            if !r.isEmpty { skippedAt.insert(units.count) }
+            a = max(a, r.upperBound)
+        }
+    }
+
+    /// Abbreviations of four letters or more that a number follows ("para.4", "arts.8"): the number is read.
+    static let shortForms: Set<String> = ["para", "paras", "sect", "secs", "sched", "chap", "page", "pages", "note", "notes", "fig", "figs",
+                                          "vols", "arts", "regs", "rule", "rules", "ords", "apps", "ibid"]
+
+    /// The run of letters ending at `end` (exclusive), lower-cased.
+    func word(endingAt end: Int) -> String {
+        var a = end
+        while a > 0, let s = Unicode.Scalar(UInt32(u[a - 1])), CharacterSet.letters.contains(s) { a -= 1 }
+        return String(decoding: u[a..<end], as: UTF16.self).lowercased()
+    }
+
+    /// Whether the unit before p ends a word or its punctuation, so a mark at p is glued to it ("void[12]", "void.[12]",
+    /// "[1][2]"). A spaced bracket is a reference to be read ("at [45]", "[23]–[25]").
+    func glued(_ p: Int) -> Bool {
+        guard p > 0 else { return false }
+        let before = u[p - 1]
+        // "paras [12],[13]": a comma straight after a bracket continues a list of references, which is read.
+        if before == 0x2C, p > 1, u[p - 2] == 0x5D { return false }
+        return Maker.isWord(before) && !Maker.isDigit(before) || ".,;:?!)]\"'”’".utf16.contains(before)
+    }
+
+    /// How much source a footnote mark at p uses: superscript digits after punctuation or a long word, or 1 to 3 plain
+    /// digits glued to the full stop or semicolon after a long word and followed by a capital or the line's end
+    /// ("consideration.12 The"). nil when p starts no mark.
+    func footnoteMark(_ p: Int, _ to: Int) -> Int? {
+        guard p > 0 else { return nil }
+        let superscripts: Set<UInt16> = [0x00B9, 0x00B2, 0x00B3, 0x2070, 0x2074, 0x2075, 0x2076, 0x2077, 0x2078, 0x2079]
+        let before = u[p - 1]
+        if superscripts.contains(u[p]) {
+            var q = p   // "¹,²" is one mark; a comma after the last one is the sentence's ("Smith¹, Jones")
+            while q < to, superscripts.contains(u[q]) || u[q] == 0x2C && q + 1 < to && superscripts.contains(u[q + 1]) { q += 1 }
+            // After punctuation, or after a word of four letters or more ("m²" and "x³" are maths and stay).
+            return ".,;:?!)]\"'”’".utf16.contains(before) || word(endingAt: p).count >= 4 ? q - p : nil
+        }
+        // Plain digits: not after a colon ("Goals:12") or a straight quote, which also opens a quotation.
+        let closers = "”’)]".utf16, enders = ".;".utf16
+        guard Maker.isDigit(u[p]), closers.contains(before) || enders.contains(before) else { return nil }
+        var q = p
+        while q < to, Maker.isDigit(u[q]) { q += 1 }
+        guard q - p <= 3 else { return nil }
+        var r = q   // what follows in the source (past the chunk's end): the line's or text's end, or spaces then a capital
+        while r < u.count, u[r] == 0x20 || u[r] == 0x09 || u[r] == 0xA0 { r += 1 }
+        guard r == u.count && endsText || r < u.count && (u[r] == 0x0A || u[r] == 0x0D)
+                || r < u.count && r > q && Unicode.Scalar(UInt32(u[r])).map({ CharacterSet.uppercaseLetters.contains($0) }) == true else { return nil }
+        var w = p - 1   // back over the punctuation to the word (a closer may follow an ender: "end.”12")
+        while w > 0, closers.contains(u[w]) || enders.contains(u[w]) { w -= 1 }
+        let name = word(endingAt: w + 1)
+        return name.count >= 4 && !Maker.shortForms.contains(name) ? q - p : nil
+    }
+
     mutating func scan(_ from: Int, _ to: Int, lineStart start: Bool) {
         var p = from
         var lineStart = start
@@ -166,6 +267,19 @@ private struct Maker {
                 if c == 0x20 || c == 0x09 { copy(p, p + 1); p += 1; continue }
                 if let m = match(Rx.marker, p, to) { p += m.range.length; continue }   // heading, quote, bullet: dropped
                 lineStart = false
+            }
+            if citations {
+                // "[citation needed]" is never a reference to read, spaced or not. A link whose label is a mark
+                // ("Law.[12](#note)") is a mark too: the whole link goes.
+                if c == 0x5B {
+                    let link = match(Rx.link, p, to), label = link?.range(at: 1)
+                    let mark = label.map { t in match(Rx.citation, p, t.location + t.length + 1).flatMap { $0.range.length == t.length + 2 ? $0 : nil } }
+                        ?? match(Rx.citation, p, to)
+                    if let mark, glued(p) || (slice as NSString).substring(with: mark.range).lowercased().contains("needed") {
+                        p += link?.range.length ?? mark.range.length; continue
+                    }
+                }
+                if let n = footnoteMark(p, to) { p += n; continue }
             }
             if p == from || !Maker.isWord(u[p - 1]) {
                 for (re, value) in lexicon {
@@ -214,7 +328,8 @@ private struct Maker {
 
     // MARK: finishing
 
-    /// Collapses whitespace runs, turns unpunctuated line ends into ". ", trims, and shifts the map to source coordinates.
+    /// Collapses whitespace runs, turns unpunctuated line ends into ". " (not where skipped text was), trims, and shifts
+    /// the map to source coordinates.
     func finish(base: Int) -> Speakable {
         var out: [UInt16] = [], lo: [Int] = [], hi: [Int] = []
         func endsWithPunctuation() -> Bool {
@@ -228,12 +343,14 @@ private struct Maker {
             guard unit == 0x20 || unit == 0x09 || unit == 0x0A || unit == 0x0D || unit == 0xA0 else {
                 out.append(unit); lo.append(lows[i] + base); hi.append(highs[i] + base); i += 1; continue
             }
-            var j = i, newline = false
+            var j = i, newline = false, skipped = skippedAt.contains(i)
             var a = Int.max, b = Int.min
             while j < units.count, [0x20, 0x09, 0x0A, 0x0D, 0xA0].contains(units[j]) {
                 if units[j] == 0x0A || units[j] == 0x0D { newline = true }
                 a = min(a, lows[j]); b = max(b, highs[j]); j += 1
+                if skippedAt.contains(j) { skipped = true }
             }
+            if skipped { newline = false }
             if !out.isEmpty, j < units.count {
                 if newline, !endsWithPunctuation() { out.append(0x2E); lo.append(a + base); hi.append(b + base) }
                 out.append(0x20); lo.append(a + base); hi.append(b + base)

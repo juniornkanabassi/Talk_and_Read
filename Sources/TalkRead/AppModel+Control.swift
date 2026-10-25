@@ -65,13 +65,14 @@ extension AppModel {
             let url = try fileArg(a)
             try checkOwner(r.caller, force: r.force)
             let id = reserve(r.caller)
-            let text: String
-            do { text = try await Task.detached { try await Importer.load(url) }.value.text } catch {
+            let doc: ImportedDocument
+            do { doc = try await Task.detached { try await Importer.load(url) }.value } catch {
                 if owner?.sessionID == id { owner = nil }
                 throw AppError(code: "failed", message: "Could not read \(url.lastPathComponent): \(error.localizedDescription)")
             }
             guard owner?.sessionID == id else { throw AppError(code: "superseded", message: "Another read started first.") }
-            return try await firstAudio(startSession(text, capture: nil, id: id, source: "file"))
+            let skip = settings.skipHeadersAndFooters ? doc.pageStarts.map { PageFurniture.ranges(doc.text, pageStarts: $0) } ?? [] : []
+            return try await firstAudio(startSession(doc.text, capture: nil, id: id, source: "file", skip: skip))
 
         case "pause", "resume", "stop":
             try claim(r)
@@ -297,7 +298,12 @@ extension AppModel {
             if a["show"] == "1" { WindowRouter.shared.showMainWindow() }
             var data: [String: JSONValue] = ["id": .string(item.id.uuidString), "title": .string(item.title), "kind": .string(item.kind),
                                              "position": .number(Double(item.position)), "words": .number(Double(words))]
-            if andRead { data.merge(try await firstAudio(startDocument(item, text: text, fromToken: start, id: reserve(r.caller)))) { $1 } }
+            if andRead {
+                guard let s = await startDocument(item, text: text, fromToken: start, id: reserve(r.caller)) else {
+                    throw AppError(code: "superseded", message: "Another read started first.")
+                }
+                data.merge(try await firstAudio(s)) { $1 }
+            }
             return data
 
         case "library-remove":
@@ -451,7 +457,10 @@ extension AppModel {
         if a["show"] == "1" { WindowRouter.shared.showMainWindow() }
         data["shown"] = .bool(true)
         if let id {
-            data.merge(try await firstAudio(startDocument(current, text: try documentText(current), fromToken: nil, id: id))) { $1 }
+            guard let s = await startDocument(current, text: try documentText(current), fromToken: nil, id: id) else {
+                throw AppError(code: "superseded", message: "Another read started first.")
+            }
+            data.merge(try await firstAudio(s)) { $1 }
         }
         return data
     }

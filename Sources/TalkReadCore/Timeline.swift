@@ -49,7 +49,9 @@ public enum Timeline {
             while lo < hi { let mid = (lo + hi) / 2; if chunkTokens[mid].range.upperBound > source.lowerBound { hi = mid } else { lo = mid + 1 } }
             var i = lo
             while i < n, chunkTokens[i].range.lowerBound < source.upperBound || (source.isEmpty && chunkTokens[i].range.lowerBound <= source.lowerBound) {
-                owners[i].append(j); i += 1
+                // A token the speakable dropped ("12" in "Smith[12]'s", spoken "Smith's") keeps no share of the word.
+                if source.isEmpty || speakable.covers(chunkTokens[i].range) { owners[i].append(j) }
+                i += 1
             }
         }
 
