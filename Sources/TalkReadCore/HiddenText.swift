@@ -41,6 +41,11 @@ public enum HiddenText {
             if chat, role == "AXToolbar" { v.hidden = true }
             if classes.contains(where: Self.hiddenClasses.contains), !bases.contains("not-sr-only"),
                !classes.contains(where: { $0.contains("focusable") }) { v.hidden = true }   // shown on focus: may be on screen
+            // a descendant that sets its own height or shows its overflow is drawn again
+            if v.hover, zip(classes, bases).contains(where: { full, base in
+                full != "h-0" && ["h-", "min-h-", "max-h-", "size-"].contains(where: base.hasPrefix) }) || bases.contains(where: Self.showClasses.contains) {
+                v.hover = false
+            }
             if chat, classes.contains("h-0"),
                !zip(classes, bases).contains(where: { full, base in
                    full != "h-0" && ["h-", "min-h-", "max-h-", "size-"].contains(where: base.hasPrefix) }),

@@ -51,6 +51,7 @@ public struct Speakable: Sendable {
         let slice = ns.substring(with: NSRange(location: ctx, length: tail - ctx))
         var maker = Maker(slice, lexicon: lexicon, french: language == "fr")
         maker.citations = skipCitations
+        maker.fenced = Speakable.insideFence(ns, before: ctx)
         maker.end = hi - ctx
         maker.endsText = tail == ns.length
         for r in skip.sorted(by: { $0.lowerBound < $1.lowerBound }) {   // into slice coordinates, overlaps merged
@@ -61,6 +62,19 @@ public struct Speakable: Sendable {
         }
         maker.scanAll(from: lo - ctx, sliceStartsLine: ctx == 0 || [0x0A, 0x0D].contains(ns.character(at: ctx - 1)))
         return maker.finish(base: ctx)
+    }
+
+    /// Whether `p` lies inside a fenced code block: an odd number of fence lines (``` at a line's start) before it.
+    // ponytail: a scan of the text before every chunk for "```"; cheap, as the search skips straight to each occurrence.
+    static func insideFence(_ ns: NSString, before p: Int) -> Bool {
+        var inside = false, from = 0
+        while from < p {
+            let r = ns.range(of: "```", options: .literal, range: NSRange(location: from, length: p - from))
+            guard r.location != NSNotFound else { break }
+            if r.location == 0 || [0x0A, 0x0D].contains(ns.character(at: r.location - 1)) { inside.toggle() }
+            from = r.location + 3
+        }
+        return inside
     }
 
     /// Speakable UTF-16 range -> source UTF-16 range: the union of the source characters those units came from.
@@ -95,7 +109,8 @@ enum Rx {   // internal: the chunker protects the same constructs (TextKit.chunk
     /// that closes it. Spaces only in a target wrapped in <…>, or one that starts like a path or address ("/", "~/",
     /// "./", "../", "scheme://") or ends in a file name ("01 About Me/MEMORY.md", a "#part" or ":42" after it), so
     /// "options [A](which is best.) or [B]" and "[x](and/or something)" stay prose.
-    static let link = make("\\[([^\\[\\]\\n]*)\\]\\((?:<[^>\\n]*>|(?:[^()\\s]|\\([^()\\s]*\\))*|(?=/|~/|\\.\\.?/|[A-Za-z][A-Za-z0-9+.-]*://|[^)\\n]*\\.[A-Za-z][A-Za-z0-9]{0,7}(?:[#:][^)\\s]*)?\\))(?:[^()\\n]|\\([^()\\n]*\\))*?)(?:[ \\t]+\"[^\"\\n]*\")?\\)")
+    /// Every repeat is bounded (labels 300, targets 600 units), so a line of malformed links costs linear time.
+    static let link = make("\\[([^\\[\\]\\n]{0,300})\\]\\((?:<[^>\\n]{0,600}>|(?:[^()\\s]|\\([^()\\s]{0,100}\\)){0,600}|(?=/|~/|\\.\\.?/|[A-Za-z][A-Za-z0-9+.-]{0,20}://|[^)\\n]{0,300}\\.[A-Za-z][A-Za-z0-9]{0,7}(?:[#:][^)\\s]{0,100})?\\))(?:[^()\\n]|\\([^()\\n]{0,100}\\)){0,600}?)(?:[ \\t]+\"[^\"\\n]{0,300}\")?\\)")
     /// What may be an absolute file path or file URL: "/" or "~/" then two components or more, up to the next space,
     /// a trailing "/" allowed. `Maker.pathLength` decides whether it is one. A path in backticks may hold spaces
     /// (`codePath`).
@@ -129,6 +144,8 @@ private struct Maker {
     /// with its footer and running head removed), so it gets no full stop.
     var skippedAt: Set<Int> = []
     var citations = false
+    /// Inside a fenced code block.
+    var fenced = false
     /// Where the chunk ends in the slice (the rest is look-ahead context), and whether the slice reaches the text's end.
     var end = 0
     var endsText = true
@@ -260,12 +277,19 @@ private struct Maker {
 
     /// The source a link or path at q uses, reaching past the chunk: what `scan` treats as one construct there.
     func construct(at q: Int) -> Int? {
+        let n: Int?
         switch u[q] {
-        case 0x5B where q == 0 || u[q - 1] != 0x21: return match(Rx.link, q, u.count)?.range.length
-        case 0x60: return codePath(at: q)?.whole.count
-        default: return pathLength(q, limit: u.count)
+        case 0x5B where q == 0 || u[q - 1] != 0x21: n = match(Rx.link, q, u.count)?.range.length
+        case 0x60: n = codePath(at: q)?.whole.count
+        default: n = pathLength(q, limit: u.count)
         }
+        return n.flatMap { fits(q, $0) ? $0 : nil }
     }
+
+    /// Whether a construct of n units at q is read as one: at most `context` long (the chunker keeps those whole) and
+    /// ending inside the slice, not cut by its end. A longer one is read as written, chunk by chunk, never shortened
+    /// to a partial name or said twice.
+    func fits(_ q: Int, _ n: Int) -> Bool { n <= Maker.context && (q + n < u.count || endsText) }
 
     /// A backticked path at q: the path inside, and the whole span with its backticks. A command line is not a path
     /// ("`/bin/ls -la /tmp/x`", "`/usr/bin/env python3 a.py`"); spaces in folder names are ("02 Projects").
@@ -359,20 +383,12 @@ private struct Maker {
         loop: while p < to {
             let c = u[p]
             if c == 0x0A || c == 0x0D { copy(p, p + 1); p += 1; lineStart = true; continue }
+            // A fenced code block is read as written (no path, link or emphasis rules), without its fence lines; the
+            // state carries across chunks (`make` works out whether the chunk starts inside one).
+            if lineStart, c == 0x60, let m = match(Rx.fence, p, to) { p += m.range.length; fenced.toggle(); lineStart = true; continue }
+            if fenced { copy(p, p + 1); p += 1; lineStart = false; continue }
             if lineStart {
                 if c == 0x20 || c == 0x09 { copy(p, p + 1); p += 1; continue }
-                // A fenced code block is read as written (no path, link or emphasis rules), without its fence lines.
-                if c == 0x60, let m = match(Rx.fence, p, to) {
-                    let body = p + m.range.length
-                    var close = body
-                    while close < to, !(u[close] == 0x60 && close + 2 < u.count && u[close + 1] == 0x60 && u[close + 2] == 0x60
-                                         && (close == 0 || u[close - 1] == 0x0A)) { close += 1 }
-                    copy(body, close)
-                    p = close
-                    if close < to, let end = match(Rx.fence, close, to) { p = close + end.range.length }
-                    lineStart = true
-                    continue
-                }
                 if let m = match(Rx.marker, p, to) { p += m.range.length; continue }   // heading, quote, bullet: dropped
                 lineStart = false
             }
@@ -395,7 +411,7 @@ private struct Maker {
                 }
                 if let m = match(Rx.email, p, to) { emitLabels(p, p + m.range.length); p += m.range.length; continue }
                 if let m = match(Rx.url, p, to) ?? match(Rx.www, p, to) { p += emitAddress(p, m.range.length); continue }
-                if let n = pathLength(p, limit: limit) { emitPath(p..<p + n, source: p..<p + n); p += n; continue }
+                if let n = pathLength(p, limit: limit), fits(p, n) { emitPath(p..<p + n, source: p..<p + n); p += n; continue }
                 if french, Maker.isDigit(c) || c == 0x20AC || c == 0x24 || c == 0xA3, let used = frenchNumber(p, to) { p += used; continue }
             }
             let next: UInt16 = p + 1 < to ? u[p + 1] : 0
@@ -403,7 +419,7 @@ private struct Maker {
             case 0x21: // ![alt](url)
                 if let m = match(Rx.image, p, to) { p += m.range.length; continue }
             case 0x5B: // [text](url) -> text, read whole even when the chunk ends inside it
-                if let m = match(Rx.link, p, limit) {
+                if let m = match(Rx.link, p, limit), fits(p, m.range.length) {
                     let t = m.range(at: 1)
                     scan(t.location, t.location + t.length, lineStart: false)
                     p += m.range.length
@@ -411,7 +427,7 @@ private struct Maker {
                 }
             case 0x2A where next == 0x2A, 0x5F where next == 0x5F: p += 2; continue   // ** and __
             case 0x60:                                                                   // backtick; `a path` -> its name
-                if let span = codePath(at: p, limit: limit) { emitPath(span.path, source: span.whole); p = span.whole.upperBound; continue }
+                if let span = codePath(at: p, limit: limit), fits(p, span.whole.count) { emitPath(span.path, source: span.whole); p = span.whole.upperBound; continue }
                 // Any other code span is read as written: no path, link or emphasis rules inside it. Within the chunk:
                 // `construct(at:)` does not know it, so a later chunk would read its rest again.
                 if let close = (p + 1..<to).first(where: { u[$0] == 0x60 || u[$0] == 0x0A }), u[close] == 0x60, close > p + 1 {

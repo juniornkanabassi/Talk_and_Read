@@ -65,7 +65,8 @@ enum TextCapture {
                 // Claude's chat Copy serialises its screen reader headings too; the tree cannot place them in a copy. Not
                 // from a text field (the message box), whose text is all typed.
                 let editable = focused.map { ["AXTextArea", "AXTextField", "AXComboBox"].contains(axAttribute($0, kAXRoleAttribute) as? String ?? "") } ?? false
-                let net = isClaude(pid) && !editable ? HiddenText.safetyNet(text) : (text: text, removed: 0)
+                let chat = focused.flatMap(webArea).map { isClaudeChat($0, pid: pid) } ?? false
+                let net = chat && !editable ? HiddenText.safetyNet(text) : (text: text, removed: 0)
                 let kept = net.removed > 0 && !net.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 var c = Capture(text: kept ? net.text : text, pid: pid, element: focused, window: window, selectionStart: nil, source: .copied)
                 if kept { (c.hiddenRemoved, c.selected) = (net.removed, text) }
@@ -142,11 +143,7 @@ enum TextCapture {
     /// place the words instead).
     static func withoutHiddenText(_ c: Capture) -> Capture {
         guard let element = c.element else { return withoutHiddenText(c, root: nil, selection: nil) }
-        var area: AXUIElement? = element
-        for _ in 0..<40 where area.map({ (axAttribute($0, kAXRoleAttribute) as? String) != "AXWebArea" }) == true {
-            area = area.flatMap { axElement($0, kAXParentAttribute) }
-        }
-        let root = area ?? element
+        let root = webArea(of: element) ?? element
         let selection = [root, element].lazy.compactMap { axAttribute($0, "AXSelectedTextMarkerRange") }
             .first { CFGetTypeID($0) == AXTextMarkerRangeGetTypeID() }
         return withoutHiddenText(c, root: root, selection: selection.map { $0 as! AXTextMarkerRange })
@@ -155,14 +152,14 @@ enum TextCapture {
     /// The same for an explicit text marker range of `root` (the self-test's stand-in for a mouse selection).
     static func withoutHiddenText(_ c: Capture, root: AXUIElement?, selection: AXTextMarkerRange?) -> Capture {
         var text = c.text, removed = 0
-        let claude = isClaude(c.pid)
-        let walked = root.flatMap { root in selection.flatMap { hiddenRanges(root: root, selection: $0, text: text, chat: isClaudeChat(root, pid: c.pid)) } }
+        let chat = root.map { isClaudeChat($0, pid: c.pid) } ?? false
+        let walked = root.flatMap { root in selection.flatMap { hiddenRanges(root: root, selection: $0, text: text, chat: chat) } }
         if let walked {
             (text, removed) = HiddenText.cut(text, ranges: walked.ranges)
             // the toolbar's buttons leave their placeholders behind
             if removed > 0 { let objects = HiddenText.cut(text, ranges: HiddenText.objectReplacements(text)); (text, removed) = (objects.text, removed + objects.removed) }
         }
-        if claude, walked?.complete != true {
+        if chat, walked?.complete != true {
             // No tree, or one not walked to the end, to place every heading by: the text-only net.
             (text, removed) = HiddenText.safetyNet(text, removed: removed)
         }
@@ -170,6 +167,15 @@ enum TextCapture {
         var out = Capture(text: text, pid: c.pid, element: c.element, window: c.window, selectionStart: nil, source: c.source)
         (out.hiddenRemoved, out.selected) = (removed, c.text)
         return out
+    }
+
+    /// The web area holding `element` (itself, or an ancestor within 40 parents).
+    static func webArea(of element: AXUIElement) -> AXUIElement? {
+        var area: AXUIElement? = element
+        for _ in 0..<40 where area.map({ (axAttribute($0, kAXRoleAttribute) as? String) != "AXWebArea" }) == true {
+            area = area.flatMap { axElement($0, kAXParentAttribute) }
+        }
+        return area
     }
 
     /// The Claude desktop app, whose chat headings the text-only safety net knows; elsewhere repeated prose is prose.
@@ -216,7 +222,12 @@ enum TextCapture {
                 guard let own = axParameterizedAttribute(root, "AXTextMarkerRangeForUIElement", parameter: node),
                       CFGetTypeID(own) == AXTextMarkerRangeGetTypeID(),
                       let string = axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: own) as? String else { complete = false; continue }
-                guard !visibility.draws(string), !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                if !visibility.hidden, visibility.draws(string) {
+                    // a hover box whose text is no timestamp is drawn: look inside it for hidden text of its own
+                    if let children = axAttribute(node, kAXChildrenAttribute) as? [AXUIElement] { stack.append(contentsOf: children.reversed().map { ($0, visibility) }) }
+                    continue
+                }
+                guard !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 let start = AXTextMarkerRangeCopyStartMarker(own as! AXTextMarkerRange)
                 guard let d1 = distance(selStart, start), let d2 = distance(start, selEnd) else { complete = false; continue }
                 guard let placed = HiddenText.place(d1: d1, d2: d2, length: length, nodeLength: string.utf16.count) else {

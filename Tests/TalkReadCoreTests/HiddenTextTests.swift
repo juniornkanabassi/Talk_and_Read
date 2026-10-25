@@ -143,6 +143,9 @@ final class HiddenTextTests: XCTestCase {
         XCTAssertTrue(box.draws("A sentence in an artifact"))
         XCTAssertFalse(child(box, "AXStaticText", []).draws("now"))
         XCTAssertTrue(child(root, "AXGroup", ["relative", "h-0", "w-full"], claude: false).draws("3m ago"))
+        // a descendant that sets its own height or shows its overflow is drawn (Codex round 6)
+        XCTAssertTrue(child(box, "AXGroup", ["h-auto"]).draws("11:52 AM"))
+        XCTAssertTrue(child(box, "AXGroup", ["overflow-visible"]).draws("11:52 AM"))
         // an h-0 box whose height anything else sets, that grows or shows its overflow is text
         for shown in [["flex-1", "h-0", "overflow-auto"], ["h-0", "md:h-auto"], ["h-0", "group-hover:h-auto"], ["h-0", "data-[state=open]:h-auto"],
                       ["h-0", "min-h-10"], ["h-0", "size-4"], ["h-0", "overflow-visible"], ["h-0", "h-fit"], ["md:h-0"]] {

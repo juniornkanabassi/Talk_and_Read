@@ -188,14 +188,29 @@ final class SpeakableTests: XCTestCase {
 
     func testFencedCodeIsReadAsWritten() {
         XCTAssertEqual(make("Run:\n```sh\ncat /Users/j/notes.md\n```\nDone.").text, "Run: cat /Users/j/notes.md. Done.")
+        // chunk by chunk too: the chunk after the fence line knows it is inside the block (Codex round 6)
+        let s = "```sh\ncat /Users/j/notes.md\n```\nDone."
+        let read = TextKit.chunks(s, tokens: TextKit.tokenize(s)).map { Speakable.make(s, range: $0.range, lexicon: [:]).text }
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        XCTAssertEqual(read, "cat /Users/j/notes.md. Done.")
+    }
+
+    /// A path too long to keep whole is read as written, never as a cut-short name or twice (Codex round 6).
+    func testAPathLongerThanTheContextIsReadAsWritten() {
+        let path = "/Users/" + String(repeating: "project/", count: 100) + "notes.md"
+        let read = TextKit.chunks(path, tokens: TextKit.tokenize(path)).map { Speakable.make(path, range: $0.range, lexicon: [:]).text }
+            .joined(separator: "")
+        XCTAssertEqual(read.components(separatedBy: "notes.md").count, 2)
+        XCTAssertEqual(read.components(separatedBy: "project").count, 101)
     }
 
     /// An unclosed "[" on a long line costs linear time, not a rescan from every bracket (Codex round 5).
     func testManyOpenBracketsStayFast() {
-        let s = String(repeating: "[word ", count: 20_000)
-        let start = Date()
-        _ = TextKit.chunks(s, tokens: TextKit.tokenize(s))
-        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+        for s in [String(repeating: "[word ", count: 20_000), String(repeating: "[x](word ", count: 20_000) + ")"] {
+            let start = Date()
+            _ = TextKit.chunks(s, tokens: TextKit.tokenize(s))
+            XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+        }
     }
 
     /// A read that starts inside a link (a click in the reader, a saved place) reads the link whole (Codex round 2).
