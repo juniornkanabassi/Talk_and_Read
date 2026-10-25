@@ -47,7 +47,8 @@ public enum PageFurniture {
                 let shape = s.replacingOccurrences(of: "[0-9]+", with: "#", options: .regularExpression)
                 // An answer option or list item ("A. Yes", "(b) No", "3) Cost", "• None", "- 3 points") is body, however
                 // often it repeats; only a whole page-number shape ("- 7 -") starting with a dash is not a bullet.
-                guard s.range(of: "^(?:\\(?([a-h]|[ivx]{1,4}|[0-9]{1,2})[.)] |[•◦▪*+] )", options: .regularExpression) == nil,
+                // PDF bullet glyphs often lose the space after them when extracted.
+                guard s.range(of: "^(?:\\(?([a-h]|[ivx]{1,4}|[0-9]{1,2})[.)] |[•◦▪▫●○■□‣⁃∙►▶➢✓✔] ?|[*+] )", options: .regularExpression) == nil,
                       s.range(of: "^[-–—] ", options: .regularExpression) == nil
                         || pageNumber.firstMatch(in: shape, range: NSRange(shape.startIndex..., in: shape)) != nil else { continue }
                 let first = s.split(whereSeparator: { !$0.isASCII || !$0.isNumber }).first

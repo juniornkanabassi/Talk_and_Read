@@ -170,7 +170,10 @@ import TalkReadCore
             }
             let a = firstToken(from: s), b = firstToken(from: s + 1)
             guard a < b else { return false }
-            return Speakable.make(text, range: tokens[a].range.lowerBound..<tokens[b - 1].range.upperBound, lexicon: lexicon,
+            // From the previous token's end to the next sentence's first token, so the brackets and punctuation around
+            // the words are judged too ("[citation needed]" alone is silent, as in playback).
+            let lo = a == 0 ? 0 : tokens[a - 1].range.upperBound, hi = b < tokens.count ? tokens[b].range.lowerBound : text.utf16.count
+            return Speakable.make(text, range: lo..<hi, lexicon: lexicon,
                                   language: voice.language, skip: skip, skipCitations: skipCitations).text
                 .contains { $0.isLetter || $0.isNumber }
         }
