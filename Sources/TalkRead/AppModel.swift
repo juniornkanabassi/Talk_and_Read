@@ -2,6 +2,7 @@
 import AppKit
 import Combine
 import Foundation
+import PDFKit
 import TalkReadCore
 
 struct LibraryItem: Codable, Identifiable, Hashable {
@@ -163,6 +164,8 @@ extension EngineKind {
             self?.saveSettings()
         }
         if settings.voiceID != old.voiceID || settings.frenchVoiceID != old.frenchVoiceID { voiceChoiceChanged(from: old) }
+        // Highlight switched off mid-read: the overlay goes now, and its stop restores any accessibility wake (E8).
+        if old.showHighlight, !settings.showHighlight { highlighter?.stop(); highlighter = nil }
         // A new voice applies to the next read (V1, PLAN 0.3.0 rev. 4); speed is instant.
         if settings.speed != old.speed, let s = liveSession { sessionInfo.rate = settings.speed; s.setRate(settings.speed) }
     }
@@ -443,36 +446,78 @@ extension EngineKind {
     }
     /// The read `preview` started; any later read replaces `session`, so it is a preview only while it is that one.
     private weak var previewSession: ReadSession?
+    /// Furniture ranges per PDF document, found once (`furniture`).
+    private var furnitureCache: [UUID: [Range<Int>]] = [:]
 
     func read(_ item: LibraryItem, fromToken: Int?) {
         guard let text = try? documentText(item) else { MiniPlayer.shared.flash("Could not open “\(item.title)”"); return }
-        startDocument(item, text: text, fromToken: fromToken, id: reserve("user"))
+        let id = reserve("user")
+        // At once unless a PDF's furniture still has to be found.
+        if let skip = knownFurniture(item) { beginDocument(item, text: text, fromToken: fromToken, id: id, skip: skip); return }
+        Task { await startDocument(item, text: text, fromToken: fromToken, id: id) }
     }
 
-    /// Starts at `fromToken`, else at the saved position.
-    @discardableResult func startDocument(_ item: LibraryItem, text: String, fromToken: Int?, id: UUID) -> ReadSession {
+    /// Starts at `fromToken`, else at the saved position. nil when another read took over while a PDF's furniture was found.
+    @discardableResult func startDocument(_ item: LibraryItem, text: String, fromToken: Int?, id: UUID) async -> ReadSession? {
+        let known = knownFurniture(item)
+        let skip = if let known { known } else { await furniture(item, text: text) }
+        guard owner?.sessionID == id else { return nil }
+        return beginDocument(item, text: text, fromToken: fromToken, id: id, skip: skip)
+    }
+
+    @discardableResult private func beginDocument(_ item: LibraryItem, text: String, fromToken: Int?, id: UUID, skip: [Range<Int>]) -> ReadSession {
         let saved = library.first { $0.id == item.id }?.position ?? item.position
-        return startSession(text, capture: nil, id: id, startToken: fromToken ?? saved, source: "document", item: item.id)
+        return startSession(text, capture: nil, id: id, startToken: fromToken ?? saved, source: "document", item: item.id, skip: skip)
+    }
+
+    /// The ranges a read skips when no PDF has to be opened for them: none (not a PDF, or the setting is off) or cached.
+    private func knownFurniture(_ item: LibraryItem) -> [Range<Int>]? {
+        guard settings.skipHeadersAndFooters, item.kind == "pdf" else { return [] }
+        return furnitureCache[item.id]
+    }
+
+    /// A PDF's running headers, footers and page numbers, when Settings skips them. The pages are joined exactly as the
+    /// importer joined them; a stored text that no longer matches its PDF unit for unit skips nothing. Found once per
+    /// document (the reader fills it in when it opens the PDF), since extracting a long PDF's text takes a while.
+    private func furniture(_ item: LibraryItem, text: String) async -> [Range<Int>] {
+        let url = Paths.documents.appendingPathComponent(item.fileName)
+        // Off the main actor: extracting every page of a long PDF must not freeze the UI.
+        let found = await Task.detached(priority: .userInitiated) { () -> [Range<Int>] in
+            guard let pdf = PDFDocument(url: url) else { return [] }
+            let joined = Importer.pdfText(pdf)
+            return joined.text.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: joined.pageStarts) : []
+        }.value
+        furnitureCache[item.id] = found
+        return found
+    }
+
+    /// `joined`: the PDF's text as `Importer.pdfText` joins it; `text`: the stored document text a read speaks.
+    func rememberFurniture(_ item: LibraryItem, text: String, joined: String, pageStarts: [Int]) {
+        guard settings.skipHeadersAndFooters else { return }
+        furnitureCache[item.id] = joined.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: pageStarts) : []
     }
 
     @discardableResult
     func startSession(_ text: String, capture: Capture?, id: UUID, startToken: Int = 0, voice: Voice? = nil,
-                      rate: Float? = nil, source: String? = nil, item: UUID? = nil) -> ReadSession {
+                      rate: Float? = nil, source: String? = nil, item: UUID? = nil, skip: [Range<Int>] = []) -> ReadSession {
         // One language per read (PLAN 0.3.0 rev. 8): French text reads with the French voice; an explicit voice wins.
         let v = voice ?? (Language.detect(text) == "fr" ? self.voice(for: settings.frenchVoiceID, language: "fr") : self.voice(for: settings.voiceID))
         let r = rate ?? settings.speed
         let s = ReadSession(text: text, capture: capture, voice: v, rate: r, startToken: startToken, engines: engines,
-                            lexicon: Self.loadJSON(Paths.pronunciations) ?? [:], fallback: v.engine.isLarge ? kokoroFallback(v.language) : nil)
+                            lexicon: Self.loadJSON(Paths.pronunciations) ?? [:], fallback: v.engine.isLarge ? kokoroFallback(v.language) : nil,
+                            skip: skip, skipCitations: settings.skipCitations)
         session = s
         sessionInfo = (source ?? capture.map { "\($0.source)" } ?? "provided", r, item)
         modelsWarm = true
         sessionWatch = s.$state.sink { [weak self] state in self?.sessionStateChanged(state, id: id) }
         s.start()
-        if capture?.hasGeometry == true {   // clipboard and provided text have no place on screen
+        if capture?.hasGeometry == true, settings.showHighlight {   // clipboard and provided text have no place on screen
             let h = Highlighter(session: s, style: Overlay.Style(settings))
             h.useOCRFallback = settings.useOCRFallback
             h.start()
             highlighter = h
+        } else if let capture, capture.hasGeometry {
+            AXWake.restore(capture.pid)   // highlight off: no Highlighter will end this read and restore the app (E8)
         }
         return s
     }
@@ -756,7 +801,7 @@ extension EngineKind {
             if owner?.sessionID == id { owner = nil }
             throw AppError(code: "failed", message: "Could not open “\(item.title)”")
         }
-        let s = startDocument(item, text: savedText, fromToken: nil, id: id)
+        let s = beginDocument(item, text: savedText, fromToken: nil, id: id, skip: knownFurniture(item) ?? [])   // pasted text has no page furniture
         recordOwnRead(text)
         return (item, s)
     }

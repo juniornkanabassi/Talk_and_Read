@@ -42,6 +42,17 @@ final class TimelineTests: XCTestCase {
         XCTAssertEqual(r.timings.map(\.end), [0.3, 0.7, 1.0])
     }
 
+    func testASkippedCitationInsideAWordGetsNoTime() {
+        let source = "Smith[12]'s view"
+        let tokens = TextKit.tokenize(source)
+        let sp = Speakable.make(source, range: 0..<(source as NSString).length, lexicon: [:], skipCitations: true)
+        XCTAssertEqual(sp.text, "Smith's view")
+        let t = Timeline.timings(chunkTokens: tokens, chunkTokenOffset: 0, speakable: sp,
+                                 spoken: [w("Smith's", 0, 0.8, range: 0..<7), w("view", 0.8, 1.2, range: 8..<12)], offset: 0, chunkDuration: 1.2)
+        for (i, token) in tokens.enumerated() where token.text == "12" { XCTAssertEqual(t[i].start, t[i].end, "the dropped mark is never lit") }
+        assertInvariants(t, tokens: tokens.count, offset: 0, duration: 1.2)
+    }
+
     func testExpansionPoundsFortyFive() {
         let r = run("It costs £45 today", spoken: [w("it", 0, 0.2), w("costs", 0.2, 0.6), w("forty", 0.6, 0.9), w("five", 0.9, 1.1), w("pounds", 1.1, 1.5), w("today", 1.5, 2.0)], duration: 2.0)
         XCTAssertEqual(r.tokens.map(\.text), ["It", "costs", "45", "today"])

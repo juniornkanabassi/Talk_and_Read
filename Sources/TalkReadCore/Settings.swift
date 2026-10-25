@@ -95,16 +95,25 @@ public struct Settings: Codable, Equatable, Sendable {
     /// The English Kokoro voice a read switches to when a slower model falls behind (V3); French uses `ff_siwis`.
     public var fallbackVoiceID = "af_heart"
     public var speed: Float = 2.5                  // 0.5...3.0, step 0.05; Junior's Speechify speed
+    /// ReadAlong's "Enabled": false reads aloud with no box or tint over the app (the reader still highlights).
+    public var showHighlight = true
     public var highlightHex = "#FFD21F"
     /// "box" (default), "outline" or "underline" (H1).
     public var highlightStyle = "box"
     public var tintEnabled = true
+    /// The sentence tint's own colour (ReadAlong's "Tint colour"); nil = the word colour.
+    public var tintHex: String?
     public var opacity = 0.85
     public var showMiniPlayer = true
     public var miniPlayerAutoHideSeconds = 3.0     // 0 = never
     public var miniPlayerOrigin: CGPoint?
     public var subtitlesExpanded = false
     public var useOCRFallback = true
+    /// Speechify's "skip citations": bracketed reference numbers ([12], [3–5]) and superscript footnote marks are not
+    /// spoken; they stay on screen.
+    public var skipCitations = true
+    /// Speechify's "skip headers and footers": in the reader, a PDF's running headers, footers and page numbers are not spoken.
+    public var skipHeadersAndFooters = true
     public var removeFillers = true
     /// Break a long dictation (60 words or more) into paragraphs at its pauses (PLAN 0.6.0).
     public var paragraphs = true
@@ -134,10 +143,11 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.pasteLastShortcut, &pasteLastShortcut); get(.dictationHoldKey, &dictationHoldKey); get(.dictationMicrophone, &dictationMicrophone)
         get(.increaseSpeedShortcut, &increaseSpeedShortcut); get(.decreaseSpeedShortcut, &decreaseSpeedShortcut)
         get(.skipBackwardShortcut, &skipBackwardShortcut); get(.skipForwardShortcut, &skipForwardShortcut)
-        get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.highlightHex, &highlightHex); get(.highlightStyle, &highlightStyle)
-        get(.tintEnabled, &tintEnabled); get(.opacity, &opacity); get(.showMiniPlayer, &showMiniPlayer)
+        get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.showHighlight, &showHighlight); get(.highlightHex, &highlightHex); get(.highlightStyle, &highlightStyle)
+        get(.tintEnabled, &tintEnabled); get(.tintHex, &tintHex); get(.opacity, &opacity); get(.showMiniPlayer, &showMiniPlayer)
         get(.miniPlayerAutoHideSeconds, &miniPlayerAutoHideSeconds); get(.miniPlayerOrigin, &miniPlayerOrigin)
         get(.subtitlesExpanded, &subtitlesExpanded); get(.useOCRFallback, &useOCRFallback)
+        get(.skipCitations, &skipCitations); get(.skipHeadersAndFooters, &skipHeadersAndFooters)
         get(.removeFillers, &removeFillers); get(.paragraphs, &paragraphs); get(.polishWithAppleIntelligence, &polishWithAppleIntelligence)
         get(.dictationEngine, &dictationEngine); get(.learnCorrections, &learnCorrections); get(.britishSpelling, &britishSpelling)
         get(.unloadAfterMinutes, &unloadAfterMinutes); get(.launchAtLogin, &launchAtLogin)
@@ -160,6 +170,7 @@ public struct Settings: Codable, Equatable, Sendable {
         if fallbackVoiceID.trimmingCharacters(in: .whitespaces).isEmpty { s.fallbackVoiceID = d.fallbackVoiceID }
         if highlightHex.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) == nil { s.highlightHex = "#FFD21F" }
         if !["box", "outline", "underline"].contains(highlightStyle) { s.highlightStyle = "box" }
+        if let t = tintHex, t.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) == nil { s.tintHex = nil }
         if !["parakeet", "apple"].contains(dictationEngine) { s.dictationEngine = "parakeet" }
         if dictationMicrophone?.isEmpty == true { s.dictationMicrophone = nil }
         return s
@@ -232,12 +243,21 @@ public struct Settings: Codable, Equatable, Sendable {
                 throw ControlError("invalid_value", "highlightStyle must be one of: box, outline, underline.")
             }
             highlightStyle = raw
+        case "showHighlight": showHighlight = try bool()
         case "tintEnabled": tintEnabled = try bool()
+        case "tintHex":
+            if ["same", ""].contains(raw.lowercased()) { tintHex = nil; break }
+            guard raw.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) != nil else {
+                throw ControlError("invalid_value", "tintHex must look like #FFD21F, or be same (the word colour).")
+            }
+            tintHex = raw.uppercased()
         case "opacity": opacity = try number()
         case "showMiniPlayer": showMiniPlayer = try bool()
         case "miniPlayerAutoHideSeconds": miniPlayerAutoHideSeconds = try number()
         case "subtitlesExpanded": subtitlesExpanded = try bool()
         case "useOCRFallback": useOCRFallback = try bool()
+        case "skipCitations": skipCitations = try bool()
+        case "skipHeadersAndFooters": skipHeadersAndFooters = try bool()
         case "removeFillers": removeFillers = try bool()
         case "paragraphs": paragraphs = try bool()
         case "polishWithAppleIntelligence": polishWithAppleIntelligence = try bool()

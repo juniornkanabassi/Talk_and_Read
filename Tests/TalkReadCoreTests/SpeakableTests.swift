@@ -198,6 +198,104 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(sp.sourceRange(5..<8), 8..<10)          // " b"
         XCTAssertEqual(sp.sourceRange(0..<7), 0..<10)
     }
+
+    // MARK: Skipping (Speechify's "skip citations" and "skip headers and footers")
+
+    private func cited(_ source: String) -> String {
+        Speakable.make(source, range: 0..<(source as NSString).length, lexicon: [:], skipCitations: true).text
+    }
+
+    func testCitationMarksAreNotSpokenWhenSkipped() {
+        XCTAssertEqual(cited("The contract was void[12] from the start."), "The contract was void from the start.")
+        XCTAssertEqual(cited("See the cases.[3, 5–7][9a] Then"), "See the cases. Then")
+        XCTAssertEqual(cited("It was settled law.[citation needed]"), "It was settled law.")
+        XCTAssertEqual(cited("There was no consideration.12 The court agreed."), "There was no consideration. The court agreed.")
+        XCTAssertEqual(cited("As Smith¹, Jones² said, it was argued.²³ Then"), "As Smith, Jones said, it was argued. Then")
+        XCTAssertEqual(cited("He called it “a nullity”.4 Then"), "He called it “a nullity”. Then")
+        XCTAssertEqual(cited("The point was made.7\nNext line"), "The point was made. Next line")
+        // Kept: paragraph references, pinpoints, section and article numbers, stats, decimals, thousands, maths, years.
+        XCTAssertEqual(cited("[23] The claimant appealed."), "[23] The claimant appealed.")
+        XCTAssertEqual(cited("Per Lord Reed at [45] and paras [12]–[15]."), "Per Lord Reed at [45] and paras [12]–[15].")
+        XCTAssertEqual(cited("See [2024] EWCA Civ 12 at [23]."), "See [2024] EWCA Civ 12 at [23].")
+        XCTAssertEqual(cited("Under s.12 The Act, para.4 Then arts.8 And regs.4 Apply."), "Under s.12 The Act, para.4 Then arts.8 And regs.4 Apply.")
+        XCTAssertEqual(cited("Goals:12 Shots:14 and the result.3 points"), "Goals:12 Shots:14 and the result.3 points")
+        XCTAssertEqual(cited("It cost 3.5 or 1,000 or 12:30."), "It cost 3.5 or 1,000 or 12:30.")
+        XCTAssertEqual(cited("The area is 4 m² and x³."), "The area is 4 m² and x³.")
+        XCTAssertEqual(cited("He said:\"12 men\" came."), "He said:\"12 men\" came.")
+        XCTAssertEqual(cited("A [link](https://example.com) stays."), "A link stays.")
+        // Off: unchanged.
+        XCTAssertEqual(make("The contract was void[12].").text, "The contract was void[12].")
+    }
+
+    func testAPageBreakWithItsFurnitureSkippedJoinsTheSentence() {
+        let s = "the claimant was\n12\n\nJournal of Law\nentitled to it."   // "12" 17..<19, "Journal of Law" 21..<35
+        let sp = Speakable.make(s, range: 0..<(s as NSString).length, lexicon: [:], skip: [17..<19, 21..<35])
+        XCTAssertEqual(sp.text, "the claimant was entitled to it.")
+        XCTAssertEqual(make("the claimant was\nentitled").text, "the claimant was. entitled", "an ordinary line break still pauses")
+    }
+
+    func testSkippedRangesAreNotSpokenAndNotCovered() {
+        let s = "Header\nBody text here.\nFooter"   // Header 0..<6, Body 7..<22, Footer 23..<29
+        let sp = Speakable.make(s, range: 0..<29, lexicon: [:], skip: [23..<29, 0..<6])
+        XCTAssertEqual(sp.text, "Body text here.")
+        XCTAssertFalse(sp.covers(0..<6))
+        XCTAssertFalse(sp.covers(23..<29))
+        XCTAssertTrue(sp.covers(7..<11))
+        XCTAssertEqual(origin(sp, "Body", s), "Body")
+        // A range that starts before the chunk is clipped to it.
+        XCTAssertEqual(Speakable.make(s, range: 7..<29, lexicon: [:], skip: [3..<12]).text, "text here. Footer")
+    }
+
+    func testNoMatchReachesIntoSkippedText() {
+        // "York" is a skipped line: the "New York" key must not swallow it, nor give it a spoken, timed source.
+        let s = "New\nYork\nTail."
+        let sp = Speakable.make(s, range: 0..<14, lexicon: ["New York": "nyc"], skip: [4..<8])
+        XCTAssertFalse(sp.text.contains("nyc"), sp.text)
+        XCTAssertFalse(sp.covers(4..<8))
+    }
+
+    func testReferenceListsAndAnnotations() {
+        XCTAssertEqual(cited("See paras [12],[13] for the rule."), "See paras [12],[13] for the rule.")
+        XCTAssertEqual(cited("The claim is disputed. [citation needed] Then"), "The claim is disputed. Then")
+    }
+
+    func testAChunkEndIsNotALineEnd() {
+        // The chunk ends after "scored;12 "; the real next word is lowercase, so 12 is a number, not a footnote.
+        let s = "They scored;12 points tonight."
+        let cut = (s as NSString).range(of: "points").location
+        XCTAssertEqual(Speakable.make(s, range: 0..<cut, lexicon: [:], skipCitations: true).text, "They scored;12")
+        XCTAssertEqual(Speakable.make(s, range: 0..<(s as NSString).length, lexicon: [:], skipCitations: true).text, s)
+        XCTAssertEqual(cited("There was no consideration.12"), "There was no consideration.")
+    }
+
+    func testLinkedMarksAndALongGapAfterAChunk() {
+        XCTAssertEqual(cited("It was Law.[12](#note) Then"), "It was Law. Then")
+        XCTAssertEqual(cited("Claim [citation needed](https://example.com) here."), "Claim here.")
+        XCTAssertEqual(cited("A [link](https://example.com) and [3](#n) stay."), "A link and 3 stay.")
+        // The look-ahead runs out in spaces: no crash, and too little evidence to drop the 12.
+        let s = "void.12" + String(repeating: " ", count: 100) + "Next"
+        XCTAssertEqual(Speakable.make(s, range: 0..<7, lexicon: [:], skipCitations: true).text, "void.12")
+    }
+
+    func testMarksAfterQuestionAndExclamationMarks() {
+        XCTAssertEqual(cited("Was it lawful?[12] Then"), "Was it lawful? Then")
+        XCTAssertEqual(cited("What a goal!¹ Then"), "What a goal! Then")
+        XCTAssertEqual(cited("Was it lawful? [12] Then"), "Was it lawful? [12] Then")
+    }
+
+    func testMarksAtAChunkStartAreJudgedInContext() {
+        // The chunker splits at "consideration." so "12 The…" opens the next chunk; the mark is still a footnote.
+        let s = "There was no consideration.12 The court agreed. It was void[3] then."
+        let ns = s as NSString
+        func from(_ needle: String) -> String {
+            Speakable.make(s, range: ns.range(of: needle).location..<ns.length, lexicon: [:], skipCitations: true).text
+        }
+        XCTAssertEqual(from("12 The"), "The court agreed. It was void then.")
+        XCTAssertEqual(from("[3] then"), "then.")
+        // A chunk that opens its line still keeps a line-leading paragraph number.
+        let j = "Intro.\n[23] The claimant appealed."
+        XCTAssertEqual(Speakable.make(j, range: 7..<(j as NSString).length, lexicon: [:], skipCitations: true).text, "[23] The claimant appealed.")
+    }
 }
 
 private extension NSRange {
