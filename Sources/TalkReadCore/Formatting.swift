@@ -117,7 +117,7 @@ extension Cleanup {
     /// Near misses of the vocabulary's spellings become the spelling: "Kestralco" → "Kestrelco", "Nkana Bassi" →
     /// "Nkanabassi", "Dembele" → "Dembélé". Letters are compared with case and accents ignored, over windows of one word
     /// fewer to one more than the term; a window within a quarter of the term's letters is replaced, closest first.
-    /// Terms under five letters only match exactly, and a window that is a shorter piece of the term ("football" in
+    /// Terms under five letters only match exactly, and a window that is a shorter piece of the term ("kestrel" in
     /// "Kestrelco") is left alone, as is one whose every word `isWord` knows, case or accents alone included:
     /// "contact" is meant even when "contract" is taught (Sol inspection 4 #4), "desire" even when "Désiré" is.
     static func correctTerms(in text: String, terms: [String], isWord: (String) -> Bool, hold: (String) -> String) -> String {

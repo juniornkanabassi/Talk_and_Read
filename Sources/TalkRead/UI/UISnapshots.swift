@@ -133,6 +133,25 @@ import TalkReadCore
             ("pill-failed-nothing", CGSize(width: 508, height: 120), false, pill("Didn't catch that", recording: false, words: false)),
         ]
 
+        // Dictating while a read is on screen: one card, the dictation docked on top of the player (Junior, 25 Oct).
+        func both(_ message: String, recording: Bool = true, words: Bool = true, copy: Bool = false, expanded: Bool = false) -> AnyView {
+            AnyView(CombinedCard {
+                DictationPillStatus(message: message, levels: recording ? wave : [], recording: recording, words: words,
+                                    copy: copy ? {} : nil, closes: !recording,
+                                    tip: copy ? DictationPillStatus.pasteTip(TalkReadCore.Settings().pasteLastShortcut) : nil,
+                                    docked: true, cancel: {}).fixedSize(horizontal: false, vertical: true)
+            } player: {
+                MiniPlayerView(model: model, voices: voices, line: line, state: .playing, status: "", note: nil,
+                               voiceName: "Emma", notice: nil, expanded: .constant(expanded), close: {}, surface: false)
+            }.padding(24))
+        }
+        shots += [
+            ("combined-listening", CGSize(width: 488, height: 230), false, both("Listening", words: false)),
+            ("combined-partial", CGSize(width: 488, height: 230), false, both(long)),
+            ("combined-done-copy", CGSize(width: 488, height: 230), false, both(long, recording: false, copy: true)),
+            ("combined-subtitles", CGSize(width: 488, height: 330), false, both("Hello, this is a short sentence", expanded: true)),
+        ]
+
         var failures = 0
         var written = 0
         for (name, size, titled, view) in shots {

@@ -84,7 +84,7 @@ release() {   # <log name> <zip> [--resume]: release.sh --dry-run into $E2E/<log
   TALKREAD_SPARKLE_ACCOUNT=$ACCOUNT TALKREAD_BUILD_ROOT=$BUILD_ROOT zsh "$SRC/release.sh" --dry-run --out "$E2E/$1" --zip "$2" \
     --website "$E2E/website" --notes "$E2E/notes.md" ${3:-} > "$E2E/$1.log" 2>&1
 }
-local_feed() { sed -E "s#https://github.com/juniornkanabassi/talkandread-releases/releases/download/v[^/]+/#http://127.0.0.1:$PORT/#" "$1" > "$2"; }
+local_feed() { sed -E "s#https://github.com/juniornkanabassi/(talkandread-releases|Talk_and_Read)/releases/download/v[^/]+/#http://127.0.0.1:$PORT/#" "$1" > "$2"; }
 
 # release.sh: the item, the identity mismatches a real run refuses, the build-number rule.
 release rel-new "$E2E/site/Talk_and_Read_$NEW_V.zip" || { cat "$E2E/rel-new.log"; no "release.sh --dry-run"; }

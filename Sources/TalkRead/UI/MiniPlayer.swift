@@ -1,5 +1,6 @@
 // Floating mini player: a non-activating glass panel with transport controls and a karaoke line (or three-line
 // subtitles). Shows when a read starts, hides a few seconds after it ends, remembers where it was dragged. Owned by WP6.
+// A dictation while it is on screen docks into it: one card, dictation on top, the read underneath (Junior, 25 Oct).
 import AppKit
 import Combine
 import SwiftUI
@@ -11,21 +12,73 @@ import TalkReadCore
     static let shared = MiniPlayer()
 
     @Published private(set) var message: String?
+    /// On screen (the dictation pill watches it to dock in or move back out).
+    @Published private(set) var isShowing = false
+    /// The dictation shown on top of the read while both are up; nil otherwise. The pill docks and undocks it.
+    @Published private(set) var docked: DictationController?
+    /// The docked dictation's height, divider included (0 when none); the panel grows upwards by it.
+    private var dockedHeight: CGFloat = 0
     private var panel: MiniPanel?
     private weak var model: AppModel?
     private var sessionWatch: AnyCancellable?
     private var stateWatch: AnyCancellable?
     private var noticeWatch: AnyCancellable?
+    private var expandedWatch: AnyCancellable?
     /// The read fell back to Kokoro (V3): the panel grows by one line for the notice.
-    private var hasNotice = false
+    private var hasNotice: Bool { message == nil && model?.session?.fallbackReason != nil }   // as MiniPlayerLive draws it
     private var hideTask: Task<Void, Never>?
+    /// Points `resize` moved the card down to keep it on its display; undone as it shrinks, never saved as a drag.
+    private var fitShift: CGFloat = 0
+    private var fittedOrigin: NSPoint?   // where `resize` last put it (a move to anywhere else is a drag)
     private var sentenceCache: (id: ObjectIdentifier, ranges: [Range<Int>])?
 
     var isVisible: Bool { panel?.isVisible == true }
 
+    /// On screen on the current Space, so a dictation docked into it is seen.
+    var canDock: Bool { panel.map { $0.isVisible && $0.isOnActiveSpace } ?? false }
+
+    /// The pointer is over the player (a docked dictation's hide waits, as over its own pill).
+    var containsPointer: Bool { panel.map { $0.isVisible && NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? false }
+
+    /// false when another dictation is already docked (one slot).
+    func dock(_ dictation: DictationController) -> Bool {
+        if docked === dictation { return true }
+        guard docked == nil else { return false }
+        docked = dictation
+        dockedHeight = MiniPlayerView.dockEstimate   // until the dictation reports its laid-out height
+        resizeAfterLayout()
+        return true
+    }
+
+    func undock(_ dictation: DictationController) {
+        guard docked === dictation else { return }
+        docked = nil
+        dockedHeight = 0
+        resizeAfterLayout()
+    }
+
+    /// The panel changes size once SwiftUI has drawn the new content, so the old content never shows in the new frame.
+    private func resizeAfterLayout() {
+        DispatchQueue.main.async { [weak self] in self?.resize() }
+    }
+
+    /// The docked dictation laid out at `height`; the panel follows on the next turn (not during layout).
+    fileprivate func dockedHeightChanged(_ height: CGFloat) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.docked != nil else { return }
+            let total = height + MiniPlayerView.dockDivider
+            guard abs(total - self.dockedHeight) > 0.5 else { return }
+            self.dockedHeight = total
+            self.resize()
+        }
+    }
+
     func attach(_ model: AppModel) {
         self.model = model
         sessionWatch = model.$session.sink { [weak self] in self?.follow($0) }
+        // Settings and the CLI change it too; the hosting view no longer sizes the panel, so follow it here.
+        expandedWatch = model.$settings.map(\.subtitlesExpanded).removeDuplicates().dropFirst()
+            .sink { [weak self] _ in self?.resizeAfterLayout() }
     }
 
     func show() {
@@ -33,16 +86,19 @@ import TalkReadCore
         hideTask?.cancel()
         let panel = self.panel ?? makePanel(model)
         if !panel.isVisible {
-            resize()
+            fitShift = 0
             place(panel, saved: model.settings.miniPlayerOrigin)
+            resize()
             panel.orderFrontRegardless()   // never activates the app
         }
+        if !isShowing { isShowing = true }
     }
 
     func hide() {
         hideTask?.cancel()
         panel?.orderOut(nil)
         message = nil
+        if isShowing { isShowing = false }   // a docked dictation moves back to its own pill
     }
 
     func toggle() { isVisible ? hide() : show() }
@@ -50,7 +106,6 @@ import TalkReadCore
     /// A short status with no read behind it; hides after the usual delay.
     func flash(_ text: String) {
         message = text
-        hasNotice = false   // a message replaces the read's face, notice included
         resize()
         show()
         hideLater()
@@ -62,10 +117,22 @@ import TalkReadCore
         hide()
     }
 
-    /// Height follows the subtitles setting and the fallback notice; the bottom edge stays put.
+    /// Height follows the subtitles setting, the fallback notice and a docked dictation; the bottom edge stays put.
     func resize() {
         guard let panel, let model else { return }
-        panel.setContentSize(NSSize(width: MiniPlayerView.width, height: MiniPlayerView.height(expanded: model.settings.subtitlesExpanded, notice: hasNotice)))
+        let height = MiniPlayerView.height(expanded: model.settings.subtitlesExpanded, notice: hasNotice) + dockedHeight
+        var frame = panel.frame   // setFrame keeps minY explicitly; the card grows and shrinks at the top
+        frame.origin.y += fitShift   // back where it was put, before fitting again
+        frame.size = panel.frameRect(forContentRect: NSRect(origin: .zero, size: NSSize(width: MiniPlayerView.width, height: height))).size
+        // Grown past the top of its display (dragged high, then a dictation docked): the whole card moves down to fit.
+        fitShift = 0
+        if let area = (panel.screen ?? NSScreen.main)?.visibleFrame, frame.maxY > area.maxY {
+            fitShift = max(0, min(frame.maxY - area.maxY, frame.minY - area.minY))   // never below its display either
+            frame.origin.y -= fitShift
+        }
+        guard frame != panel.frame else { return }
+        fittedOrigin = frame.origin
+        panel.setFrame(frame, display: true)
     }
 
     /// Sentence ranges of the current session, worked out once per session.
@@ -84,20 +151,21 @@ import TalkReadCore
             default: self?.hideTask?.cancel()
             }
         }
-        hasNotice = false
-        noticeWatch = session?.$fallbackReason.map { $0 != nil }.removeDuplicates().sink { [weak self] on in
-            self?.hasNotice = on
-            self?.resize()
+        noticeWatch = session?.$fallbackReason.map { $0 != nil }.removeDuplicates().sink { [weak self] _ in
+            self?.resizeAfterLayout()   // delivered before the new value is stored
         }
         if session != nil, model?.settings.showMiniPlayer == true { show() }
     }
 
+    /// A docked dictation holds the player until it has gone, so the card never splits in two mid-sentence; the pointer
+    /// over the card holds it too, as over the pill.
     private func hideLater() {
         hideTask?.cancel()
         let seconds = Double(model?.settings.miniPlayerAutoHideSeconds ?? 3)
         guard seconds > 0 else { return }
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
+            while !Task.isCancelled, self?.docked != nil || self?.containsPointer == true { try? await Task.sleep(for: .seconds(0.5)) }
             if !Task.isCancelled { self?.hide() }
         }
     }
@@ -105,7 +173,9 @@ import TalkReadCore
     private func makePanel(_ model: AppModel) -> MiniPanel {
         let size = NSSize(width: MiniPlayerView.width, height: MiniPlayerView.height(expanded: model.settings.subtitlesExpanded, notice: hasNotice))
         let panel = MiniPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        panel.contentView = NSHostingView(rootView: MiniPlayerLive(model: model, player: self))
+        let host = NSHostingView(rootView: MiniPlayerRoot(model: model, player: self))
+        host.sizingOptions = []   // `resize` sizes the panel (bottom edge put); the content must not move the top or bottom itself
+        panel.contentView = host
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -135,8 +205,11 @@ import TalkReadCore
 
     // ponytail: one remembered origin (Settings.miniPlayerOrigin); falls back to the main screen if that point is gone.
     func windowDidMove(_ notification: Notification) {
-        guard let panel, panel.isVisible, model?.settings.miniPlayerOrigin != panel.frame.origin else { return }
-        model?.settings.miniPlayerOrigin = panel.frame.origin
+        guard let panel, panel.isVisible else { return }
+        if panel.frame.origin != fittedOrigin { fitShift = 0 }   // dragged: where it now is, is where it was put
+        let origin = NSPoint(x: panel.frame.minX, y: panel.frame.minY + fitShift)
+        guard model?.settings.miniPlayerOrigin != origin else { return }
+        model?.settings.miniPlayerOrigin = origin
     }
 }
 
@@ -148,18 +221,56 @@ final class MiniPanel: NSPanel {
     override func cancelOperation(_ sender: Any?) { onCancel?() }
 }
 
-/// Live content: the model's current session, or the controller's status message.
-private struct MiniPlayerLive: View {
+/// The panel's content: the player alone, or one card with a docked dictation on top.
+private struct MiniPlayerRoot: View {
     @ObservedObject var model: AppModel
     @ObservedObject var player: MiniPlayer
 
     var body: some View {
+        if let dictation = player.docked {
+            CombinedCard {
+                DictationPillView(dictation: dictation, docked: true) { player.dockedHeightChanged($0) }
+            } player: {
+                MiniPlayerLive(model: model, player: player, surface: false)
+            }
+        } else {
+            MiniPlayerLive(model: model, player: player)
+        }
+    }
+}
+
+/// Dictation and reading at once: the dictation on top, a hairline, the player underneath, on one surface.
+struct CombinedCard<Dictation: View, Player: View>: View {
+    @ViewBuilder let dictation: Dictation
+    @ViewBuilder let player: Player
+
+    var body: some View {
+        VStack(spacing: 0) {
+            dictation
+            Rectangle().fill(.separator).frame(height: MiniPlayerView.dockDivider).padding(.horizontal, 16)
+            player
+        }
+        .frame(width: MiniPlayerView.width)
+        .panelSurface(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Dictation and player")
+    }
+}
+
+/// Live content: the model's current session, or the controller's status message.
+private struct MiniPlayerLive: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var player: MiniPlayer
+    /// false inside the combined card, which draws the surface.
+    var surface = true
+
+    var body: some View {
         if let session = model.session, player.message == nil {
-            MiniPlayerSession(model: model, player: player, session: session)
+            MiniPlayerSession(model: model, player: player, session: session, surface: surface)
         } else {
             MiniPlayerView(model: model, voices: model.voices, line: nil, state: nil, status: player.message ?? "Ready",
                            note: nil, voiceName: VoiceGroups.name(model.settings.voiceID, in: model.voices), notice: nil,
-                           expanded: expanded, close: player.close)
+                           expanded: expanded, close: player.close, surface: surface)
         }
     }
 
@@ -170,13 +281,14 @@ private struct MiniPlayerSession: View {
     @ObservedObject var model: AppModel
     let player: MiniPlayer
     @ObservedObject var session: ReadSession
+    var surface = true
 
     var body: some View {
         let line = ReadingText.karaoke(text: session.text, tokens: session.tokens, sentences: player.sentences(for: session), token: session.currentToken)
         MiniPlayerView(model: model, voices: model.voices, line: session.state == .finished ? nil : line, state: session.state,
                        status: status, note: session.capture?.source == .clipboard ? "Reading clipboard" : nil,
                        voiceName: session.effectiveVoice.name, notice: session.fallbackReason,
-                       expanded: MiniPlayerView.expandedBinding(model, player), close: player.close)
+                       expanded: MiniPlayerView.expandedBinding(model, player), close: player.close, surface: surface)
     }
 
     private var status: String {
@@ -196,6 +308,10 @@ struct MiniPlayerView: View {
     static let width: CGFloat = 440
     static func height(expanded: Bool, notice: Bool = false) -> CGFloat { (expanded ? 196 : 96) + (notice ? noticeHeight : 0) }
     static let noticeHeight: CGFloat = 22
+    /// The hairline between a docked dictation and the read.
+    static let dockDivider: CGFloat = 1
+    /// A docked dictation's height before it reports one (one line and the meter), hairline included.
+    static let dockEstimate: CGFloat = 73
 
     @ObservedObject var model: AppModel
     let voices: [Voice]
@@ -211,6 +327,8 @@ struct MiniPlayerView: View {
     let notice: String?
     @Binding var expanded: Bool
     let close: () -> Void
+    /// false inside the combined card with a dictation, which draws one surface round both.
+    var surface = true
 
     static func expandedBinding(_ model: AppModel, _ player: MiniPlayer) -> Binding<Bool> {
         Binding(get: { model.settings.subtitlesExpanded }, set: { model.settings.subtitlesExpanded = $0; player.resize() })
@@ -219,6 +337,10 @@ struct MiniPlayerView: View {
     private var active: Bool { state == .playing || state == .paused || state == .preparing }
 
     var body: some View {
+        if surface { face.panelSurface(RoundedRectangle(cornerRadius: 26, style: .continuous)) } else { face }
+    }
+
+    private var face: some View {
         VStack(spacing: 6) {
             if let notice {
                 Label { Text(notice).lineLimit(1).truncationMode(.tail) } icon: {
@@ -243,7 +365,6 @@ struct MiniPlayerView: View {
         }
         .padding(.top, 10).padding(.bottom, 8)
         .frame(width: Self.width, height: Self.height(expanded: expanded, notice: notice != nil))
-        .panelSurface(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Player")
     }
