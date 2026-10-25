@@ -184,6 +184,8 @@ import TalkReadCore
             guard c >= 0, c <= last.sentence else { break }
             target = c
         }
+        // Next with nothing audible left (only furniture or annotations after this sentence): the read is over.
+        if n > 0, target == current { return finish() }
         if let first = tokens.firstIndex(where: { $0.sentence >= target }) { restart(from: first) }
     }
 
@@ -299,7 +301,6 @@ import TalkReadCore
             }
             guard gen == generation, !Task.isCancelled, let chunk, let said, let synth else { return }
             let start = player.enqueue(synth)
-            chunkEnds.append(player.queuedUntil)
             made.append((chunk.tokens, effectiveVoice.id))
             timings += Timeline.timings(chunkTokens: Array(tokens[chunk.tokens]), chunkTokenOffset: chunk.tokens.lowerBound,
                                         speakable: said, spoken: synth.words, offset: start,
@@ -307,11 +308,12 @@ import TalkReadCore
             next = chunk.tokens.upperBound
             // A chunk with nothing to say (a skipped running head, a lone URL) keeps its zero-length timings but is not
             // the opening chunk: playback, first audio and the slow engine's opening budget wait for real sound.
-            guard !synth.samples.isEmpty else {
+            guard !synth.samples.isEmpty else {   // and not in chunkEnds: a silent chunk is no audio ahead
                 // Still opening: recut from the next token so the first audible chunk is the short one and first audio stays fast.
                 if k == 0 { plan = TextKit.chunks(text, tokens: tokens, from: next)[...] }
                 continue
             }
+            chunkEnds.append(player.queuedUntil)
             heardAudio = true
             if k == 0 { firstAudio() }
             k += 1
