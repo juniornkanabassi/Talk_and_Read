@@ -19,8 +19,8 @@
 #      compare its sha256
 #   6. only then replace the website's appcast.xml (refused if it changed since step 3)
 #   7. report the tag (made and pushed in step 5, so the release and the source point at the same commit)
-# Releases up to 0.8.0 were published on juniornkanabassi/talkandread-releases, which stays online (archived) so old
-# appcast items and links keep working.
+# Releases up to 0.8.0 were first published on juniornkanabassi/talkandread-releases and were copied here byte for byte
+# on 25 Oct 2026, so the appcast now points every item at this repo.
 # --resume: finish a release a failed run left behind: an existing release and tag are reused only when they match
 #   (each asset, if present, must be this file byte for byte; the tag must be on HEAD); a missing asset is uploaded.
 # --dry-run: everything except the upload and the tag, into --out or a new /private/tmp/talkread-release-dry.XXXXXX;
