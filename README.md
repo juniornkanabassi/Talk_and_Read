@@ -6,7 +6,7 @@ I listen to almost everything I read at 2.5× and dictate most of what I write, 
 
 [Download the latest release](https://github.com/juniornkanabassi/Talk_and_Read/releases/latest) · [App page](https://juniornkanabassi.com/apps/talkandread/)
 
-Earlier releases, from before the app moved to this repository, are also kept on [talkandread-releases](https://github.com/juniornkanabassi/talkandread-releases/releases).
+Every release, including the ones from before the app moved to this repository, is on the [Releases page](https://github.com/juniornkanabassi/Talk_and_Read/releases).
 
 Talk & Read 1.0 is the first public release. I use it every day, but it is built by one person, so please [open an issue](https://github.com/juniornkanabassi/Talk_and_Read/issues) if something goes wrong.
 
