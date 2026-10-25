@@ -72,10 +72,15 @@ final class CleanupTests: XCTestCase {
                       "Bonjour Paul virgule une petite question?",
                       "Un grand point d'interrogation demeure sur sa participation au match.",
                       "C'est votre point d'interrogation.", "Le colon réclame une indemnisation.",
-                      "Un point d'exclamation suffit ici."] {
+                      "Un point d'exclamation suffit ici.", "Il ne reste aucun point d'interrogation.",
+                      "Je viens d'ouvrir les guillemets.", "Il faut fermer les guillemets ici.",
+                      "Grand point d'interrogation sur l'avenir de Mbappé.", "Cet ancien colon réclame une indemnisation."] {
             XCTAssertEqual(fr(prose), prose)
         }
         XCTAssertEqual(fr("Il arrive point d'interrogation"), "Il arrive?")
+        XCTAssertEqual(fr("Tu as vu le match point d'interrogation Moi oui"), "Tu as vu le match? Moi oui", "a capital starts the next sentence")
+        XCTAssertEqual(fr("Quel but point d'exclamation Quelle soirée point d'exclamation"), "Quel but! Quelle soirée!")
+        XCTAssertEqual(fr("Vraiment point d'interrogation point d'exclamation"), "Vraiment?!")
         XCTAssertEqual(fr("Il arrive point d'interrogation. Oui"), "Il arrive? Oui", "the recogniser's own mark is replaced")
         XCTAssertEqual(fr("Deux choses colon la vitesse"), "Deux choses: la vitesse", "English colon still works with French on")
         XCTAssertEqual(Cleanup.apply("Le colon réclame.", vocabulary: [:], removeFillers: true, languages: ["fr"]), "Le colon réclame.")

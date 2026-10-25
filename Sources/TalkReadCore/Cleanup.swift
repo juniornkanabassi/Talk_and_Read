@@ -92,14 +92,19 @@ public enum Cleanup {
         // Only phrases that are hard to mean as prose. The bare ones ("virgule", "point final", "à la ligne", "nouveau
         // paragraphe", "deux points") are ordinary French ("la virgule est mal placée", "un nouveau paragraphe au contrat",
         // "le ballon sort à la ligne") and Parakeet v3 punctuates French well by itself, so they are left as words; so is a
-        // mark after a determiner or adjective ("votre point-virgule", "un grand point d'interrogation"). A spoken "?" or
-        // "!" also has to end the clause (end of text, a mark, a new line or a quote command): "un point d'interrogation
-        // demeure sur sa participation" is prose. English "colon" is French for settler: "le colon réclame" stays.
-        let noDeterminer = "(?<!\\b(?:un|une|le|la|l['’]|du|au|aux|ce|cet|les|des|mes|tes|ses|nos|vos|leurs|mon|ton|son|notre|votre|leur|grand|gros|petit|vrai|seul|dernier|premier|énorme)[ \\t]{1,3})"
-        let endsClause = "(?=[ \\t]*(?:$|[.,!?;:\\n]|(?:ouvrez|ouvrir|fermez|fermer) les guillemets\\b))"
+        // mark after a determiner or a common adjective ("votre point-virgule", "un grand point d'interrogation", "aucun
+        // point d'interrogation"). A spoken "?" or "!" also has to end the clause: end of text, a mark, a new line, a
+        // capital (the recogniser starts the next sentence with one) or another command; "un point d'interrogation demeure
+        // sur sa participation" is prose. Quotes only as the imperative ("je viens d'ouvrir les guillemets" is prose).
+        // English "colon" is French for settler: "le colon réclame" stays. An adjective outside the list ("un immense
+        // point d'interrogation.") can still slip through; no word list closes that.
+        let noDeterminer = "(?<!\\b(?:un|une|le|la|l['’]|du|au|aux|ce|cet|cette|les|des|mes|tes|ses|nos|vos|leurs|mon|ton|son|notre|votre|leur|aucun|chaque|quel|quelque|grand|gros|petit|vrai|seul|dernier|premier|énorme|immense|ancien|nouveau|autre|même|simple|sacré|véritable|beau|léger|unique|seconde?)[ \\t]{1,3})"
+        let frenchCommand = "point d['’](?:interrogation|exclamation)|point[ -]virgule|(?:ouvrez|fermez) les guillemets"
+        let englishCommand = english.map(\.0).joined(separator: "|")
+        let endsClause = "(?=[ \\t]*(?:$|[.,!?;:\\n]|(?-i:\\p{Lu})|(?:\(frenchCommand)|\(englishCommand))\\b))"
         return [("\(noDeterminer)point[ -]virgule", ";"), ("\(noDeterminer)point d['’]interrogation\(endsClause)", "?"),
                 ("\(noDeterminer)point d['’]exclamation\(endsClause)", "!"),
-                ("ouvrez les guillemets|ouvrir les guillemets", openQuote), ("fermez les guillemets|fermer les guillemets", closeQuote)]
+                ("(?<!\\bd['’]|\\bde[ \\t])ouvrez les guillemets", openQuote), ("(?<!\\bd['’]|\\bde[ \\t])fermez les guillemets", closeQuote)]
             + english.map { $0.0 == "colon" ? ("\(noDeterminer)colon", $0.1) : $0 }
     }
 
