@@ -151,6 +151,7 @@ extension EngineKind {
         dictation.preferApple = settings.dictationEngine == "apple"
         dictation.learnCorrections = settings.learnCorrections
         dictation.britishSpelling = settings.britishSpelling
+        dictation.languages = settings.dictationLanguages
         dictation.microphoneUID = settings.dictationMicrophone
     }
 

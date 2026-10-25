@@ -1,4 +1,5 @@
-// `TalkRead --selftest-asr <dir> --bench [--engines parakeet,apple-speech,apple-dictation] [--context]`: compares recognisers on a
+// `TalkRead --selftest-asr <dir> --bench [--engines parakeet,parakeet-v3,nemotron,nemotron-1120,apple-speech,apple-dictation]
+// [--languages en,fr] [--context]`: compares recognisers on a
 // fixture folder through the live streaming path (real-time 100 ms buffers). Per engine: WER of the cleaned text
 // (numbers, £, %, am/pm compared leniently), key terms from terms.txt typed exactly, clips typed exactly, latency from
 // the last sample to the transcript, release-to-paste through the real DictationController, and app memory.
@@ -19,6 +20,8 @@ import TalkReadCore
         let terms = ((try? String(contentsOf: dir.appendingPathComponent("terms.txt"), encoding: .utf8)) ?? "")
             .split(separator: "\n").map { $0.replacingOccurrences(of: "\\n", with: "\n") }
         let names = argument("--engines")?.split(separator: ",").map(String.init) ?? ["parakeet", "apple-speech", "apple-dictation"]
+        // The clean-up's languages (British spelling only on English sentences, near misses in every dictionary).
+        let languages = argument("--languages")?.split(separator: ",").map(String.init) ?? ["en"]
         print("bench: \(clips.count) clips, \(vocabulary.count) vocabulary entries, \(terms.count) key terms; app footprint at start \(Int(footprintMB())) MB")
         var summary: [String] = []
         var failed = false
@@ -26,6 +29,11 @@ import TalkReadCore
             let asr: DictationASR
             switch name {
             case "parakeet": asr = Transcriber()
+            case "parakeet-v3": asr = ParakeetV3Transcriber()
+            case "nemotron", "nemotron-1120":
+                let n = NemotronTranscriber(chunkMs: name == "nemotron" ? 560 : 1120)
+                n.languages = languages
+                asr = n
             case "apple-speech", "apple-dictation":
                 let apple = AppleTranscriber(model: name == "apple-speech" ? .speech : .dictation)
                 if CommandLine.arguments.contains("--context") { apple.contextualStrings = Cleanup.terms(vocabulary) }
@@ -43,15 +51,18 @@ import TalkReadCore
                 let raw: String, ms: Double
                 do { (raw, ms) = try await DictationSelfTest.live(samples, asr) } catch { print("\(clip.lastPathComponent)\tfailed: \(error)"); return 1 }
                 peak = max(peak, footprintMB())
-                let text = BritishSpelling.apply(Cleanup.apply(raw, vocabulary: vocabulary, removeFillers: true))
+                let text = BritishSpelling.apply(Cleanup.apply(raw, vocabulary: vocabulary, removeFillers: true,
+                                                               isWord: { DictationController.isCommonWord($0, languages: languages) }),
+                                                 languages: languages, fallback: (asr as? NemotronTranscriber)?.lastLanguage.map { String($0.prefix(2)) })
                 let ref = lenient(reference), e = DictationSelfTest.editDistance(ref, lenient(text))
                 let wanted = terms.filter { reference.contains($0) }, got = wanted.filter { text.contains($0) }
                 errors += e; words += ref.count; hits += got.count; termTotal += wanted.count; latencies.append(ms)
                 if text == reference { exact += 1 }
                 let missed = Set(wanted).subtracting(got).map { $0.replacingOccurrences(of: "\n", with: "⏎") }.sorted()
-                print(String(format: "%@\t%.0f%%\t%.0f\t%d/%d\t%@\t%@%@", clip.deletingPathExtension().lastPathComponent,
+                let heard = (asr as? NemotronTranscriber)?.lastLanguage.map { "[\($0)] " } ?? ""
+                print(String(format: "%@\t%.0f%%\t%.0f\t%d/%d\t%@\t%@%@%@", clip.deletingPathExtension().lastPathComponent,
                              100 * Double(e) / Double(max(1, ref.count)), ms, got.count, wanted.count, text == reference ? "yes" : "no",
-                             text.replacingOccurrences(of: "\n", with: "⏎"), missed.isEmpty ? "" : "  [missed: \(missed.joined(separator: "; "))]"))
+                             heard, text.replacingOccurrences(of: "\n", with: "⏎"), missed.isEmpty ? "" : "  [missed: \(missed.joined(separator: "; "))]"))
             }
             let e2e = await releaseToPaste(asr, clips: clips)
             let sorted = latencies.sorted()

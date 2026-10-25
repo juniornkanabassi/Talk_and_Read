@@ -44,6 +44,42 @@ final class LanguageTests: XCTestCase {
         XCTAssertEqual(Language.detect(try! String(contentsOfFile: fixture("reading-fr.txt"), encoding: .utf8)), "fr")
     }
 
+    // MARK: runs (dictation)
+
+    private func runs(_ text: String, _ languages: [String] = ["en", "fr"], fallback: String? = nil) -> [String] {
+        Language.runs(text, among: languages, fallback: fallback).map { "\($0.language): \($0.text)" }
+    }
+
+    func testRunsGiveTheTextBackExactly() {
+        for text in ["", "  Hello there, how are you today? Bonjour, je vais très bien merci.  ",
+                     "One sentence only", "Je pense que c'est une bonne idée. I agree with that completely.\n\nOn verra demain."] {
+            XCTAssertEqual(Language.runs(text, among: ["en", "fr"]).map(\.text).joined(), text)
+        }
+    }
+
+    func testRunsSplitAtTheLanguageChange() {
+        XCTAssertEqual(runs("I'm recording the podcast this afternoon. Ensuite je dois appeler ma mère pour son anniversaire."),
+                       ["en: I'm recording the podcast this afternoon. ", "fr: Ensuite je dois appeler ma mère pour son anniversaire."])
+        XCTAssertEqual(runs("The match was brilliant from start to finish. The second half especially."),
+                       ["en: The match was brilliant from start to finish. The second half especially."], "one language merges")
+    }
+
+    func testShortSentencesFollowTheOneBefore() {
+        // "Oui." and "OK." are too short to place: they keep the language around them
+        XCTAssertEqual(runs("Je crois que le match commence à vingt et une heures. Oui. On regarde ensemble ?"),
+                       ["fr: Je crois que le match commence à vingt et une heures. Oui. On regarde ensemble ?"])
+        XCTAssertEqual(runs("OK. I'll send you the script for the long-form video tonight."),
+                       ["en: OK. I'll send you the script for the long-form video tonight."], "a short first sentence takes the next one's")
+        XCTAssertEqual(runs("Oui merci", fallback: "fr"), ["fr: Oui merci"], "nothing placed: the fallback")
+        XCTAssertEqual(runs("Oui merci"), ["en: Oui merci"], "no fallback: the first language")
+    }
+
+    func testOneLanguageIsOneRun() {
+        XCTAssertEqual(runs("Bonjour à tous, bienvenue dans le podcast de cette semaine.", ["en"]),
+                       ["en: Bonjour à tous, bienvenue dans le podcast de cette semaine."])
+        XCTAssertEqual(runs("Hello", ["fr"]), ["fr: Hello"])
+    }
+
     private func fixture(_ name: String) -> String {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/\(name)").path
     }

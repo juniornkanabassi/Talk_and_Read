@@ -71,6 +71,9 @@ enum DictationError: LocalizedError, Equatable {
     var learnCorrections = false
     /// Respell American spellings the British dictionary rejects (Junior writes British English; lead: a Settings row).
     var britishSpelling = true
+    /// Settings.dictationLanguages. English alone uses `asr` (or Apple's); anything else uses `multilingual` once its
+    /// model is on the Mac, and the clean-up treats each sentence in its own language.
+    var languages = ["en"]
     /// Re-spellings seen in two dictations, offered for the vocabulary (the pill offers the first one).
     @Published private(set) var suggestions: [AutoLearn.Correction] = []
     /// The suggestion the pill is offering, once each (ignored ones stay in `suggestions`).
@@ -83,6 +86,7 @@ enum DictationError: LocalizedError, Equatable {
     typealias Insert = @MainActor (_ text: String, _ targetPID: pid_t?, _ requireField: Bool, _ isCurrent: @MainActor () -> Bool) async -> InsertResult
     let audio: DictationAudio
     let asr: DictationASR
+    let multilingual: DictationASR
     private let insert: Insert
     private var fileJob: Task<Transcript, Error>?           // set while the owner's work is a file transcription
     private var feed: AsyncStream<AVAudioPCMBuffer>.Continuation?
@@ -97,14 +101,16 @@ enum DictationError: LocalizedError, Equatable {
     private let decode: @Sendable (URL) throws -> [Float]
     private var pill: DictationPill?
 
-    init(audio: DictationAudio? = nil, asr: DictationASR? = nil, insert: Insert? = nil,
+    init(audio: DictationAudio? = nil, asr: DictationASR? = nil, multilingual: DictationASR? = nil, insert: Insert? = nil,
          decode: (@Sendable (URL) throws -> [Float])? = nil) {
         self.audio = audio ?? Recorder()
         self.asr = asr ?? Transcriber()
+        self.multilingual = multilingual ?? MultilingualRecogniser.make()
         self.insert = insert ?? { await Inserter.insert($0, targetPID: $1, requireField: $2, isCurrent: $3) }
         self.decode = decode ?? { try Transcriber.samples(of: $0) }
         history = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
         self.asr.onLoadingChange = { [weak self] in self?.updateBusy() }
+        self.multilingual.onLoadingChange = { [weak self] in self?.updateBusy() }
         Task { [weak self] in
             let installed = await AppleTranscriber.isInstalled(.speech)
             self?.appleInstalled = installed
@@ -114,6 +120,11 @@ enum DictationError: LocalizedError, Equatable {
     /// The recogniser for the next utterance: Parakeet, unless Apple's is preferred, or Parakeet's model is not on the
     /// Mac yet and Apple's is installed (no download needed).
     private func recogniser() -> DictationASR {
+        if languages != ["en"], multilingual.isLoaded || multilingual.isLoading || multilingual.isDownloaded {
+            (multilingual as? NemotronTranscriber)?.languages = languages
+            return multilingual
+        }
+        // ponytail: until the multilingual model is downloaded (Settings ▸ Dictation starts it), dictation stays English.
         guard asr is Transcriber, appleInstalled else { return asr }
         let parakeetReady = asr.isLoaded || asr.isLoading || Transcriber.isDownloaded
         guard preferApple || !parakeetReady else { return asr }
@@ -265,7 +276,11 @@ enum DictationError: LocalizedError, Equatable {
 
     /// Frees the recogniser. False, freeing nothing, while dictation, a file, a drain or the model load still runs: the
     /// caller keeps its idle timer and tries again later (Sol #24).
-    @discardableResult func unloadModel() -> Bool { !isBusy && asr.unload() }
+    @discardableResult func unloadModel() -> Bool {
+        guard !isBusy else { return false }
+        let english = asr.unload(), other = multilingual.unload()
+        return english && other
+    }
 
     // MARK: Utterance
 
@@ -325,16 +340,25 @@ enum DictationError: LocalizedError, Equatable {
         let settings = Settings.load()
         // Paragraphs are chosen on the raw text, where the pauses line up with its sentences; Cleanup keeps the breaks.
         let spoken = settings.paragraphs ? Paragraphs.split(raw.text, pauses: raw.pauses) : raw.text
-        var text = Cleanup.apply(spoken, vocabulary: vocabulary(), removeFillers: settings.removeFillers, isWord: Self.isCommonWord)
-        if britishSpelling { text = BritishSpelling.apply(text) }
+        let languages = languages
+        var text = Cleanup.apply(spoken, vocabulary: vocabulary(), removeFillers: settings.removeFillers,
+                                 isWord: { Self.isCommonWord($0, languages: languages) })
+        if britishSpelling { text = BritishSpelling.apply(text, languages: languages, fallback: raw.language) }
         if settings.paragraphs { text = Paragraphs.tidy(text) }
         return settings.polishWithAppleIntelligence ? await Polish.polish(text) : text
     }
 
     /// In the British or American dictionary in lower case, so names ("Donahue", "Nevis") are not common words: near-miss
     /// vocabulary correction leaves common words alone (Sol inspection 4 #4).
-    static func isCommonWord(_ word: String) -> Bool {
-        ["en_GB", "en_US"].contains {
+    static func isCommonWord(_ word: String) -> Bool { isCommonWord(word, languages: ["en"]) }
+
+    /// The same in any of the dictation's languages, so a French word ("chaise") is not taken for a near miss either.
+    static func isCommonWord(_ word: String, languages: [String]) -> Bool {
+        let available = NSSpellChecker.shared.availableLanguages
+        let dictionaries = languages.flatMap { code -> [String] in
+            code == "en" ? ["en_GB", "en_US"] : available.filter { $0 == code || $0.hasPrefix(code + "_") }
+        }
+        return dictionaries.contains {
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0, language: $0, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
         }
     }
@@ -427,7 +451,7 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     private func updateBusy() {
-        let preparing = draining != nil || asr.isLoading
+        let preparing = draining != nil || asr.isLoading || multilingual.isLoading
         if self.preparing != preparing { self.preparing = preparing }
         let busy = owner != nil || inserting > 0 || preparing
         if isBusy != busy { isBusy = busy }

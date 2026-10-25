@@ -57,7 +57,7 @@ public enum Cleanup {
     private static let openQuote = "\u{E010}", closeQuote = "\u{E011}"
     /// Web addresses, email addresses, and bare domains with a known ending and an optional path.
     private static let urlPattern = "(?i)\\b(?:https?://|www\\.)\\S*[^\\s.,;:!?)\\]\"']|[A-Za-z0-9._+-]+@\(domain)|\\b\(domain)(?:/[A-Za-z0-9._~%/-]*[A-Za-z0-9_~%/-])?"
-    private static let fillerPattern = "(?i)[ \\t]*\\b(?:umm|um|uh|erm|er|ah|hmm)\\b,?"
+    private static let fillerPattern = "(?i)[ \\t]*\\b(?:umm|um|uh|erm|er|ah|hmm|euh|heu)\\b,?"
 
     /// Whole spoken phrases and what they become.
     private static let spoken: [(String, String)] = [

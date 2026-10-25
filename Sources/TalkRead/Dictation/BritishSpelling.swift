@@ -3,6 +3,7 @@
 // -ize → -ise, -yze → -yse, -er → -re, -ense → -ence, -l- → -ll-, -ll → -l) when the British dictionary accepts the
 // result. Words it cannot place by a pattern ("gray") are left alone; web and email addresses are skipped.
 import AppKit
+import TalkReadCore
 
 enum BritishSpelling {
     private static let patterns: [(String, String)] = [
@@ -10,6 +11,13 @@ enum BritishSpelling {
         ("yz(e|es|ed|ing)$", "ys$1"), ("([^aeiou])er(s?)$", "$1re$2"), ("ense(s?)$", "ence$1"),
         ("([aeiou])l(ed|ing|er|ers)$", "$1ll$2"), ("ll(ment|ments)?$", "l$1")
     ]
+
+    /// Only the English runs of a dictation in several languages (a French "favorite" is not respelt).
+    @MainActor static func apply(_ text: String, languages: [String], fallback: String? = nil) -> String {
+        guard languages.contains("en") else { return text }
+        guard languages.count > 1 else { return apply(text) }
+        return Language.runs(text, among: languages, fallback: fallback).map { $0.language == "en" ? apply(String($0.text)) : String($0.text) }.joined()
+    }
 
     @MainActor static func apply(_ text: String) -> String {
         let checker = NSSpellChecker.shared

@@ -120,6 +120,10 @@ public struct Settings: Codable, Equatable, Sendable {
     public var polishWithAppleIntelligence = false
     /// "parakeet" (default) or "apple" (built in, no download).
     public var dictationEngine = "parakeet"
+    /// The languages dictation listens for, as ISO 639-1 codes from `dictationLanguageChoices`. English alone uses the
+    /// engine above; more than one (Junior's pair is en and fr) switches to the multilingual recogniser, which picks the
+    /// language of each dictation by itself, and the clean-up then treats each sentence in its own language.
+    public var dictationLanguages = ["en"]
     /// Opt in: read the field for 15 s after dictating to learn corrections.
     public var learnCorrections = false
     /// Respell American spellings the British dictionary rejects.
@@ -149,7 +153,7 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.subtitlesExpanded, &subtitlesExpanded); get(.useOCRFallback, &useOCRFallback)
         get(.skipCitations, &skipCitations); get(.skipHeadersAndFooters, &skipHeadersAndFooters)
         get(.removeFillers, &removeFillers); get(.paragraphs, &paragraphs); get(.polishWithAppleIntelligence, &polishWithAppleIntelligence)
-        get(.dictationEngine, &dictationEngine); get(.learnCorrections, &learnCorrections); get(.britishSpelling, &britishSpelling)
+        get(.dictationEngine, &dictationEngine); get(.dictationLanguages, &dictationLanguages); get(.learnCorrections, &learnCorrections); get(.britishSpelling, &britishSpelling)
         get(.unloadAfterMinutes, &unloadAfterMinutes); get(.launchAtLogin, &launchAtLogin)
         get(.onboardingDone, &onboardingDone); get(.historyLimit, &historyLimit)
     }
@@ -172,9 +176,23 @@ public struct Settings: Codable, Equatable, Sendable {
         if !["box", "outline", "underline"].contains(highlightStyle) { s.highlightStyle = "box" }
         if let t = tintHex, t.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) == nil { s.tintHex = nil }
         if !["parakeet", "apple"].contains(dictationEngine) { s.dictationEngine = "parakeet" }
+        s.dictationLanguages = Self.cleanLanguages(dictationLanguages)
         if dictationMicrophone?.isEmpty == true { s.dictationMicrophone = nil }
         return s
     }
+
+    /// The languages dictation offers: the Latin-script languages both multilingual recognisers cover.
+    public static let dictationLanguageChoices = ["en", "fr", "es", "de", "it", "pt"]
+
+    /// Known codes only, each once, in the order given; English alone when none is left.
+    static func cleanLanguages(_ codes: [String]) -> [String] {
+        var seen: [String] = []
+        for c in codes.map({ $0.lowercased() }) where dictationLanguageChoices.contains(c) && !seen.contains(c) { seen.append(c) }
+        return seen.isEmpty ? ["en"] : seen
+    }
+
+    /// Dictation listens for more than English alone (the multilingual recogniser).
+    public var dictatesMultilingual: Bool { dictationLanguages != ["en"] }
 
     // MARK: Files
 
@@ -266,6 +284,12 @@ public struct Settings: Codable, Equatable, Sendable {
                 throw ControlError("invalid_value", "dictationEngine must be one of: parakeet, apple.")
             }
             dictationEngine = raw
+        case "dictationLanguages":
+            let codes = raw.lowercased().split(whereSeparator: { $0 == "," || $0 == " " }).map(String.init)
+            guard !codes.isEmpty, codes.allSatisfy(Self.dictationLanguageChoices.contains) else {
+                throw ControlError("invalid_value", "dictationLanguages must be one or more of \(Self.dictationLanguageChoices.joined(separator: ", ")), separated by commas (en,fr).")
+            }
+            dictationLanguages = codes
         case "learnCorrections": learnCorrections = try bool()
         case "britishSpelling": britishSpelling = try bool()
         case "unloadAfterMinutes": unloadAfterMinutes = Int(try number())

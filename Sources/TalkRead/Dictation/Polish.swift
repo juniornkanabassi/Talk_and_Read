@@ -5,7 +5,7 @@ import Foundation
 import FoundationModels
 
 enum Polish {
-    static let instructions = "Fix punctuation, capitalisation and obvious grammar slips in the user's dictated text. Keep their words, meaning, tone and British spelling. Do not add, remove or summarise content. Return only the text, as a single paragraph."
+    static let instructions = "Fix punctuation, capitalisation and obvious grammar slips in the user's dictated text. Keep their words, meaning, tone and British spelling. The text may mix English and French, or be in another language: keep every sentence in the language it was said in and never translate. Do not add, remove or summarise content. Return only the text, as a single paragraph."
 
     static var isAvailable: Bool { SystemLanguageModel.default.availability == .available }
 

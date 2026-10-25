@@ -50,6 +50,24 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(t.dictationEngine, "apple", "a rejected engine changes nothing")
     }
 
+    func testDictationLanguages() throws {
+        XCTAssertEqual(Settings().dictationLanguages, ["en"])
+        XCTAssertFalse(Settings().dictatesMultilingual)
+        var t = Settings()
+        try t.set("dictationLanguages", to: "en,fr"); XCTAssertEqual(t.dictationLanguages, ["en", "fr"]); XCTAssertTrue(t.dictatesMultilingual)
+        try t.set("dictationLanguages", to: "FR, en, fr"); XCTAssertEqual(t.dictationLanguages, ["fr", "en"], "lower case, each once, order kept")
+        try t.set("dictationLanguages", to: "fr"); XCTAssertTrue(t.dictatesMultilingual, "French alone needs the multilingual recogniser too")
+        XCTAssertThrowsError(try t.set("dictationLanguages", to: "en,xx"))
+        XCTAssertThrowsError(try t.set("dictationLanguages", to: ""))
+        XCTAssertEqual(t.dictationLanguages, ["fr"], "a rejected list changes nothing")
+        // A file with unknown or no codes falls back to English alone.
+        try Data(#"{"dictationLanguages":["xx"]}"#.utf8).write(to: file)
+        XCTAssertEqual(Settings.load(from: file).dictationLanguages, ["en"])
+        try Data(#"{"dictationLanguages":["en","fr","en"]}"#.utf8).write(to: file)
+        XCTAssertEqual(Settings.load(from: file).dictationLanguages, ["en", "fr"])
+        XCTAssertEqual(t.json()["dictationLanguages"], .array([.string("fr")]))
+    }
+
     func testSaveAndLoadRoundTrip() throws {
         var s = Settings()
         s.voiceID = "bf_emma"; s.speed = 1.75; s.dictationHoldKey = .fn; s.miniPlayerOrigin = CGPoint(x: 120, y: 340)
@@ -203,7 +221,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃A"))
         XCTAssertEqual(json["skipForwardShortcut"]?.objectValue, ["keyCode": .number(14), "modifiers": .number(524_288), "display": .string("⌥E")])
         XCTAssertNil(json["miniPlayerOrigin"])
-        XCTAssertEqual(Settings.keys.count, 38)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + showHighlight, tintHex, skipCitations, skipHeadersAndFooters
+        XCTAssertEqual(Settings.keys.count, 39)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + showHighlight, tintHex, skipCitations, skipHeadersAndFooters; + dictationLanguages
         XCTAssertNil(json["tintHex"], "the tint follows the word colour until one is chosen")
         XCTAssertEqual(json["skipCitations"], .bool(true))
         XCTAssertEqual(json["skipHeadersAndFooters"], .bool(true))

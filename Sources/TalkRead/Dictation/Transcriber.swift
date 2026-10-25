@@ -9,6 +9,9 @@ import TalkReadCore
 struct Transcript: Sendable {
     var text: String
     var pauses: [Double?] = []
+    /// The language the recogniser says it heard (ISO 639-1), when it says (Nemotron); the clean-up's fallback for
+    /// sentences too short to place.
+    var language: String? = nil
 }
 
 /// What the dictation controller needs from a recogniser (the real `Transcriber`, or a fake in the self-test).
@@ -24,9 +27,13 @@ struct Transcript: Sendable {
     var isLoading: Bool { get }
     /// Called on the main actor whenever `isLoading` changes.
     var onLoadingChange: (() -> Void)? { get set }
+    /// The model is on this Mac, so a load needs no download.
+    var isDownloaded: Bool { get }
 }
 
 extension DictationASR {
+    var isDownloaded: Bool { true }
+
     /// Whole-clip transcription (dictate-file, self-test): fed in 1 s buffers, then finished.
     func transcribe(samples: [Float]) async throws -> Transcript {
         let (stream, feed) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
@@ -64,6 +71,7 @@ extension DictationASR {
     private let queue = RecogniserQueue()
 
     var isLoaded: Bool { manager != nil }
+    var isDownloaded: Bool { Self.isDownloaded }
 
     /// The model files are already in FluidAudio's cache (no download needed).
     static var isDownloaded: Bool {
