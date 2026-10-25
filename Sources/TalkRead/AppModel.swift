@@ -486,6 +486,8 @@ extension EngineKind {
             h.useOCRFallback = settings.useOCRFallback
             h.start()
             highlighter = h
+        } else if let capture, capture.hasGeometry {
+            AXWake.restore(capture.pid)   // highlight off: no Highlighter will end this read and restore the app (E8)
         }
         return s
     }

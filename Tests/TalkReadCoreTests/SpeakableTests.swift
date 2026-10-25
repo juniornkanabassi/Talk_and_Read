@@ -254,6 +254,11 @@ final class SpeakableTests: XCTestCase {
         XCTAssertFalse(sp.covers(4..<8))
     }
 
+    func testReferenceListsAndAnnotations() {
+        XCTAssertEqual(cited("See paras [12],[13] for the rule."), "See paras [12],[13] for the rule.")
+        XCTAssertEqual(cited("The claim is disputed. [citation needed] Then"), "The claim is disputed. Then")
+    }
+
     func testMarksAtAChunkStartAreJudgedInContext() {
         // The chunker splits at "consideration." so "12 The…" opens the next chunk; the mark is still a footnote.
         let s = "There was no consideration.12 The court agreed. It was void[3] then."
