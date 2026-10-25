@@ -12,7 +12,7 @@ Talk & Read is still an early version (0.8.0). It works well enough for me to us
 
 Select text in almost any app and press ⌃A. Talk & Read reads it aloud and highlights each word in place as it is spoken, following the page when it scrolls. Where an app hides its text from the rest of the system, the words show in the player instead. The reader also opens PDFs, Word documents, EPUBs, Markdown, RTF and web pages, and remembers where you stopped.
 
-The default voices are Kokoro, with American and British accents. You can also download the Qwen3-TTS and Breeze voices. French text is detected and read by a French voice. Speed runs from 0.5× to 3× and keeps each voice's natural pitch.
+The default voices are Kokoro, with American and British accents. You can also download the Qwen3-TTS and Breeze voices. Once you download the French voice files (about 100 MB), French text is detected and read by a French voice. Speed runs from 0.5× to 3× and keeps each voice's natural pitch.
 
 Hold right Option, speak and let go, and your words are typed wherever the cursor is. Dictation uses NVIDIA's Parakeet model on your Mac. Filler words are removed, spoken punctuation becomes punctuation, and web addresses, sums of money and dates are written properly. Long dictations are split into paragraphs at your pauses. You can add the names and terms you use to a personal vocabulary, and near misses are corrected to match.
 
@@ -40,7 +40,7 @@ Talk & Read checks for updates once a day and shows you the release notes before
 
 ## Privacy
 
-Your text, audio and documents never leave your Mac. There are no accounts and no analytics. The voices and the dictation model download from Hugging Face, each one only when you agree, and the app checks juniornkanabassi.com for updates and downloads them from GitHub.
+Your text, audio and documents never leave your Mac. There are no accounts and no analytics. The voices and the dictation model download from Hugging Face, each one only when you agree, and the app checks juniornkanabassi.com for updates and downloads them from GitHub. It fetches a web page only when you ask it to open one.
 
 ## Command line and AI assistants
 
@@ -99,7 +99,7 @@ swift build --scratch-path /private/tmp/talkread-build
 swift test  --scratch-path /private/tmp/talkread-build
 ```
 
-`build.sh` makes a signed `Talk & Read.app`, a zip and a disk image. It signs with my Developer ID when that certificate is in the keychain. Without it, run `TALKREAD_ALLOW_ADHOC=1 ./build.sh` for an ad hoc copy, which has updates turned off. `install.sh` installs a build into `/Applications/JuniorOS Apps/` (set `TALKREAD_INSTALL_ROOT` to change it, and adjust the paths in the examples above to match), and `release.sh` publishes a release. Builds go to `../Outputs`, outside the clone, unless you set `TALKREAD_OUTPUT_ROOT`. Both scripts are written for my own Mac.
+`build.sh` makes a signed `Talk & Read.app` and a zip. It signs with my Developer ID when that certificate is in the keychain, and then also notarises it and makes the disk image. Without it, run `TALKREAD_ALLOW_ADHOC=1 ./build.sh` for an ad hoc copy, which has updates turned off. `install.sh` installs a build into `/Applications/JuniorOS Apps/` (set `TALKREAD_INSTALL_ROOT` to change it, and adjust the paths in the examples above to match), and `release.sh` publishes a release. Builds go to `../Outputs`, outside the clone, unless you set `TALKREAD_OUTPUT_ROOT`. These scripts are written for my own Mac.
 
 The source folder on my Mac is synced with iCloud, so I always build with a scratch path outside it, as above. Design notes live outside this repository.
 
@@ -109,4 +109,4 @@ Copyright (C) 2026 Junior Nkanabassi. Licensed under the GNU General Public Lice
 
 In plain terms, you can use, change and share this code, but anything you distribute that is built on it has to stay open source under the same licence.
 
-Talk & Read builds on other people's open source work, each under its own licence: Sparkle and the vendored copy of mlx-audio-swift in `Vendor/mlx-audio-swift` (MIT), and FluidAudio (Apache-2.0). The optional Breeze TTS 2 voices are under BreezeBlue's research and non-commercial licence, so they are for personal, non-commercial use only. Talk & Read does not include the Breeze models; the app shows their licence, kept in [Resources/Licences](Resources/Licences), before you choose to download them. The short Breeze preview samples in `Resources/Voices` were made with Breeze TTS 2 by BreezeBlue and are included as demos, which its licence allows with this credit.
+Talk & Read builds on other people's open source work, each under its own licence: Sparkle, mlx-swift and the vendored copy of mlx-audio-swift in `Vendor/mlx-audio-swift` (MIT), and FluidAudio (Apache-2.0). Their own dependencies are listed in `Package.resolved`, each under its own licence. The optional Breeze TTS 2 voices are under BreezeBlue's research and non-commercial licence, so they are for personal, non-commercial use only. Talk & Read does not include the Breeze models; the app shows their licence, kept in [Resources/Licences](Resources/Licences), before you choose to download them. The short Breeze preview samples in `Resources/Voices` were made with Breeze TTS 2 by BreezeBlue and are included as demos, which its licence allows with this credit.
