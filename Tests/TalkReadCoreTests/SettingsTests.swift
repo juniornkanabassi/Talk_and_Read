@@ -151,6 +151,10 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(Settings.steppedSpeed(0.5, up: false), 0.5)
         XCTAssertEqual(Settings.steppedSpeed(0.6, up: false), 0.5)
         XCTAssertEqual(Settings.speedPresets, [1, 1.5, 2, 2.5, 2.75, 3])
+        XCTAssertEqual(Settings.nativeSpeed(for: 1), 1)
+        XCTAssertEqual(Settings.nativeSpeed(for: 2.5), 1)
+        XCTAssertEqual(Settings.nativeSpeed(for: 4), 1.6, accuracy: 0.0001)
+        XCTAssertEqual(4 / Settings.nativeSpeed(for: 4), Settings.stretchLimit, accuracy: 0.0001)
         XCTAssertTrue(Settings.speedPresets.allSatisfy { Settings.speedRange.contains($0) })
     }
 

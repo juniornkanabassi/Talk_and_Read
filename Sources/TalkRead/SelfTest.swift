@@ -176,20 +176,37 @@ enum SelfTest {
             }
             // The production graph, all chunks queued back to back. The output is cut where the clock reaches each
             // chunk's media start (inside the pause between sentences) and each piece is transcribed on its own, so the
-            // recogniser's 15 s window seams cannot drop words from 2.5x speech.
-            let player = Player(manualRendering: true)
-            player.rate = rate
-            let starts = synths.map { player.enqueue($0) }
-            player.play()
-            let (rendered, readings) = try renderWithClock(player, seconds: audioSeconds / Double(rate) + 0.5)
-            try writeWAV(rendered, to: outDir.appendingPathComponent("tts-\(rate)x.wav"))
-            let cuts = starts.map { s in readings.first { $0.clock >= s }?.index ?? rendered.count } + [rendered.count]
-            var hypothesis: [String] = []
-            for k in synths.indices where cuts[k + 1] > cuts[k] {
-                hypothesis.append((try? await asr.transcribe(Array(rendered[cuts[k] ..< cuts[k + 1]]), language: language).text) ?? "")
+            // recogniser's 15 s window seams cannot drop words from 2.5x speech. Kokoro above `Settings.stretchLimit`
+            // speaks faster itself and is stretched the rest, as ReadSession does.
+            func playedWER(native: Float, wav: String?) async throws -> (wer: Double, seconds: Double) {
+                var chunks = synths
+                if native != 1 { chunks = []; for t in speakables { chunks.append(try await engine.synthesize(t, voice: voice, speed: native)) } }
+                let player = Player(manualRendering: true)
+                player.rate = rate / native
+                let starts = chunks.map { player.enqueue($0) }
+                player.play()
+                let media = Double(chunks.reduce(0) { $0 + $1.samples.count }) / Player.sampleRate
+                let (rendered, readings) = try renderWithClock(player, seconds: media / Double(player.rate) + 0.5)
+                if let wav { try writeWAV(rendered, to: outDir.appendingPathComponent(wav)) }
+                let cuts = starts.map { s in readings.first { $0.clock >= s }?.index ?? rendered.count } + [rendered.count]
+                var hypothesis: [String] = []
+                for k in chunks.indices where cuts[k + 1] > cuts[k] {
+                    hypothesis.append((try? await asr.transcribe(Array(rendered[cuts[k] ..< cuts[k + 1]]), language: language).text) ?? "")
+                }
+                return (wer(reference: reference, hypothesis: hypothesis.joined(separator: " "), language: language), Double(rendered.count) / Player.sampleRate)
             }
-            let werR = wer(reference: reference, hypothesis: hypothesis.joined(separator: " "), language: language)
-            print("WER at \(rate)x through the Player graph: \(pct(werR)) (\(fmt(Double(rendered.count) / Player.sampleRate)) s rendered)")
+            let native = engine.speaksFaster ? TalkReadCore.Settings.nativeSpeed(for: rate) : 1
+            let (werR, seconds) = try await playedWER(native: native, wav: "tts-\(rate)x.wav")
+            let how = native == 1 ? "" : String(format: " (Kokoro at %gx, stretched %gx)", native, rate / native)
+            print("WER at \(rate)x through the Player graph\(how): \(pct(werR)) (\(fmt(seconds)) s rendered)")
+            if native != 1 {   // the other splits, to keep `stretchLimit` honest
+                for limit: Float in [2, 3] where rate > limit {
+                    let alt = try await playedWER(native: rate / limit, wav: nil)
+                    print(String(format: "split check at %gx: Kokoro at %gx, stretched %gx: WER ", rate, rate / limit, limit) + pct(alt.wer))
+                }
+                let stretched = try await playedWER(native: 1, wav: nil)
+                print("split check at \(rate)x: stretched 1x audio alone: WER \(pct(stretched.wer))")
+            }
             var werOK = werR <= 0.08, rule = "WER <= 8 %"
             if rate > 2, engine.kind == .neural, language == "en" {
                 // Kokoro speaking natively at this rate, no time-pitch, same recogniser.

@@ -17,6 +17,10 @@ import TalkReadCore
     let capture: Capture?
     var firstAudioMs: Int?
     let player = Player()
+    /// The speed the user chose. The Player stretches by `rate / nativeSpeed`.
+    private(set) var rate: Float
+    /// How fast an engine that `speaksFaster` (Kokoro) speaks the chunks queued since the last restart; 1 for the others.
+    private(set) var nativeSpeed: Float = 1
     private(set) var voice: Voice
     /// The voice actually speaking now: `voice`, or the Kokoro fallback once the engine fell behind (V3). The UI shows it.
     @Published private(set) var effectiveVoice: Voice
@@ -103,6 +107,7 @@ import TalkReadCore
         self.skipCitations = skipCitations
         self.startToken = startToken
         self.fallback = fallback
+        self.rate = rate
         player.rate = rate
         player.onInterrupted = { [weak self] in
             // Device change, paused or not: the player dropped its queue, so the producer and its bookkeeping are stale.
@@ -194,7 +199,16 @@ import TalkReadCore
         restart(from: token)
     }
 
-    func setRate(_ r: Float) { player.rate = r }
+    /// Instant while the engine's own speed stays; past `Settings.stretchLimit` with Kokoro the speed it speaks at changes,
+    /// so the read restarts at the word playing (audio already made is at the old pace).
+    func setRate(_ r: Float) {
+        rate = r
+        let native = speakingSpeed(for: effectiveVoice)
+        guard native != nativeSpeed, state != .finished, !tokens.isEmpty else { return player.rate = r / nativeSpeed }
+        restart(from: currentToken ?? startToken)
+    }
+
+    private func speakingSpeed(for v: Voice) -> Float { engines.engine(for: v).speaksFaster ? TalkReadCore.Settings.nativeSpeed(for: rate) : 1 }
 
     func setVoice(_ v: Voice) {
         voice = v
@@ -216,9 +230,12 @@ import TalkReadCore
         // the system voice of its language): at start (its first audio, no wait for a chunk handed over seconds later,
         // no GPU; lead, 0.4.0) and at every restart (seek, skip, resume after an interruption) once the rate is past it
         // (Sol inspection 5 #3, #4). The saved choice is untouched; a fallback already chosen stays, as any hand-over.
-        if effectiveVoice == voice, let limit = engines.engine(for: voice).keepsUpTo, player.rate > limit {
-            useFallback("\(voice.engine.modelName) keeps up to \(String(format: "%g", limit))×; \(fallbackName) is reading at \(String(format: "%g", player.rate))×")
+        if effectiveVoice == voice, let limit = engines.engine(for: voice).keepsUpTo, rate > limit {
+            useFallback("\(voice.engine.modelName) keeps up to \(String(format: "%g", limit))×; \(fallbackName) is reading at \(String(format: "%g", rate))×")
         }
+        // A hand-over to Kokoro after this keeps 1: the slow engine's chunks already queued are at its natural pace.
+        nativeSpeed = speakingSpeed(for: effectiveVoice)
+        player.rate = rate / nativeSpeed
         timings = []
         made = []
         chunkEnds = []
@@ -333,7 +350,7 @@ import TalkReadCore
     /// as fast as the engine's measured headroom allows.
     private func nextSlowChunk(from next: Int, opening: Bool) -> Chunk? {
         let kind = engines.engine(for: effectiveVoice).kind
-        if opening { return slowChunk(from: next, limit: Self.openingChars(rate: player.rate, kind: kind), fill: 10) }   // the buffer: fill it
+        if opening { return slowChunk(from: next, limit: Self.openingChars(rate: rate, kind: kind), fill: 10) }   // the buffer: fill it
         // Paused (nothing drains) or nothing measured yet: the largest chunk; the watchdog covers a later resume.
         guard player.isPlaying, let spc = slowSecondsPerChar else { return slowChunk(from: next, limit: Self.slowChars) }
         let fixed = Self.spare + fallbackFixed - 0.2   // `spare` counts the warm fallback's 0.2 s
@@ -435,7 +452,7 @@ import TalkReadCore
     }
 
     private var fallbackName: String { (fallback?.engine ?? .system) == .neural ? "Kokoro" : "the system voice" }
-    private var keepUpReason: String { "Switched to \(fallbackName) to keep up at \(String(format: "%g", player.rate))×" }
+    private var keepUpReason: String { "Switched to \(fallbackName) to keep up at \(String(format: "%g", rate))×" }
 
     /// The rest of the read uses the fallback (the system voice of the read's language when none was given); queued
     /// audio and timings stay.
@@ -455,7 +472,7 @@ import TalkReadCore
         }
         let engine = engines.engine(for: effectiveVoice)
         do {
-            return try await engine.synthesize(speakable, voice: effectiveVoice.id)
+            return try await engine.synthesize(speakable, voice: effectiveVoice.id, speed: nativeSpeed)
         } catch let error where engine.kind == .neural && !(error is CancellationError) {
             let retry = systemVoice
             Log.write("read: neural voice failed (\(error.localizedDescription)); retrying the chunk with \(retry.name)")
