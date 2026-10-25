@@ -18,6 +18,59 @@ public struct Settings: Codable, Equatable, Sendable {
         public static let command: UInt64 = 1 << 20, option: UInt64 = 1 << 19, control: UInt64 = 1 << 18, shift: UInt64 = 1 << 17
         /// The four modifiers a shortcut is made of; everything else in an event's flags (caps lock, fn, device bits) is ignored.
         public static let modifierMask = command | option | control | shift
+
+        /// A shortcut from text (`settings-set`): modifiers by name (ctrl, option or alt, shift, cmd) joined with +, or as
+        /// glyphs (⌃⌥⇧⌘), then one key: a letter, digit or punctuation key of the US layout, space, return, tab, an
+        /// arrow (left, right, up, down) or F1 to F12. `off` (or `none`) turns the shortcut off. The display is built as the
+        /// recorder builds it (⌃⌥⇧⌘ then the key). nil when the text names no key or an unknown one. Whether the result
+        /// may be used is `Settings.refusal`'s call.
+        public init?(text: String) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if ["off", "none"].contains(trimmed.lowercased()) { self.init(keyCode: 0, modifiers: 0, display: ""); return }
+            var rest = Substring(trimmed)
+            var mods: UInt64 = 0
+            let glyphs: [Character: UInt64] = ["⌃": Shortcut.control, "⌥": Shortcut.option, "⇧": Shortcut.shift, "⌘": Shortcut.command]
+            let names: [String: UInt64] = ["ctrl": Shortcut.control, "control": Shortcut.control, "opt": Shortcut.option,
+                                           "option": Shortcut.option, "alt": Shortcut.option, "shift": Shortcut.shift,
+                                           "cmd": Shortcut.command, "command": Shortcut.command]
+            while true {
+                if let c = rest.first, let m = glyphs[c] {
+                    mods |= m
+                    rest = rest.dropFirst()
+                } else if let plus = rest.firstIndex(of: "+"), plus != rest.startIndex, let m = names[rest[..<plus].lowercased()] {
+                    mods |= m
+                    rest = rest[rest.index(after: plus)...]
+                } else {
+                    break
+                }
+            }
+            guard let key = Self.keyTable[rest.lowercased()] else { return nil }
+            var display = ""
+            if mods & Shortcut.control != 0 { display += "⌃" }
+            if mods & Shortcut.option != 0 { display += "⌥" }
+            if mods & Shortcut.shift != 0 { display += "⇧" }
+            if mods & Shortcut.command != 0 { display += "⌘" }
+            self.init(keyCode: key.code, modifiers: mods, display: display + key.name)
+        }
+
+        /// Key names (lowercased) to US-layout key codes and the name the recorder shows for them.
+        static let keyTable: [String: (code: UInt16, name: String)] = {
+            var k: [String: (code: UInt16, name: String)] = [:]
+            let printable: [(String, UInt16)] = [
+                ("a", 0), ("s", 1), ("d", 2), ("f", 3), ("h", 4), ("g", 5), ("z", 6), ("x", 7), ("c", 8), ("v", 9), ("b", 11),
+                ("q", 12), ("w", 13), ("e", 14), ("r", 15), ("y", 16), ("t", 17), ("1", 18), ("2", 19), ("3", 20), ("4", 21),
+                ("6", 22), ("5", 23), ("=", 24), ("9", 25), ("7", 26), ("-", 27), ("8", 28), ("0", 29), ("]", 30), ("o", 31),
+                ("u", 32), ("[", 33), ("i", 34), ("p", 35), ("l", 37), ("j", 38), ("'", 39), ("k", 40), (";", 41), ("\\", 42),
+                (",", 43), ("/", 44), ("n", 45), ("m", 46), (".", 47), ("`", 50)]
+            for (name, code) in printable { k[name] = (code, name.uppercased()) }
+            let named: [([String], UInt16, String)] = [
+                (["space"], 49, "Space"), (["return", "enter"], 36, "↩"), (["tab"], 48, "⇥"), (["left"], 123, "←"),
+                (["right"], 124, "→"), (["down"], 125, "↓"), (["up"], 126, "↑"), (["f1"], 122, "F1"), (["f2"], 120, "F2"),
+                (["f3"], 99, "F3"), (["f4"], 118, "F4"), (["f5"], 96, "F5"), (["f6"], 97, "F6"), (["f7"], 98, "F7"),
+                (["f8"], 100, "F8"), (["f9"], 101, "F9"), (["f10"], 109, "F10"), (["f11"], 103, "F11"), (["f12"], 111, "F12")]
+            for (aliases, code, name) in named { for alias in aliases { k[alias] = (code, name) } }
+            return k
+        }()
     }
     /// Left Option is not offered: it types characters (∂, ß…) in every app.
     public enum HoldKey: String, Codable, Sendable, CaseIterable { case rightOption, fn, rightCommand, off }
@@ -144,8 +197,8 @@ public struct Settings: Codable, Equatable, Sendable {
         return object
     }
 
-    /// Changes one setting from its text form, then clamps. Shortcuts and the mini player position are changed in the
-    /// Settings window only (ponytail: no shortcut text parser; add one, checked by `refusal`, if an agent needs to rebind keys).
+    /// Changes one setting from its text form, then clamps. A shortcut takes text such as `ctrl+option+R` or `⌃⌥R` (or
+    /// `off`), checked by `refusal` as the Settings window's recorder is. The mini player position is changed by dragging only.
     public mutating func set(_ key: String, to raw: String) throws {
         func bool() throws -> Bool {
             switch raw.lowercased() {
@@ -199,8 +252,22 @@ public struct Settings: Codable, Equatable, Sendable {
         case "launchAtLogin": launchAtLogin = try bool()
         case "onboardingDone": onboardingDone = try bool()
         case "historyLimit": historyLimit = Int(try number())
-        case _ where key == "miniPlayerOrigin" || Self.chords.contains(where: { $0.key == key }):
-            throw ControlError("read_only_setting", "\(key) can only be changed in the Settings window.")
+        case "miniPlayerOrigin":
+            throw ControlError("read_only_setting", "miniPlayerOrigin changes when the mini player is dragged.")
+        case _ where Self.chords.contains(where: { $0.key == key }):
+            guard let shortcut = Shortcut(text: raw) else {
+                throw ControlError("invalid_value", "\(key) must look like ctrl+option+R or ⌃⌥R, or be off.")
+            }
+            if let why = refusal(shortcut, for: key) {
+                let reason: String
+                switch why {
+                case .needsModifier: reason = "on its own would stop that key typing; add ctrl, option or command"
+                case .reserved: reason = "belongs to macOS"
+                case .taken(let other): reason = "is already used by \(other)"
+                }
+                throw ControlError("invalid_value", "\(shortcut.display) \(reason).")
+            }
+            for chord in Self.chords where chord.key == key { self[keyPath: chord.path] = shortcut }
         default:
             throw ControlError("unknown_setting", "Unknown setting '\(key)'. Keys: \(Settings.keys.joined(separator: ", ")).")
         }

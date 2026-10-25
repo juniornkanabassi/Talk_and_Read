@@ -147,11 +147,46 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(code("tintEnabled", "maybe"), "invalid_value")
         XCTAssertEqual(code("dictationHoldKey", "left"), "invalid_value")
         XCTAssertEqual(code("highlightHex", "red"), "invalid_value")
-        for key in Settings.chords.map(\.key) + ["miniPlayerOrigin"] { XCTAssertEqual(code(key, "x"), "read_only_setting", key) }
+        XCTAssertEqual(code("miniPlayerOrigin", "x"), "read_only_setting")
+        XCTAssertEqual(code("dictationMicrophone", "x"), "read_only_setting")   // `talkread mic`
+        for key in Settings.chords.map(\.key) { XCTAssertEqual(code(key, "x"), "invalid_value", key) }
+        // Every setting is known to settings-set (none falls through to unknown_setting), so the CLI reaches them all.
+        for key in Settings.keys { XCTAssertNotEqual(code(key, "\u{1}"), "unknown_setting", key) }
         try s.set("dictationHoldKey", to: "rightCommand"); XCTAssertEqual(s.dictationHoldKey, .rightCommand)
         var untouched = Settings()
         _ = try? untouched.set("speed", to: "fast")
         XCTAssertEqual(untouched, Settings(), "a rejected value changes nothing")
+    }
+
+    func testShortcutsBySettingsSet() throws {
+        let ctrl = Settings.Shortcut.control, opt = Settings.Shortcut.option, cmd = Settings.Shortcut.command, shift = Settings.Shortcut.shift
+        var s = Settings()
+        try s.set("readShortcut", to: "ctrl+option+R")
+        XCTAssertEqual(s.readShortcut, Settings.Shortcut(keyCode: 15, modifiers: ctrl | opt, display: "⌃⌥R"))
+        try s.set("pauseShortcut", to: "⌘⇧F5")
+        XCTAssertEqual(s.pauseShortcut, Settings.Shortcut(keyCode: 96, modifiers: cmd | shift, display: "⇧⌘F5"), "glyph order as the recorder writes it")
+        try s.set("screenshotShortcut", to: " Ctrl+Alt+space ")
+        XCTAssertEqual(s.screenshotShortcut, Settings.Shortcut(keyCode: 49, modifiers: ctrl | opt, display: "⌃⌥Space"))
+        try s.set("skipForwardShortcut", to: "off")
+        XCTAssertTrue(s.skipForwardShortcut.isOff)
+        // Every default parses back to itself, so the table agrees with the recorder's key codes.
+        let d = Settings()
+        for c in Settings.chords {
+            let shortcut = d[keyPath: c.path]
+            XCTAssertEqual(Settings.Shortcut(text: shortcut.display), shortcut, c.key)
+        }
+        func message(_ key: String, _ value: String) -> String? {
+            var copy = Settings()
+            do { try copy.set(key, to: value); return nil } catch { return (error as? ControlError)?.message }
+        }
+        XCTAssertEqual(message("readShortcut", "shift+R"), "⇧R on its own would stop that key typing; add ctrl, option or command.")
+        XCTAssertEqual(message("readShortcut", "cmd+Q"), "⌘Q belongs to macOS.")
+        XCTAssertEqual(message("readShortcut", "option+D"), "⌥D is already used by increaseSpeedShortcut.")
+        XCTAssertNotNil(message("readShortcut", "ctrl+banana"))
+        XCTAssertNotNil(message("readShortcut", "ctrl+"))
+        var untouched = Settings()
+        _ = try? untouched.set("readShortcut", to: "cmd+Q")
+        XCTAssertEqual(untouched, Settings(), "a refused shortcut changes nothing")
     }
 
     func testJSONAndKeys() {
