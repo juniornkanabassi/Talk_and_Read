@@ -45,11 +45,22 @@ final class PageFurnitureTests: XCTestCase {
         XCTAssertEqual(found.count, 12)
     }
 
-    func testPageOfAndNumberedHeadsFollowThePage() {
+    func testPageNumbersOfEveryShapeFollowThePage() {
         let pages = (0..<4).map { i in "\(i + 12) Contract Law\nThe \(words[i]) term is implied.\nPage \(i + 1) of 4" }
         let (text, starts) = join(pages)
         let found = lines(text, PageFurniture.ranges(text, pageStarts: starts))
-        XCTAssertEqual(found, (0..<4).flatMap { ["\($0 + 12) Contract Law", "Page \($0 + 1) of 4"] })
+        XCTAssertEqual(found, (1...4).map { "Page \($0) of 4" }, "a numbered line with other words is read, even a running head")
+        let dashed = join((0..<3).map { "The \(words[$0]) term.\n- \($0 + 40) -" })
+        XCTAssertEqual(lines(dashed.text, PageFurniture.ranges(dashed.text, pageStarts: dashed.starts)), ["- 40 -", "- 41 -", "- 42 -"])
+    }
+
+    func testOneQuestionPerPageIsRead() {
+        let pages = (0..<5).map { i in
+            ["Question \(i + 1)", "The \(words[i]) clause.", "Commentator:", "It was \(words[i + 10]).", "The \(words[i + 20]) rule.",
+             "Then \(words[i + 5])."].joined(separator: "\n")
+        }
+        let (text, starts) = join(pages)
+        XCTAssertEqual(PageFurniture.ranges(text, pageStarts: starts), [], "a heading that counts with the page, and a speaker label inside the page, are content")
     }
 
     func testShortDocumentsAndLongLinesAreLeftAlone() {

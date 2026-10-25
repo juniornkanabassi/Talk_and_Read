@@ -137,6 +137,7 @@ final class SettingsTests: XCTestCase {
         try s.set("dictationHoldKey", to: "off"); XCTAssertEqual(s.dictationHoldKey, .off)
         try s.set("highlightHex", to: "#abcdef"); XCTAssertEqual(s.highlightHex, "#ABCDEF")
         try s.set("historyLimit", to: "1e30"); XCTAssertEqual(s.historyLimit, 5000)
+        try s.set("showHighlight", to: "off"); XCTAssertFalse(s.showHighlight)
         try s.set("tintHex", to: "#ff66aa"); XCTAssertEqual(s.tintHex, "#FF66AA")
         try s.set("tintHex", to: "same"); XCTAssertNil(s.tintHex)
         try s.set("skipCitations", to: "off"); XCTAssertFalse(s.skipCitations)
@@ -167,7 +168,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃A"))
         XCTAssertEqual(json["skipForwardShortcut"]?.objectValue, ["keyCode": .number(14), "modifiers": .number(524_288), "display": .string("⌥E")])
         XCTAssertNil(json["miniPlayerOrigin"])
-        XCTAssertEqual(Settings.keys.count, 37)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + tintHex, skipCitations, skipHeadersAndFooters
+        XCTAssertEqual(Settings.keys.count, 38)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + showHighlight, tintHex, skipCitations, skipHeadersAndFooters
         XCTAssertNil(json["tintHex"], "the tint follows the word colour until one is chosen")
         XCTAssertEqual(json["skipCitations"], .bool(true))
         XCTAssertEqual(json["skipHeadersAndFooters"], .bool(true))

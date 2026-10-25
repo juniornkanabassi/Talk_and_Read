@@ -145,6 +145,11 @@ struct SettingsContent: View {
     private var highlight: some View {
         Form {
             Section {
+                Toggle("Highlight the spoken word in other apps", isOn: $model.settings.showHighlight)
+            } footer: {
+                Text("Off reads aloud with nothing drawn over the app. The reader window always highlights.").foregroundStyle(.secondary)
+            }
+            Section {
                 HighlightPreview(colour: NSColor(hex: model.settings.highlightHex) ?? Theme.accentNS,
                                  tintColour: model.settings.tintHex.flatMap(NSColor.init(hex:)), tint: model.settings.tintEnabled)
                 ColorPicker("Word colour", selection: highlightColour, supportsOpacity: false)
