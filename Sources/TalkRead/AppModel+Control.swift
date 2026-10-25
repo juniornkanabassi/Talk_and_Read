@@ -381,7 +381,7 @@ extension AppModel {
                 throw AppError(code: "not_found", message: "No suggestion \(heard) → \(typed); see `talkread vocabulary`.")
             }
             switch a["action"] {
-            case "accept": dictation.acceptSuggestion(c)
+            case "accept": try dictation.acceptSuggestion(c)
             case "dismiss": dictation.dismissSuggestion(c)
             default: throw AppError.badArgs("action must be accept or dismiss.")
             }
@@ -433,16 +433,23 @@ extension AppModel {
             if let id, owner?.sessionID == id { owner = nil }
             throw AppError(code: "failed", message: "Could not open \(name): \(error.localizedDescription)")
         }
-        if let id, owner?.sessionID != id { throw AppError(code: "superseded", message: "Another read started first.") }
         let current: LibraryItem
         do { current = try libraryItem(item.id.uuidString) } catch {
             if let id, owner?.sessionID == id { owner = nil }
             throw error
         }
-        try checkOwner(r.caller, force: r.force)
+        var data: [String: JSONValue] = ["id": .string(item.id.uuidString), "title": .string(item.title), "kind": .string(item.kind)]
+        if (id != nil && owner?.sessionID != id) || (owner != nil && owner?.caller != r.caller && !r.force && !Self.isHuman(r.caller)) {   // as checkOwner
+            let notice = owner.map { "Imported; not shown because \($0.caller) is reading." }
+                ?? "Imported; not shown because the read reservation ended."
+            if let id, owner?.sessionID == id { owner = nil }
+            data["shown"] = .bool(false)
+            data["notice"] = .string(notice)
+            return data
+        }
         WindowRouter.shared.open(current)                    // the reader shows it; no window comes forward
         if a["show"] == "1" { WindowRouter.shared.showMainWindow() }
-        var data: [String: JSONValue] = ["id": .string(item.id.uuidString), "title": .string(item.title), "kind": .string(item.kind)]
+        data["shown"] = .bool(true)
         if let id {
             data.merge(try await firstAudio(startDocument(current, text: try documentText(current), fromToken: nil, id: id))) { $1 }
         }
