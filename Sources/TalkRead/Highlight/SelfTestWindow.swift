@@ -1013,7 +1013,7 @@ enum SelfTestWindow {
         for app in apps {
             let appElement = AXUIElementCreateApplication(app.processIdentifier)
             for window in (axAttribute(appElement, kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
-                guard let run = Self.visibleTextRun(in: window) else { continue }
+                guard let run = Self.visibleTextRun(in: window, claude: TextCapture.isClaude(app.processIdentifier)) else { continue }
                 // Provided text with the window for geometry; nothing is set on the app (no wake, no selection).
                 let locator = Locator(capture: Capture(text: run, pid: app.processIdentifier, element: nil, window: window, selectionStart: nil, source: .provided))
                 let tokens = TextKit.tokenize(run)
@@ -1091,7 +1091,7 @@ enum SelfTestWindow {
 
     /// The first AXStaticText of 30+ words, outside chrome, whose first and last words both lie inside the window and on
     /// a screen (a node can sit inside the window frame while its text is scrolled away).
-    private static func visibleTextRun(in window: AXUIElement) -> String? {
+    private static func visibleTextRun(in window: AXUIElement, claude: Bool) -> String? {
         guard let windowFrame = axFrame(window) else { return nil }
         func visible(_ node: AXUIElement, _ token: Token?) -> Bool {
             guard let token, let r = axBounds(node, location: token.range.lowerBound, length: token.range.count), !r.isEmpty else { return false }
@@ -1104,7 +1104,7 @@ enum SelfTestWindow {
             visited += 1
             let role = axAttribute(node, kAXRoleAttribute) as? String
             // never a screen reader heading: the node map rightly boxes none of its words
-            let web = role == "AXWebArea" ? HiddenText.Visibility() : parentWeb.map { $0.child(role: role, classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? []) }
+            let web = role == "AXWebArea" ? HiddenText.Visibility() : parentWeb.map { $0.child(role: role, classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [], claude: claude) }
             let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome) || web?.drawsText == false
             if role == "AXStaticText", !chrome, let value = axAttribute(node, kAXValueAttribute) as? String {
                 let tokens = TextKit.tokenize(value)

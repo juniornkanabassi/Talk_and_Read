@@ -49,6 +49,12 @@ final class HiddenTextTests: XCTestCase {
         XCTAssertEqual(loose?.range, 10..<30)
         XCTAssertEqual(loose?.exact, false)
         XCTAssertNil(HiddenText.place(d1: 10, d2: 93, length: 100, nodeLength: 20))
+        // an exact overlap with the start wins over a tolerant "inside" (Codex round 2: "Copy" one unit before
+        // "opy Copyright" must cut "opy", not the visible "Copy" in "Copyright")
+        let copy = HiddenText.place(d1: 1, d2: 14, length: 13, nodeLength: 4)
+        XCTAssertEqual(copy?.range, 0..<3)
+        XCTAssertEqual(copy?.skip, 1)
+        XCTAssertEqual(copy?.exact, true)
     }
 
     func testLocateOnlyNearItsPlace() {
@@ -102,21 +108,25 @@ final class HiddenTextTests: XCTestCase {
 
     func testVisibility() {
         let root = V()
-        XCTAssertTrue(root.child(role: "AXStaticText", classes: []).drawsText)
-        // sr-only, and everything inside it
-        let heading = root.child(role: "AXHeading", classes: ["sr-only", "select-none"])
+        func child(_ v: V, _ role: String, _ classes: [String], claude: Bool = true) -> V { v.child(role: role, classes: classes, claude: claude) }
+        XCTAssertTrue(child(root, "AXStaticText", []).drawsText)
+        // sr-only, and everything inside it, in any app
+        let heading = child(root, "AXHeading", ["sr-only", "select-none"], claude: false)
         XCTAssertTrue(heading.hidden)
-        XCTAssertFalse(heading.child(role: "AXStaticText", classes: []).drawsText)
-        XCTAssertTrue(root.child(role: "AXGroup", classes: ["visually-hidden"]).hidden)
-        XCTAssertTrue(root.child(role: "AXToolbar", classes: []).child(role: "AXStaticText", classes: []).hidden)
-        XCTAssertTrue(root.child(role: "AXGroup", classes: ["sr-only", "md:not-sr-only"]).drawsText)   // shown somewhere
-        // a zero-height box hangs hover labels; one whose height anything else sets, that grows or shows its overflow is text
-        XCTAssertTrue(root.child(role: "AXGroup", classes: ["relative", "h-0", "w-full"]).hidden)
+        XCTAssertFalse(child(heading, "AXStaticText", []).drawsText)
+        XCTAssertTrue(child(root, "AXGroup", ["visually-hidden"], claude: false).hidden)
+        XCTAssertTrue(child(root, "AXGroup", ["sr-only", "md:not-sr-only"]).drawsText)   // shown somewhere
+        // Claude's hover toolbar and timestamp box; elsewhere a toolbar or an h-0 box may be drawn
+        XCTAssertTrue(child(child(root, "AXToolbar", []), "AXStaticText", []).hidden)
+        XCTAssertTrue(child(root, "AXToolbar", [], claude: false).drawsText)
+        XCTAssertTrue(child(root, "AXGroup", ["relative", "h-0", "w-full"]).hidden)
+        XCTAssertTrue(child(root, "AXGroup", ["relative", "h-0", "w-full"], claude: false).drawsText)
+        // an h-0 box whose height anything else sets, that grows or shows its overflow is text
         for shown in [["flex-1", "h-0", "overflow-auto"], ["h-0", "md:h-auto"], ["h-0", "group-hover:h-auto"], ["h-0", "data-[state=open]:h-auto"],
                       ["h-0", "min-h-10"], ["h-0", "size-4"], ["h-0", "overflow-visible"], ["h-0", "h-fit"], ["md:h-0"]] {
-            XCTAssertTrue(root.child(role: "AXGroup", classes: shown).drawsText, "\(shown)")
+            XCTAssertTrue(child(root, "AXGroup", shown).drawsText, "\(shown)")
         }
         // user-select: none is drawn (an inline session link), so it is read
-        XCTAssertTrue(root.child(role: "AXButton", classes: ["select-none"]).drawsText)
+        XCTAssertTrue(child(root, "AXButton", ["select-none"]).drawsText)
     }
 }

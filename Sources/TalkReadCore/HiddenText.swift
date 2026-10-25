@@ -9,8 +9,7 @@ public enum HiddenText {
     /// Whether an element's text is drawn on screen, inherited down the tree. Only never-drawn text counts: an inline
     /// chip with `user-select: none` (a session link in a sentence) is on screen and is read.
     public struct Visibility: Equatable, Sendable {
-        /// Not read: a screen-reader-only node, anything inside one, a toolbar (its buttons' labels, hints and times:
-        /// app chrome, which the node map already never boxes).
+        /// Not read: a screen-reader-only node, anything inside one, and in Claude its hover toolbar and timestamps.
         public var hidden = false
 
         public init(hidden: Bool = false) { self.hidden = hidden }
@@ -20,18 +19,19 @@ public enum HiddenText {
 
         /// The visibility of a child of this element, from its role and DOM classes.
         ///
-        /// Hidden: a toolbar; the `sr-only` / `visually-hidden` classes, unless a `not-sr-only` variant shows the node
-        /// somewhere; a zero-height box (`h-0`), which is how Claude's chat hangs a message's hover timestamps below it,
-        /// unless anything else sets its height (`min-h-10`, `md:h-auto`, `group-hover:h-auto`, `size-4`), it grows
-        /// (`flex-1 h-0` is a flex layout's pane) or it lets its content show (`overflow-visible`).
+        /// Anywhere: the `sr-only` / `visually-hidden` classes, unless a `not-sr-only` variant shows the node somewhere.
+        /// In Claude (`claude`), whose chat is known: its message toolbar (shown on hover), and a zero-height box (`h-0`),
+        /// which is how it hangs a message's hover timestamps below it, unless anything else sets its height
+        /// (`min-h-10`, `md:h-auto`, `group-hover:h-auto`, `size-4`), it grows (`flex-1 h-0` is a flex layout's pane)
+        /// or it lets its content show (`overflow-visible`). Elsewhere a toolbar or an `h-0` box may well be drawn.
         /// Frames are no guide: Chromium reports visible text 1 pt tall while its window is behind others, and the
         /// text inside an `sr-only` clip at full size.
-        public func child(role: String?, classes: [String]) -> Visibility {
+        public func child(role: String?, classes: [String], claude: Bool) -> Visibility {
             var v = self
             let bases = classes.map { $0.split(separator: ":").last.map(String.init) ?? $0 }
-            if role == "AXToolbar" { v.hidden = true }
+            if claude, role == "AXToolbar" { v.hidden = true }
             if classes.contains(where: Self.hiddenClasses.contains), !bases.contains("not-sr-only") { v.hidden = true }
-            if classes.contains("h-0"),
+            if claude, classes.contains("h-0"),
                !zip(classes, bases).contains(where: { full, base in
                    full != "h-0" && ["h-", "min-h-", "max-h-", "size-"].contains(where: base.hasPrefix) }),
                !bases.contains(where: Self.showClasses.contains) { v.hidden = true }
@@ -75,8 +75,10 @@ public enum HiddenText {
     public static func place(d1: Int, d2: Int, length: Int, nodeLength: Int, tolerance: Int = 2) -> (range: Range<Int>, exact: Bool, skip: Int)? {
         guard d1 >= 0, d2 >= 0, length > 0, nodeLength > 0 else { return nil }
         let offset: Int, exact: Bool
-        if abs(d1 + d2 - length) <= tolerance { (offset, exact) = (d1, d1 + d2 == length) }
-        else if abs(d2 - d1 - length) <= tolerance { (offset, exact) = (-d1, d2 - d1 == length) }
+        if d1 + d2 == length { (offset, exact) = (d1, true) }   // both exact relations before either tolerance
+        else if d2 - d1 == length { (offset, exact) = (-d1, true) }
+        else if abs(d1 + d2 - length) <= tolerance { (offset, exact) = (d1, false) }
+        else if abs(d2 - d1 - length) <= tolerance { (offset, exact) = (-d1, false) }
         else { return nil }
         let lo = max(0, offset), hi = min(length, offset + nodeLength)
         return lo < hi ? (lo..<hi, exact, lo - offset) : nil
@@ -101,7 +103,7 @@ public enum HiddenText {
         return found.count == 1 ? found[0] : nil
     }
 
-    /// Safety net for what the tree walk missed, for Claude only (the caller decides): a screen reader heading straight
+    /// Safety net for Claude text the tree cannot place (a Copy, or a selection without text markers; the caller decides): a screen reader heading straight
     /// before the text it repeats, "Claude responded: X" or "You said: X" followed by X (a long heading is cut short
     /// with "…", so then X's opening). The longest X that repeats wins, so "You said: I love you. I love you. Stay."
     /// before its message cuts the whole heading, not one "I love you.". Returns the headings' ranges.

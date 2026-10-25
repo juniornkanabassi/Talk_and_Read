@@ -107,9 +107,13 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(make("He [sic] (again) said").text, "He [sic] (again) said")
         XCTAssertEqual(make("[note](see\nbelow)").text, "[note](see. below)")
         // the first ")" ends the target, so prose after a link survives
-        XCTAssertEqual(make("[x](a/b c) and (c) d").text, "x and (c) d")
+        XCTAssertEqual(make("[x](a/b c.md) and (c) d").text, "x and (c) d")
         // spaces only in a path- or address-like target: bracketed prose before parentheses stays
         XCTAssertEqual(make("options [A](which is best) or [B]").text, "options [A](which is best) or [B]")
+        XCTAssertEqual(make("options [A](which is best.) or [B]").text, "options [A](which is best.) or [B]")
+        XCTAssertEqual(make("[x](and/or something) y").text, "[x](and/or something) y")
+        XCTAssertEqual(make("[notes](../02 Projects/notes) y").text, "notes y")
+        XCTAssertEqual(make("[part](Talk & Read guide.md#setup) y").text, "part y")
         XCTAssertEqual(make("[A](x) or [B](y)").text, "A or B")
     }
 
@@ -126,6 +130,9 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(make("See /Users/j/Law_(UK) now").text, "See Law_(UK) now")
         XCTAssertEqual(make("(see /Users/j/a/b.md), then").text, "(see b.md), then")
         XCTAssertEqual(make("Kept in /a/b/report.final.pdf.").text, "Kept in report.final.pdf.")
+        XCTAssertEqual(make("Open ~/notes.md and file:///notes.md").text, "Open notes.md and notes.md")
+        XCTAssertEqual(make("The `/a/b/report.pdf` file").text, "The report.pdf file")   // bare and backticked agree
+        XCTAssertEqual(make("A /notes.md file").text, "A /notes.md file")   // one component and no root: not sure
         // not file paths: no known root and no file name, or a command line in backticks
         for kept in ["/r/soccer", "/api/v1/users", "/dev/null", "cd /usr/local/bin", "his/her", "/a/b/c"] {
             XCTAssertEqual(make(kept).text, kept)
@@ -158,6 +165,16 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(read(long), "Hello there. " + String(repeating: "word ", count: 50) + "the long link label end.")
         let code = String(repeating: "word ", count: 30) + "the file `/Users/j/02 Projects/Talk & Read/a long folder name/guide.md` is new."
         XCTAssertEqual(read(code), String(repeating: "word ", count: 30) + "the file guide.md is new.")
+        // an ordinary code span the opening chunk's limit falls in is read once (Codex round 2)
+        let span = "Run " + "`" + String(repeating: "make all ", count: 25) + "`" + " then stop."
+        XCTAssertEqual(read(span), "Run " + String(repeating: "make all ", count: 25) + "then stop.")
+    }
+
+    /// A read that starts inside a link (a click in the reader, a saved place) reads the link whole (Codex round 2).
+    func testAReadStartingInsideALink() {
+        let s = "[the guide](/Users/j/guide.md) now."
+        let at = (s as NSString).range(of: "guide").location
+        XCTAssertEqual(Speakable.make(s, range: at..<(s as NSString).length, lexicon: [:]).text, "the guide now.")
     }
 
     func testListItemsGetAPause() {

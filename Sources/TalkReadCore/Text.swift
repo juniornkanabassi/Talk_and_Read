@@ -27,6 +27,8 @@ public enum TextKit {
     private static let abbreviations: Set<String> = ["vs", "etc", "no", "approx", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec"]
     private static let dottedAbbreviations: Set<String> = ["eg", "ie", "am", "pm"]   // e.g. i.e. a.m. p.m., as their two letter tokens
     private static let clauseMarks: Set<Character> = [",", ";", ":", "—", "–"]
+    // ponytail: one pass over the text per chunks() call; a read recuts from a token, so a huge document pays it per recut.
+    private static let protectedSpans = try! NSRegularExpression(pattern: "\\[[^\\]\\n]*\\]\\([^)\\n]*\\)|`[^`\\n]+`")
 
     /// Words with sentence numbers. Whitespace and lone punctuation are not tokens.
     public static func tokenize(_ text: String) -> [Token] {
@@ -110,13 +112,23 @@ public enum TextKit {
         func length(_ a: Int, _ b: Int) -> Int {
             (b < count ? lead(b) : tokens[b - 1].range.upperBound) - lead(a)
         }
+        /// Markdown links and code spans, never cut: a chunk speaks a link's label or a path's file name only when it
+        /// holds the whole construct (Speakable).
+        let kept = protectedSpans.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { $0.range.location..<$0.range.location + $0.range.length }
+        func insideKept(_ p: Int) -> Bool {
+            var l = 0, h = kept.count   // first span ending after p
+            while l < h { let m = (l + h) / 2; if kept[m].upperBound > p { h = m } else { l = m + 1 } }
+            return l < kept.count && kept[l].lowerBound < p
+        }
         /// Where to cut tokens[a..<b], which is too long: the first token of the next chunk, or nil when it is one token.
+        /// Never inside a link or code span; when the limit falls inside one, the chunk runs on past it.
         func cut(_ a: Int, _ b: Int, _ limit: Int) -> Int? {
             guard a + 1 < b else { return nil }
             var clause: Int?, space: Int?, any: Int?
             for i in (a + 1)..<b {
                 let len = length(a, i)
                 if len > limit { break }
+                if insideKept(tokens[i].range.lowerBound) { continue }
                 any = i
                 let gap = ns.substring(with: NSRange(location: tokens[i - 1].range.upperBound,
                                                      length: tokens[i].range.lowerBound - tokens[i - 1].range.upperBound))
@@ -124,7 +136,7 @@ public enum TextKit {
                 // A clause cut that leaves a sliver ("Well, " + 280 characters) is worse than a whitespace cut.
                 if len >= limit / 3, zip(gap, gap.dropFirst()).contains(where: { clauseMarks.contains($0) && $1.isWhitespace }) { clause = i }
             }
-            return clause ?? space ?? any ?? a + 1
+            return clause ?? space ?? any ?? ((a + 1)..<b).first { !insideKept(tokens[$0].range.lowerBound) } ?? a + 1
         }
 
         var starts = [startToken]   // first token of every chunk

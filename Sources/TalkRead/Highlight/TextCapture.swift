@@ -134,8 +134,8 @@ enum TextCapture {
     /// The selection without the text a web view exposes but never draws (`HiddenText`): Claude's chat puts a screen
     /// reader heading, "Claude responded: <its first sentence>", before every message and a hover toolbar with its
     /// timestamps after it, and Chromium's selected text includes both. The selection's text markers place each hidden
-    /// node (`hiddenRanges`). Last, in Claude only, a heading straight before its own copy goes whatever the tree said,
-    /// and after any cut the button placeholders (U+FFFC) go too. Offsets into the element no longer hold after a cut,
+    /// node (`hiddenRanges`), and after any cut the button placeholders (U+FFFC) go too. In Claude without a usable
+    /// tree, a heading straight before its own copy goes (`HiddenText.safetyNet`). Offsets into the element no longer hold after a cut,
     /// so `selectionStart` is then nil and `selected` keeps the original text (the node map and selection bounds
     /// place the words instead).
     static func withoutHiddenText(_ c: Capture) -> Capture {
@@ -153,10 +153,15 @@ enum TextCapture {
     /// The same for an explicit text marker range of `root` (the self-test's stand-in for a mouse selection).
     static func withoutHiddenText(_ c: Capture, root: AXUIElement?, selection: AXTextMarkerRange?) -> Capture {
         var text = c.text, removed = 0
-        if let root, let selection, let ranges = hiddenRanges(root: root, selection: selection, text: text) {
+        let claude = isClaude(c.pid)
+        if let root, let selection, let ranges = hiddenRanges(root: root, selection: selection, text: text, claude: claude) {
             (text, removed) = HiddenText.cut(text, ranges: ranges)
+            // the toolbar's buttons leave their placeholders behind
+            if removed > 0 { let objects = HiddenText.cut(text, ranges: HiddenText.objectReplacements(text)); (text, removed) = (objects.text, removed + objects.removed) }
+        } else if claude {
+            // No tree to place the headings by: the text-only net, which could also catch a quoted "You said: X X".
+            (text, removed) = HiddenText.safetyNet(text)
         }
-        if isClaude(c.pid) { (text, removed) = HiddenText.safetyNet(text, removed: removed) }
         guard removed > 0, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return c }
         var out = Capture(text: text, pid: c.pid, element: c.element, window: c.window, selectionStart: nil, source: c.source)
         (out.hiddenRemoved, out.selected) = (removed, c.text)
@@ -175,7 +180,7 @@ enum TextCapture {
     /// (by more than 60 pt, which keeps a toolbar above a message) are skipped.
     // ponytail: up to 4000 nodes, two AX calls each (role, classes) plus a frame for pruning, and five per hidden node;
     // Claude's chat window is about 400 nodes. Walk only the selection's common ancestor if big pages make this slow.
-    private static func hiddenRanges(root: AXUIElement, selection: AXTextMarkerRange, text: String) -> [Range<Int>]? {
+    private static func hiddenRanges(root: AXUIElement, selection: AXTextMarkerRange, text: String, claude: Bool) -> [Range<Int>]? {
         guard (axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: selection) as? String) == text else { return nil }
         let length = text.utf16.count
         let selStart = AXTextMarkerRangeCopyStartMarker(selection), selEnd = AXTextMarkerRangeCopyEndMarker(selection)
@@ -196,7 +201,7 @@ enum TextCapture {
             visited += 1
             if let bounds, let frame = axFrame(node), !frame.isEmpty, !frame.intersects(bounds) { continue }
             let visibility = parent.child(role: axAttribute(node, kAXRoleAttribute) as? String,
-                                          classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [])
+                                          classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [], claude: claude)
             guard visibility.drawsText else {
                 guard let own = axParameterizedAttribute(root, "AXTextMarkerRangeForUIElement", parameter: node),
                       CFGetTypeID(own) == AXTextMarkerRangeGetTypeID(),
@@ -209,7 +214,8 @@ enum TextCapture {
                 let part = (string as NSString).substring(with: NSRange(location: placed.skip, length: placed.range.count))
                 if placed.exact, ns.substring(with: NSRange(location: placed.range.lowerBound, length: placed.range.count)) == part {
                     ranges.append(placed.range)
-                } else if let found = HiddenText.locate(string, in: text, near: placed.range) {
+                } else if placed.skip == 0, placed.range.count == string.utf16.count,   // only a whole node is looked for
+                          let found = HiddenText.locate(string, in: text, near: placed.range) {
                     ranges.append(found)
                 }
                 continue
