@@ -9,13 +9,19 @@ public enum HiddenText {
     /// Whether an element's text is drawn on screen, inherited down the tree. Only never-drawn text counts: an inline
     /// chip with `user-select: none` (a session link in a sentence) is on screen and is read.
     public struct Visibility: Equatable, Sendable {
-        /// Not read: a screen-reader-only node, anything inside one, and in Claude its hover toolbar and timestamps.
+        /// Not read: a screen-reader-only node, anything inside one, and in Claude its hover toolbar.
         public var hidden = false
+        /// Inside a short zero-height box in Claude: hidden only where its text is a timestamp (`isTimestamp`), the one
+        /// thing Claude's chat hangs there; any other text in such a box may be drawn and is kept.
+        public var hover = false
 
-        public init(hidden: Bool = false) { self.hidden = hidden }
+        public init(hidden: Bool = false, hover: Bool = false) { self.hidden = hidden; self.hover = hover }
 
-        /// Its text belongs in a selection and a highlight.
-        public var drawsText: Bool { !hidden }
+        /// Whether `text` belongs in a selection and a highlight.
+        public func draws(_ text: String) -> Bool { !hidden && !(hover && HiddenText.isTimestamp(text)) }
+
+        /// Its text certainly belongs in a selection and a highlight (no hidden text, no hover box).
+        public var drawsText: Bool { !hidden && !hover }
 
         /// The visibility of a child of this element, from its role and DOM classes.
         ///
@@ -34,7 +40,7 @@ public enum HiddenText {
             if claude, classes.contains("h-0"),
                !zip(classes, bases).contains(where: { full, base in
                    full != "h-0" && ["h-", "min-h-", "max-h-", "size-"].contains(where: base.hasPrefix) }),
-               !bases.contains(where: Self.showClasses.contains) { v.hidden = true }
+               !bases.contains(where: Self.showClasses.contains) { v.hover = true }
             return v
         }
 
@@ -75,10 +81,10 @@ public enum HiddenText {
     public static func place(d1: Int, d2: Int, length: Int, nodeLength: Int, tolerance: Int = 2) -> (range: Range<Int>, exact: Bool, skip: Int)? {
         guard d1 >= 0, d2 >= 0, length > 0, nodeLength > 0 else { return nil }
         let offset: Int, exact: Bool
+        let inside = abs(d1 + d2 - length) <= tolerance, before = abs(d2 - d1 - length) <= tolerance
         if d1 + d2 == length { (offset, exact) = (d1, true) }   // both exact relations before either tolerance
         else if d2 - d1 == length { (offset, exact) = (-d1, true) }
-        else if abs(d1 + d2 - length) <= tolerance { (offset, exact) = (d1, false) }
-        else if abs(d2 - d1 - length) <= tolerance { (offset, exact) = (-d1, false) }
+        else if inside != before { (offset, exact) = (inside ? d1 : -d1, false) }   // both fit (d1 within the tolerance): unknown
         else { return nil }
         let lo = max(0, offset), hi = min(length, offset + nodeLength)
         return lo < hi ? (lo..<hi, exact, lo - offset) : nil
@@ -105,8 +111,9 @@ public enum HiddenText {
 
     /// Safety net for Claude text the tree cannot place (a Copy, or a selection without text markers; the caller decides): a screen reader heading straight
     /// before the text it repeats, "Claude responded: X" or "You said: X" followed by X (a long heading is cut short
-    /// with "…", so then X's opening). The longest X that repeats wins, so "You said: I love you. I love you. Stay."
-    /// before its message cuts the whole heading, not one "I love you.". Returns the headings' ranges.
+    /// with "…", so then X's opening). The heading ends flush against its message, never at a space: so visible prose
+    /// "You said: Never again. Never again." is no heading. The longest X that repeats wins, so "You said: I love you.
+    /// I love you. Stay." before its message cuts the whole heading, not one "I love you.". Returns the headings' ranges.
     public static func repeatedHeadings(_ text: String) -> [Range<Int>] {
         let u = Array(text.utf16).map(plainQuote)   // the heading has straight quotes where the message has curly ones
         var found: [Range<Int>] = []
@@ -122,7 +129,8 @@ public enum HiddenText {
                 while e >= a + minimum {
                     var h = e - a
                     if u[e - 1] == 0x2026 { h -= 1 }   // "…": the heading was cut short, the body goes on
-                    if h >= minimum, e + h <= u.count, u[a..<a + h].elementsEqual(u[e..<e + h]) { hit = e; break }
+                    if h >= minimum, e + h <= u.count, u[e - 1] != 0x20, u[e - 1] != 0x09, u[e - 1] != 0xA0,
+                       u[a..<a + h].elementsEqual(u[e..<e + h]) { hit = e; break }
                     e -= 1
                 }
                 if let hit { found.append(i..<hit); i = hit } else { i += 1 }
@@ -142,6 +150,15 @@ public enum HiddenText {
     }
 
     public static let prefixes = ["Claude responded: ", "You said: "]
+
+    /// A chat timestamp: "now", "3m ago", "2 hours ago", "Yesterday", "Sunday, October 25, 2026 at 11:52 AM", or several
+    /// run together ("3m agoSunday, …"). Nothing else in it.
+    public static func isTimestamp(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, t.utf16.count <= 120 else { return false }
+        let part = "(?:just now|now|yesterday|today|[0-9]+ ?(?:s|m|h|d|w|mo|y|sec|secs|min|mins|hr|hrs|second|seconds|minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years) ago|(?:(?:mon|tues|wednes|thurs|fri|satur|sun)day, )?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* [0-9]{1,2}(?:, [0-9]{4})?(?: at [0-9]{1,2}:[0-9]{2}(?: ?[ap]m)?)?|[0-9]{1,2}:[0-9]{2}(?: ?[ap]m)?)"
+        return t.range(of: "^(?:\(part)\\s*)+$", options: [.regularExpression, .caseInsensitive]) != nil
+    }
 
     /// ’ ‘ as ', “ ” as ": the same length, so offsets hold.
     public static func plainQuote(_ c: UInt16) -> UInt16 {

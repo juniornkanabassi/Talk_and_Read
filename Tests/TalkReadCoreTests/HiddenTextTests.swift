@@ -44,6 +44,8 @@ final class HiddenTextTests: XCTestCase {
         XCTAssertNil(HiddenText.place(d1: 130, d2: 30, length: 100, nodeLength: 20))
         XCTAssertNil(HiddenText.place(d1: 40, d2: 40, length: 100, nodeLength: 20))
         XCTAssertNil(HiddenText.place(d1: 0, d2: 0, length: 0, nodeLength: 5))
+        // a node within the tolerance of the selection's start fits both ways: unknown, left in (Codex round 3)
+        XCTAssertNil(HiddenText.place(d1: 1, d2: 13, length: 13, nodeLength: 4))
         // a block boundary's line break counted on one side: kept, not exact
         let loose = HiddenText.place(d1: 10, d2: 91, length: 100, nodeLength: 20)
         XCTAssertEqual(loose?.range, 10..<30)
@@ -86,6 +88,8 @@ final class HiddenTextTests: XCTestCase {
         XCTAssertEqual(HiddenText.cut(love, ranges: HiddenText.repeatedHeadings(love)).text, "I love you. I love you. Stay.")
         let hello = "You said: hello world, hello world,hello world, hello world,"
         XCTAssertEqual(HiddenText.cut(hello, ranges: HiddenText.repeatedHeadings(hello)).text, "hello world, hello world,")
+        // visible prose that repeats itself is no heading: a heading ends flush against its message (Codex round 3)
+        XCTAssertEqual(HiddenText.repeatedHeadings("You said: Never again. Never again. And then you returned."), [])
         // a heading at the very end has no copy to repeat
         XCTAssertEqual(HiddenText.repeatedHeadings("Done. You said: a sentence long enough"), [])
         // a mention of the words, with no copy after it, stays
@@ -106,6 +110,16 @@ final class HiddenTextTests: XCTestCase {
         XCTAssertEqual(HiddenText.safetyNet("x", removed: 3).text, "x")
     }
 
+    func testTimestamps() {
+        for t in ["now", "Just now", "3m ago", "2 hours ago", "Yesterday", "Sunday, October 25, 2026 at 11:52 AM",
+                  "3m agoSunday, October 25, 2026 at 11:52 AM", "nowSunday, October 25, 2026 at 12:37 PM", "Oct 25", "11:52 AM"] {
+            XCTAssertTrue(HiddenText.isTimestamp(t), t)
+        }
+        for t in ["", "We met a month ago", "Now we go", "Sunday is the match", "See you at 11:52 AM tomorrow"] {
+            XCTAssertFalse(HiddenText.isTimestamp(t), t)
+        }
+    }
+
     func testVisibility() {
         let root = V()
         func child(_ v: V, _ role: String, _ classes: [String], claude: Bool = true) -> V { v.child(role: role, classes: classes, claude: claude) }
@@ -119,12 +133,16 @@ final class HiddenTextTests: XCTestCase {
         // Claude's hover toolbar and timestamp box; elsewhere a toolbar or an h-0 box may be drawn
         XCTAssertTrue(child(child(root, "AXToolbar", []), "AXStaticText", []).hidden)
         XCTAssertTrue(child(root, "AXToolbar", [], claude: false).drawsText)
-        XCTAssertTrue(child(root, "AXGroup", ["relative", "h-0", "w-full"]).hidden)
-        XCTAssertTrue(child(root, "AXGroup", ["relative", "h-0", "w-full"], claude: false).drawsText)
+        // Claude's h-0 box hides a timestamp only; other text in it may be drawn (an artifact's "relative h-0" wrapper)
+        let box = child(root, "AXGroup", ["relative", "h-0", "w-full"])
+        XCTAssertFalse(box.draws("3m agoSunday, October 25, 2026 at 11:52 AM"))
+        XCTAssertTrue(box.draws("A sentence in an artifact"))
+        XCTAssertFalse(child(box, "AXStaticText", []).draws("now"))
+        XCTAssertTrue(child(root, "AXGroup", ["relative", "h-0", "w-full"], claude: false).draws("3m ago"))
         // an h-0 box whose height anything else sets, that grows or shows its overflow is text
         for shown in [["flex-1", "h-0", "overflow-auto"], ["h-0", "md:h-auto"], ["h-0", "group-hover:h-auto"], ["h-0", "data-[state=open]:h-auto"],
                       ["h-0", "min-h-10"], ["h-0", "size-4"], ["h-0", "overflow-visible"], ["h-0", "h-fit"], ["md:h-0"]] {
-            XCTAssertTrue(child(root, "AXGroup", shown).drawsText, "\(shown)")
+            XCTAssertTrue(child(root, "AXGroup", shown).draws("3m ago"), "\(shown)")
         }
         // user-select: none is drawn (an inline session link), so it is read
         XCTAssertTrue(child(root, "AXButton", ["select-none"]).drawsText)

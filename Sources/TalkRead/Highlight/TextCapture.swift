@@ -154,13 +154,15 @@ enum TextCapture {
     static func withoutHiddenText(_ c: Capture, root: AXUIElement?, selection: AXTextMarkerRange?) -> Capture {
         var text = c.text, removed = 0
         let claude = isClaude(c.pid)
-        if let root, let selection, let ranges = hiddenRanges(root: root, selection: selection, text: text, claude: claude) {
-            (text, removed) = HiddenText.cut(text, ranges: ranges)
+        let walked = root.flatMap { root in selection.flatMap { hiddenRanges(root: root, selection: $0, text: text, claude: claude) } }
+        if let walked {
+            (text, removed) = HiddenText.cut(text, ranges: walked.ranges)
             // the toolbar's buttons leave their placeholders behind
             if removed > 0 { let objects = HiddenText.cut(text, ranges: HiddenText.objectReplacements(text)); (text, removed) = (objects.text, removed + objects.removed) }
-        } else if claude {
-            // No tree to place the headings by: the text-only net, which could also catch a quoted "You said: X X".
-            (text, removed) = HiddenText.safetyNet(text)
+        }
+        if claude, walked?.complete != true {
+            // No tree, or one not walked to the end, to place every heading by: the text-only net.
+            (text, removed) = HiddenText.safetyNet(text, removed: removed)
         }
         guard removed > 0, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return c }
         var out = Capture(text: text, pid: c.pid, element: c.element, window: c.window, selectionStart: nil, source: c.source)
@@ -180,7 +182,7 @@ enum TextCapture {
     /// (by more than 60 pt, which keeps a toolbar above a message) are skipped.
     // ponytail: up to 4000 nodes, two AX calls each (role, classes) plus a frame for pruning, and five per hidden node;
     // Claude's chat window is about 400 nodes. Walk only the selection's common ancestor if big pages make this slow.
-    private static func hiddenRanges(root: AXUIElement, selection: AXTextMarkerRange, text: String, claude: Bool) -> [Range<Int>]? {
+    private static func hiddenRanges(root: AXUIElement, selection: AXTextMarkerRange, text: String, claude: Bool) -> (ranges: [Range<Int>], complete: Bool)? {
         guard (axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: selection) as? String) == text else { return nil }
         let length = text.utf16.count
         let selStart = AXTextMarkerRangeCopyStartMarker(selection), selEnd = AXTextMarkerRangeCopyEndMarker(selection)
@@ -194,7 +196,7 @@ enum TextCapture {
             if AXValueGetValue(value as! AXValue, .cgRect, &rect), !rect.isEmpty { bounds = rect.insetBy(dx: -60, dy: -60) }
         }
         let ns = text as NSString
-        var ranges: [Range<Int>] = []
+        var ranges: [Range<Int>] = [], complete = true
         var stack: [(AXUIElement, HiddenText.Visibility)] = [(root, .init())]
         var visited = 0
         while let (node, parent) = stack.popLast(), visited < 4000 {
@@ -205,11 +207,11 @@ enum TextCapture {
             guard visibility.drawsText else {
                 guard let own = axParameterizedAttribute(root, "AXTextMarkerRangeForUIElement", parameter: node),
                       CFGetTypeID(own) == AXTextMarkerRangeGetTypeID(),
-                      let string = axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: own) as? String,
-                      !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                      let string = axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: own) as? String else { complete = false; continue }
+                guard !visibility.draws(string), !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 let start = AXTextMarkerRangeCopyStartMarker(own as! AXTextMarkerRange)
-                guard let d1 = distance(selStart, start), let d2 = distance(start, selEnd),
-                      let placed = HiddenText.place(d1: d1, d2: d2, length: length, nodeLength: string.utf16.count) else { continue }
+                guard let d1 = distance(selStart, start), let d2 = distance(start, selEnd) else { complete = false; continue }
+                guard let placed = HiddenText.place(d1: d1, d2: d2, length: length, nodeLength: string.utf16.count) else { continue }
                 // The part of the node's text that falls inside the selection, as the selection holds it.
                 let part = (string as NSString).substring(with: NSRange(location: placed.skip, length: placed.range.count))
                 if placed.exact, ns.substring(with: NSRange(location: placed.range.lowerBound, length: placed.range.count)) == part {
@@ -224,7 +226,7 @@ enum TextCapture {
                 stack.append(contentsOf: children.reversed().map { ($0, visibility) })
             }
         }
-        return ranges
+        return (ranges, complete && stack.isEmpty)
     }
 
     // MARK: - 2. Copy

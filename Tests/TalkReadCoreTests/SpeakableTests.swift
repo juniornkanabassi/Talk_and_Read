@@ -165,6 +165,10 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(read(long), "Hello there. " + String(repeating: "word ", count: 50) + "the long link label end.")
         let code = String(repeating: "word ", count: 30) + "the file `/Users/j/02 Projects/Talk & Read/a long folder name/guide.md` is new."
         XCTAssertEqual(read(code), String(repeating: "word ", count: 30) + "the file guide.md is new.")
+        // a sentence end inside a link label, and a long bare path, start no chunk (Codex round 3)
+        XCTAssertEqual(read("See [First sentence. Second sentence](https://example.com) now."), "See First sentence. Second sentence now.")
+        let path = "/Users/" + String(repeating: "project/", count: 20) + "notes.md"
+        XCTAssertEqual(read("Saved at " + path + " today."), "Saved at notes.md today.")
         // an ordinary code span the opening chunk's limit falls in is read once (Codex round 2)
         let span = "Run " + "`" + String(repeating: "make all ", count: 25) + "`" + " then stop."
         XCTAssertEqual(read(span), "Run " + String(repeating: "make all ", count: 25) + "then stop.")

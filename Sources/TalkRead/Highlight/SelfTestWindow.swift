@@ -1081,6 +1081,7 @@ enum SelfTestWindow {
         func plain(_ s: String) -> String { String(decoding: s.utf16.map(HiddenText.plainQuote), as: UTF16.self) }
         let once = headings.filter { h in plain(text).components(separatedBy: plain(h)).count == 2 }.count
         let leftovers = (HiddenText.prefixes + ["Quick reactions available", "\u{FFFC}"]).filter(text.contains)
+            + (text.range(of: "(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day, [A-Z][a-z]+ [0-9]{1,2}, [0-9]{4} at", options: .regularExpression) != nil ? ["a timestamp"] : [])
         let locator = Locator(capture: capture)
         let tokens = TextKit.tokenize(text)
         let boxed = tokens.compactMap { locator.rect(forWord: $0.range) }

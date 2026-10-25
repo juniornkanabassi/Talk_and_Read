@@ -159,7 +159,8 @@ import TalkReadCore
             let web = role == "AXWebArea" ? HiddenText.Visibility() : parentWeb.map {
                 $0.child(role: role, classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [], claude: claude)
             }
-            let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome) || web?.drawsText == false
+            let value = role == "AXStaticText" || role == "AXTextArea" || role == "AXTextField" ? axAttribute(node, kAXValueAttribute) as? String : nil
+            let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome) || web.map { !$0.draws(value ?? "") && ($0.hidden || value != nil) } == true
             let inside = parentInside || capture.element.map { CFEqual($0, node) } == true
             var descend = true
             if role == "AXWebArea" { webAreas.append(node) }

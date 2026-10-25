@@ -28,7 +28,7 @@ public enum TextKit {
     private static let dottedAbbreviations: Set<String> = ["eg", "ie", "am", "pm"]   // e.g. i.e. a.m. p.m., as their two letter tokens
     private static let clauseMarks: Set<Character> = [",", ";", ":", "—", "–"]
     // ponytail: one pass over the text per chunks() call; a read recuts from a token, so a huge document pays it per recut.
-    private static let protectedSpans = try! NSRegularExpression(pattern: "\\[[^\\]\\n]*\\]\\([^)\\n]*\\)|`[^`\\n]+`")
+    private static let protectedSpans = try! NSRegularExpression(pattern: "\\[[^\\]\\n]*\\]\\([^)\\n]*\\)|`[^`\\n]+`|(?:file:/|~)?/[^\\s/]+/\\S+")
 
     /// Words with sentence numbers. Whitespace and lone punctuation are not tokens.
     public static func tokenize(_ text: String) -> [Token] {
@@ -112,7 +112,7 @@ public enum TextKit {
         func length(_ a: Int, _ b: Int) -> Int {
             (b < count ? lead(b) : tokens[b - 1].range.upperBound) - lead(a)
         }
-        /// Markdown links and code spans, never cut: a chunk speaks a link's label or a path's file name only when it
+        /// Markdown links, code spans and paths, never cut: a chunk speaks a link's label or a path's file name only when it
         /// holds the whole construct (Speakable).
         let kept = protectedSpans.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { $0.range.location..<$0.range.location + $0.range.length }
         func insideKept(_ p: Int) -> Bool {
@@ -146,7 +146,8 @@ public enum TextKit {
             var b = a + 1
             while b < count, tokens[b].sentence == tokens[a].sentence { b += 1 }
             var cs = starts[starts.count - 1]
-            if cs < a, starts.count == 1 || length(cs, b) > limit { starts.append(a); cs = a; limit = max }   // chunk 0 is one sentence
+            // chunk 0 is one sentence; a sentence end inside a link label ("[Done. Next](…)") starts no chunk
+            if cs < a, starts.count == 1 || length(cs, b) > limit, !insideKept(tokens[a].range.lowerBound) { starts.append(a); cs = a; limit = max }
             while length(cs, b) > limit, let i = cut(cs, b, limit) { starts.append(i); cs = i; limit = max }
             a = b
         }
