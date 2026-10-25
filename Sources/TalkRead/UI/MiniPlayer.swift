@@ -25,7 +25,7 @@ import TalkReadCore
     private var noticeWatch: AnyCancellable?
     private var expandedWatch: AnyCancellable?
     /// The read fell back to Kokoro (V3): the panel grows by one line for the notice.
-    private var hasNotice = false
+    private var hasNotice: Bool { message == nil && model?.session?.fallbackReason != nil }   // as MiniPlayerLive draws it
     private var hideTask: Task<Void, Never>?
     private var sentenceCache: (id: ObjectIdentifier, ranges: [Range<Int>])?
 
@@ -102,7 +102,6 @@ import TalkReadCore
     /// A short status with no read behind it; hides after the usual delay.
     func flash(_ text: String) {
         message = text
-        hasNotice = false   // a message replaces the read's face, notice included
         resize()
         show()
         hideLater()
@@ -142,10 +141,8 @@ import TalkReadCore
             default: self?.hideTask?.cancel()
             }
         }
-        hasNotice = false
-        noticeWatch = session?.$fallbackReason.map { $0 != nil }.removeDuplicates().sink { [weak self] on in
-            self?.hasNotice = on
-            self?.resize()
+        noticeWatch = session?.$fallbackReason.map { $0 != nil }.removeDuplicates().sink { [weak self] _ in
+            self?.resizeAfterLayout()   // delivered before the new value is stored
         }
         if session != nil, model?.settings.showMiniPlayer == true { show() }
     }
