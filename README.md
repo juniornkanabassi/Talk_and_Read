@@ -36,15 +36,15 @@ Select some text and press ⌃A to hear it. Hold right Option and speak to dicta
 
 ## Updates
 
-Talk & Read checks for updates once a day and shows you the release notes before anything changes. It installs an update only when you say yes. Check for Updates… in the menu bar menu checks straight away.
+Talk & Read checks for updates each time it opens and once a day while it runs, and shows you the release notes before anything changes. It installs an update only when you say yes, unless you tick the option to install updates automatically. Check for Updates… in the menu bar menu checks straight away.
 
 ## Privacy
 
-Your text, audio and documents never leave your Mac. There are no accounts and no analytics. The voices and the dictation model download from Hugging Face, each one only when you agree, and the app checks juniornkanabassi.com for updates and downloads them from GitHub. It fetches a web page only when you ask it to open one.
+Reading and dictation run on your Mac, so your text, audio and documents are not sent anywhere. There are no accounts and no analytics. The voices and the dictation model download from Hugging Face when you choose them. If you skip the dictation model, the app uses Apple's speech recogniser when that is already installed, and otherwise your first dictation downloads the model. The app checks juniornkanabassi.com for updates and downloads them from GitHub, and it fetches a web page only when you ask it to open one. If you connect an AI assistant, the commands you let it run can pass your text and history to that assistant.
 
 ## Command line and AI assistants
 
-The app includes a `talkread` command that controls the running app, and an MCP server that lets Claude, Codex and other assistants use the same commands. Whatever you do yourself at the Mac takes priority: an assistant cannot interrupt your reading or dictation unless it deliberately passes `--force`.
+The app includes a `talkread` command that controls the running app, and an MCP server that lets Claude, Codex and other assistants use the same commands. Whatever you do yourself at the Mac takes priority. Commands will not stop reading or dictation that someone else started unless `--force` is passed. This keeps assistants out of each other's way, but it is not a security barrier, since anything running under your account can get round it. Changing a shortcut while you hold the dictation key also cancels that dictation.
 
 The command lives inside the app. To use it from Terminal, link it onto your PATH:
 
@@ -52,6 +52,8 @@ The command lives inside the app. To use it from Terminal, link it onto your PAT
 mkdir -p ~/.local/bin
 ln -s "/Applications/Talk & Read.app/Contents/Helpers/talkread" ~/.local/bin/talkread
 ```
+
+If `talkread` is then not found, `~/.local/bin` is not on your PATH yet. Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` and open a new Terminal window.
 
 A few examples:
 
@@ -88,7 +90,7 @@ Nearly everything you can do in the windows and the menu has a command:
 - History: `history`, `history-delete`.
 - Settings: `settings-get`, `settings-set` (shortcuts included), `shortcuts-reset`, `pronunciations`, `pronunciation-set`, `pronunciation-remove`, `models`, `update-check`, `status`.
 
-Several assistants can work at once. A retried request with the same `--request-id` acts only once, and anything that removes something (`library-remove`, `history-delete`, `vocabulary-remove`, `pronunciation-remove`, `shortcuts-reset`) is refused without `--yes`. A few things stay in the app on purpose: granting permissions, the first-run setup, the screenshot and listen drag, window placement, and downloading the Breeze voices, which only start beside their licence in Settings ▸ Models.
+Several assistants can work at once. A request retried with the same `--request-id` within a few minutes acts only once, as long as the app and the MCP server have not restarted, and anything that removes something (`library-remove`, `history-delete`, `vocabulary-remove`, `pronunciation-remove`, `shortcuts-reset`) is refused without `--yes`. A few things stay in the app on purpose: granting permissions, the first-run setup, the screenshot and listen drag, window placement, and downloading the Breeze voices, which only start beside their licence in Settings ▸ Models.
 
 ## Building from source
 
@@ -99,7 +101,7 @@ swift build --scratch-path /private/tmp/talkread-build
 swift test  --scratch-path /private/tmp/talkread-build
 ```
 
-`build.sh` makes a signed `Talk & Read.app` and a zip. It signs with my Developer ID when that certificate is in the keychain, and then also notarises it and makes the disk image. Without it, run `TALKREAD_ALLOW_ADHOC=1 ./build.sh` for an ad hoc copy, which has updates turned off. `install.sh` installs a build into `/Applications/JuniorOS Apps/` (set `TALKREAD_INSTALL_ROOT` to change it, and adjust the paths in the examples above to match), and `release.sh` publishes a release. Builds go to `../Outputs`, outside the clone, unless you set `TALKREAD_OUTPUT_ROOT`. These scripts are written for my own Mac.
+`build.sh` makes a signed `Talk & Read.app` and a zip. It signs with my Developer ID when that certificate is in the keychain, and then also notarises it and makes the disk image. Without it, run `TALKREAD_ALLOW_ADHOC=1 ./build.sh` for an ad hoc copy, which has updates turned off. `install.sh` only accepts my Developer ID builds, so unzip an ad hoc copy and move the app into Applications yourself. `install.sh` installs a build into `/Applications/JuniorOS Apps/` (set `TALKREAD_INSTALL_ROOT` to change it, and adjust the paths in the examples above to match), and `./release.sh --website <checkout> --notes notes.md [--dry-run]` publishes a release, which only I do. Builds go to `../Outputs`, outside the clone, unless you set `TALKREAD_OUTPUT_ROOT`. These scripts are written for my own Mac.
 
 The source folder on my Mac is synced with iCloud, so I always build with a scratch path outside it, as above. Design notes live outside this repository.
 
