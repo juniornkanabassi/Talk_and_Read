@@ -172,9 +172,30 @@ final class SpeakableTests: XCTestCase {
         // a path longer than any chunk, alone, is one chunk and one name (Codex round 4)
         let alone = "/Users/" + String(repeating: "project/", count: 50) + "notes.md"
         XCTAssertEqual(read(alone), "notes.md")
+        // a link whose target holds balanced brackets is kept whole too (Codex round 5)
+        let bracketed = "[guide](/Users/j/Folder_(old)/" + String(repeating: "folder ", count: 50) + "guide.md) end."
+        XCTAssertEqual(read(bracketed), "guide end.")
+        // a long code span is still cut to chunk size, every word read once (Codex round 5)
+        let bigSpan = "`" + String(repeating: "make all ", count: 400) + "`"
+        let chunks = TextKit.chunks(bigSpan, tokens: TextKit.tokenize(bigSpan))
+        XCTAssertGreaterThan(chunks.count, 5)
+        XCTAssertTrue(chunks.allSatisfy { $0.range.count <= 320 })
+        XCTAssertEqual(read(bigSpan).split(separator: " ").count, 800)
         // an ordinary code span the opening chunk's limit falls in is read once (Codex round 2)
         let span = "Run " + "`" + String(repeating: "make all ", count: 25) + "`" + " then stop."
         XCTAssertEqual(read(span), "Run " + String(repeating: "make all ", count: 25) + "then stop.")
+    }
+
+    func testFencedCodeIsReadAsWritten() {
+        XCTAssertEqual(make("Run:\n```sh\ncat /Users/j/notes.md\n```\nDone.").text, "Run: cat /Users/j/notes.md. Done.")
+    }
+
+    /// An unclosed "[" on a long line costs linear time, not a rescan from every bracket (Codex round 5).
+    func testManyOpenBracketsStayFast() {
+        let s = String(repeating: "[word ", count: 20_000)
+        let start = Date()
+        _ = TextKit.chunks(s, tokens: TextKit.tokenize(s))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
     }
 
     /// A read that starts inside a link (a click in the reader, a saved place) reads the link whole (Codex round 2).

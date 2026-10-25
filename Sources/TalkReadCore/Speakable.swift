@@ -85,7 +85,7 @@ public struct Speakable: Sendable {
     }
 }
 
-private enum Rx {
+enum Rx {   // internal: the chunker protects the same constructs (TextKit.chunks)
     static func make(_ pattern: String, _ options: NSRegularExpression.Options = []) -> NSRegularExpression {
         try! NSRegularExpression(pattern: pattern, options: options)
     }
@@ -95,11 +95,13 @@ private enum Rx {
     /// that closes it. Spaces only in a target wrapped in <…>, or one that starts like a path or address ("/", "~/",
     /// "./", "../", "scheme://") or ends in a file name ("01 About Me/MEMORY.md", a "#part" or ":42" after it), so
     /// "options [A](which is best.) or [B]" and "[x](and/or something)" stay prose.
-    static let link = make("\\[([^\\]\\n]*)\\]\\((?:<[^>\\n]*>|(?:[^()\\s]|\\([^()\\s]*\\))*|(?=/|~/|\\.\\.?/|[A-Za-z][A-Za-z0-9+.-]*://|[^)\\n]*\\.[A-Za-z][A-Za-z0-9]{0,7}(?:[#:][^)\\s]*)?\\))(?:[^()\\n]|\\([^()\\n]*\\))*?)(?:[ \\t]+\"[^\"\\n]*\")?\\)")
+    static let link = make("\\[([^\\[\\]\\n]*)\\]\\((?:<[^>\\n]*>|(?:[^()\\s]|\\([^()\\s]*\\))*|(?=/|~/|\\.\\.?/|[A-Za-z][A-Za-z0-9+.-]*://|[^)\\n]*\\.[A-Za-z][A-Za-z0-9]{0,7}(?:[#:][^)\\s]*)?\\))(?:[^()\\n]|\\([^()\\n]*\\))*?)(?:[ \\t]+\"[^\"\\n]*\")?\\)")
     /// What may be an absolute file path or file URL: "/" or "~/" then two components or more, up to the next space,
     /// a trailing "/" allowed. `Maker.pathLength` decides whether it is one. A path in backticks may hold spaces
     /// (`codePath`).
     static let path = make("(?:file://(?:localhost)?)?~?/(?:[^\\s/<>\"'`|\\[\\]]+/)*[^\\s/<>\"'`|\\[\\]]+/?", .caseInsensitive)
+    /// A fenced code block's opening line; the block runs to a line that starts with ``` again.
+    static let fence = make("```[^\\n]*(?:\\n|$)")
     static let codePath = make("`((?:file://(?:localhost)?)?~?/(?:[^/\\n`]+/)*[^/\\n`]+/?)`", .caseInsensitive)
     static let email = make("[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+")
     static let url = make("https?://[^\\s<>\"]+", .caseInsensitive)
@@ -359,6 +361,18 @@ private struct Maker {
             if c == 0x0A || c == 0x0D { copy(p, p + 1); p += 1; lineStart = true; continue }
             if lineStart {
                 if c == 0x20 || c == 0x09 { copy(p, p + 1); p += 1; continue }
+                // A fenced code block is read as written (no path, link or emphasis rules), without its fence lines.
+                if c == 0x60, let m = match(Rx.fence, p, to) {
+                    let body = p + m.range.length
+                    var close = body
+                    while close < to, !(u[close] == 0x60 && close + 2 < u.count && u[close + 1] == 0x60 && u[close + 2] == 0x60
+                                         && (close == 0 || u[close - 1] == 0x0A)) { close += 1 }
+                    copy(body, close)
+                    p = close
+                    if close < to, let end = match(Rx.fence, close, to) { p = close + end.range.length }
+                    lineStart = true
+                    continue
+                }
                 if let m = match(Rx.marker, p, to) { p += m.range.length; continue }   // heading, quote, bullet: dropped
                 lineStart = false
             }

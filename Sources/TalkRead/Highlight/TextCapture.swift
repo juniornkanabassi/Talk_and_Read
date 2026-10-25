@@ -62,8 +62,10 @@ enum TextCapture {
         if !secure {
             switch await copySelection(appElement: appElement) {
             case .text(let text):
-                // Claude's Copy serialises its screen reader headings too; the tree cannot place them in a copy.
-                let net = isClaude(pid) ? HiddenText.safetyNet(text) : (text: text, removed: 0)
+                // Claude's chat Copy serialises its screen reader headings too; the tree cannot place them in a copy. Not
+                // from a text field (the message box), whose text is all typed.
+                let editable = focused.map { ["AXTextArea", "AXTextField", "AXComboBox"].contains(axAttribute($0, kAXRoleAttribute) as? String ?? "") } ?? false
+                let net = isClaude(pid) && !editable ? HiddenText.safetyNet(text) : (text: text, removed: 0)
                 let kept = net.removed > 0 && !net.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 var c = Capture(text: kept ? net.text : text, pid: pid, element: focused, window: window, selectionStart: nil, source: .copied)
                 if kept { (c.hiddenRemoved, c.selected) = (net.removed, text) }
@@ -217,7 +219,11 @@ enum TextCapture {
                 guard !visibility.draws(string), !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 let start = AXTextMarkerRangeCopyStartMarker(own as! AXTextMarkerRange)
                 guard let d1 = distance(selStart, start), let d2 = distance(start, selEnd) else { complete = false; continue }
-                guard let placed = HiddenText.place(d1: d1, d2: d2, length: length, nodeLength: string.utf16.count) else { continue }
+                guard let placed = HiddenText.place(d1: d1, d2: d2, length: length, nodeLength: string.utf16.count) else {
+                    // near the selection but not placeable (both tolerant fits): unresolved, so the text net may run
+                    if abs(d1 + d2 - length) <= 2 || abs(d2 - d1 - length) <= 2 { complete = false }
+                    continue
+                }
                 // The part of the node's text that falls inside the selection, as the selection holds it.
                 let part = (string as NSString).substring(with: NSRange(location: placed.skip, length: placed.range.count))
                 if placed.exact, ns.substring(with: NSRange(location: placed.range.lowerBound, length: placed.range.count)) == part {
@@ -225,6 +231,8 @@ enum TextCapture {
                 } else if placed.skip == 0, placed.range.count == string.utf16.count,   // only a whole node is looked for
                           let found = HiddenText.locate(string, in: text, near: placed.range) {
                     ranges.append(found)
+                } else {
+                    complete = false
                 }
                 continue
             }
