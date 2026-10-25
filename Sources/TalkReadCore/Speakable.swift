@@ -29,10 +29,11 @@ public struct Speakable: Sendable {
     /// ("14 novembre", "1er", "14/11/2027"), times ("11h20"), `%` ("pour cent"), `°C` ("degrés Celsius"), `€ $ £`, `&` ("et"),
     /// "point" and "arobase" in addresses. English is unchanged (the engine's own normaliser reads English digits).
     /// `skip`: source ranges never spoken (a PDF's running headers, footers and page numbers).
-    /// `skipCitations`: reference marks are dropped: "[12]", "[3, 5–7]", "[citation needed]" anywhere but the start of a
-    /// line (a judgment's paragraph number stays), superscript digits after punctuation or a word, and 1 to 3 plain
-    /// digits glued to the punctuation that ends a word of four letters or more ("consideration.12 The"), which is how a
-    /// PDF's footnote marks come out; "s.12", "para.4", "3.5" and "1,000" are kept.
+    /// `skipCitations`: reference marks are dropped: "[12]", "[3, 5–7]", "[citation needed]" glued to the word or
+    /// punctuation before them (a spaced "at [45]" or a line's "[23]" is a paragraph reference and is read), superscript
+    /// digits after punctuation or a long word, and 1 to 3 plain digits glued to the full stop after a word of four
+    /// letters or more and followed by a capital ("consideration.12 The"), which is how a PDF's footnote marks come out;
+    /// "s.12", "para.4", "Goals:12", "3.5" and "1,000" are kept.
     public static func make(_ source: String, range: Range<Int>, lexicon: [String: String], language: String = "en",
                             skip: [Range<Int>] = [], skipCitations: Bool = false) -> Speakable {
         let ns = source as NSString
@@ -103,6 +104,9 @@ private struct Maker {
     var units: [UInt16] = [], lows: [Int] = [], highs: [Int] = []
     /// Slice ranges never spoken, sorted by start.
     var skip: [Range<Int>] = []
+    /// Output positions where skipped text was: a line break there joins two halves of one sentence (a page break
+    /// with its footer and running head removed), so it gets no full stop.
+    var skippedAt: Set<Int> = []
     var citations = false
 
     init(_ slice: String, lexicon: [String: String], french: Bool) {
@@ -180,7 +184,9 @@ private struct Maker {
         return l < skip.count && skip[l].lowerBound <= p ? skip[l].upperBound : nil
     }
 
-    static let shortForms: Set<String> = ["para", "paras", "sect", "sched", "chap", "page", "pages", "note", "notes", "fig", "figs", "vol", "vols"]
+    /// Abbreviations of four letters or more that a number follows ("para.4", "arts.8"): the number is read.
+    static let shortForms: Set<String> = ["para", "paras", "sect", "secs", "sched", "chap", "page", "pages", "note", "notes", "fig", "figs",
+                                          "vols", "arts", "regs", "rule", "rules", "ords", "apps", "ibid"]
 
     /// The run of letters ending at `end` (exclusive), lower-cased.
     func word(endingAt end: Int) -> String {
@@ -189,27 +195,39 @@ private struct Maker {
         return String(decoding: u[a..<end], as: UTF16.self).lowercased()
     }
 
-    /// How much source a footnote mark at p uses: superscript digits, or 1 to 3 plain digits glued to the punctuation
-    /// after a long word and followed by a space or the line's end. nil when p starts no mark.
+    /// Whether the unit before p ends a word or its punctuation, so a mark at p is glued to it ("void[12]", "void.[12]",
+    /// "[1][2]"). A spaced bracket is a reference to be read ("at [45]", "[23]–[25]").
+    func glued(_ p: Int) -> Bool {
+        guard p > 0 else { return false }
+        let before = u[p - 1]
+        return Maker.isWord(before) && !Maker.isDigit(before) || ".,;:)]\"'”’".utf16.contains(before)
+    }
+
+    /// How much source a footnote mark at p uses: superscript digits after punctuation or a long word, or 1 to 3 plain
+    /// digits glued to the full stop or semicolon after a long word and followed by a capital or the line's end
+    /// ("consideration.12 The"). nil when p starts no mark.
     func footnoteMark(_ p: Int, _ to: Int) -> Int? {
         guard p > 0 else { return nil }
         let superscripts: Set<UInt16> = [0x00B9, 0x00B2, 0x00B3, 0x2070, 0x2074, 0x2075, 0x2076, 0x2077, 0x2078, 0x2079]
-        let closers = "\"'”’)]".utf16, enders = ".,;:".utf16
         let before = u[p - 1]
         if superscripts.contains(u[p]) {
-            var q = p
-            while q < to, superscripts.contains(u[q]) || u[q] == 0x2C { q += 1 }   // ¹,² as one mark
+            var q = p   // "¹,²" is one mark; a comma after the last one is the sentence's ("Smith¹, Jones")
+            while q < to, superscripts.contains(u[q]) || u[q] == 0x2C && q + 1 < to && superscripts.contains(u[q + 1]) { q += 1 }
             // After punctuation, or after a word of four letters or more ("m²" and "x³" are maths and stay).
-            return closers.contains(before) || enders.contains(before) || word(endingAt: p).count >= 4 ? q - p : nil
+            return ".,;:)]\"'”’".utf16.contains(before) || word(endingAt: p).count >= 4 ? q - p : nil
         }
-        // Plain digits: straight quotes are left out, since they also open a quotation ('said:"12 men"').
-        let curly = "”’)]".utf16
-        guard Maker.isDigit(u[p]), curly.contains(before) || enders.contains(before) else { return nil }
+        // Plain digits: not after a colon ("Goals:12") or a straight quote, which also opens a quotation.
+        let closers = "”’)]".utf16, enders = ".;".utf16
+        guard Maker.isDigit(u[p]), closers.contains(before) || enders.contains(before) else { return nil }
         var q = p
         while q < to, Maker.isDigit(u[q]) { q += 1 }
-        guard q - p <= 3, q == to || [0x20, 0x09, 0x0A, 0x0D, 0xA0].contains(u[q]) else { return nil }
+        guard q - p <= 3 else { return nil }
+        var r = q   // what follows: the line's end, or spaces then a capital
+        while r < to, u[r] == 0x20 || u[r] == 0x09 || u[r] == 0xA0 { r += 1 }
+        guard r == to || u[r] == 0x0A || u[r] == 0x0D
+                || r > q && Unicode.Scalar(UInt32(u[r])).map({ CharacterSet.uppercaseLetters.contains($0) }) == true else { return nil }
         var w = p - 1   // back over the punctuation to the word (a closer may follow an ender: "end.”12")
-        while w > 0, curly.contains(u[w]) || enders.contains(u[w]) { w -= 1 }
+        while w > 0, closers.contains(u[w]) || enders.contains(u[w]) { w -= 1 }
         let name = word(endingAt: w + 1)
         return name.count >= 4 && !Maker.shortForms.contains(name) ? q - p : nil
     }
@@ -218,18 +236,16 @@ private struct Maker {
         var p = from
         var lineStart = start
         loop: while p < to {
-            if let end = skipEnd(p) { p = min(end, to); continue }
+            if let end = skipEnd(p) { skippedAt.insert(units.count); p = min(end, to); continue }
             let c = u[p]
             if c == 0x0A || c == 0x0D { copy(p, p + 1); p += 1; lineStart = true; continue }
-            var firstOnLine = false
             if lineStart {
                 if c == 0x20 || c == 0x09 { copy(p, p + 1); p += 1; continue }
                 if let m = match(Rx.marker, p, to) { p += m.range.length; continue }   // heading, quote, bullet: dropped
                 lineStart = false
-                firstOnLine = true
             }
-            if citations, !firstOnLine {
-                if c == 0x5B, match(Rx.link, p, to) == nil, let m = match(Rx.citation, p, to) { p += m.range.length; continue }
+            if citations {
+                if c == 0x5B, glued(p), match(Rx.link, p, to) == nil, let m = match(Rx.citation, p, to) { p += m.range.length; continue }
                 if let n = footnoteMark(p, to) { p += n; continue }
             }
             if p == from || !Maker.isWord(u[p - 1]) {
@@ -279,7 +295,8 @@ private struct Maker {
 
     // MARK: finishing
 
-    /// Collapses whitespace runs, turns unpunctuated line ends into ". ", trims, and shifts the map to source coordinates.
+    /// Collapses whitespace runs, turns unpunctuated line ends into ". " (not where skipped text was), trims, and shifts
+    /// the map to source coordinates.
     func finish(base: Int) -> Speakable {
         var out: [UInt16] = [], lo: [Int] = [], hi: [Int] = []
         func endsWithPunctuation() -> Bool {
@@ -293,12 +310,14 @@ private struct Maker {
             guard unit == 0x20 || unit == 0x09 || unit == 0x0A || unit == 0x0D || unit == 0xA0 else {
                 out.append(unit); lo.append(lows[i] + base); hi.append(highs[i] + base); i += 1; continue
             }
-            var j = i, newline = false
+            var j = i, newline = false, skipped = skippedAt.contains(i)
             var a = Int.max, b = Int.min
             while j < units.count, [0x20, 0x09, 0x0A, 0x0D, 0xA0].contains(units[j]) {
                 if units[j] == 0x0A || units[j] == 0x0D { newline = true }
                 a = min(a, lows[j]); b = max(b, highs[j]); j += 1
+                if skippedAt.contains(j) { skipped = true }
             }
+            if skipped { newline = false }
             if !out.isEmpty, j < units.count {
                 if newline, !endsWithPunctuation() { out.append(0x2E); lo.append(a + base); hi.append(b + base) }
                 out.append(0x20); lo.append(a + base); hi.append(b + base)
