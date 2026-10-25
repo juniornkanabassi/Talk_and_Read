@@ -438,7 +438,8 @@ extension EngineKind {
         let capture = found.flatMap(PointerCapture.capture)
         let pid = capture?.pid ?? found?.pid
         guard owner?.sessionID == id else {
-            if let pid { AXWake.restore(pid) }   // no Highlighter will end this read (E8)
+            // No Highlighter will end this read (E8); a newer read on the same app keeps its wake.
+            if let pid, liveSession?.capture?.pid != pid { AXWake.restore(pid) }
             return nil
         }
         guard let capture else {

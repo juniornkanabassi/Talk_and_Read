@@ -119,6 +119,7 @@ final class Hotkeys {
     private func checkHealth() {
         if let tap, CGEvent.tapIsEnabled(tap: tap) { return }
         consumer.reset()   // key-ups missed while the tap was off must not leave a key swallowed
+        DispatchQueue.main.async { self.onReset?() }   // nor a reveal it never saw end: the glyph starts again from the key
         if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
         if let tap, CGEvent.tapIsEnabled(tap: tap) { return }
         removeTap()

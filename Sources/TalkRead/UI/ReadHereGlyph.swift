@@ -47,8 +47,8 @@ import TalkReadCore
 
     /// Raw key data from the hotkey tap (main thread), with the shortcuts in force.
     func key(_ type: CGEventType, keyCode: UInt16, flags: UInt64, at time: Double, settings: Settings) {
+        if type == .keyDown, timer == nil, block != nil { hidePanel(); block = nil }   // typing puts a hover glyph away, whatever the reveal key
         guard let event = Self.revealEvent(type, keyCode: keyCode, flags: flags, settings: settings) else { return }
-        if event == .otherKey, timer == nil, block != nil { hidePanel(); block = nil }   // typing puts a hover glyph away
         apply(state.handle(event, at: time))
         if event == .keyDown {
             DispatchQueue.main.asyncAfter(deadline: .now() + RevealState.delay) { [weak self] in
@@ -124,7 +124,10 @@ import TalkReadCore
         looking = true
         Task { @MainActor in
             defer { looking = false }
-            guard let hit = PointerCapture.hit(point) else { return }   // over the glyph itself, or nothing
+            guard let hit = PointerCapture.hit(point) else {   // our own window, or nothing (the glyph is inside the band)
+                if timer != nil { hidePanel(); block = nil }
+                return
+            }
             var found = PointerCapture.block(from: hit.element, pid: hit.pid, point: point)
             if found == nil, !woken.contains(hit.pid) {
                 woken.insert(hit.pid)

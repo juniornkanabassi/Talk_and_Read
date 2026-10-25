@@ -74,7 +74,7 @@ enum PointerCapture {
         }
         // The page itself, or a container most of a screen tall, is no paragraph: the pointer is in a margin or a gap.
         guard !CFEqual(current, area), let frame = axFrame(current), !frame.isEmpty,
-              frame.height < max(240, areaFrame.height * 0.6), frame.insetBy(dx: -4, dy: -4).contains(point),
+              frame.height < max(240, areaFrame.height * 0.6) || onlyText(current), frame.insetBy(dx: -4, dy: -4).contains(point),
               !isContainer(current, frame: frame), hasText(current, area: area) else { return nil }
         return Block(pid: pid, element: current, frame: frame, start: nil)
     }
@@ -107,6 +107,12 @@ enum PointerCapture {
             best = current
         }
         return best
+    }
+
+    /// Nothing but text runs inside: a paragraph however tall, never a container of blocks.
+    private static func onlyText(_ element: AXUIElement) -> Bool {
+        let children = (axAttribute(element, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+        return !children.isEmpty && children.prefix(200).allSatisfy { inline.contains(axAttribute($0, kAXRoleAttribute) as? String ?? "") }
     }
 
     /// A generic group on one line beside its parent's own text (a chip, a code span, a styled run) is part of that
@@ -173,7 +179,9 @@ enum PointerCapture {
             return Capture(text: tail, pid: block.pid, element: block.element, window: window, selectionStart: start, source: .pointer)
         }
         guard let area = TextCapture.webArea(of: block.element) else { return nil }
-        let end = column(of: block.element, frame: block.frame, area: area)
+        // A paragraph straight under the page (plain HTML) has no column of its own: the page is the column.
+        let parent = axElement(block.element, kAXParentAttribute)
+        let end = parent.map { CFEqual($0, area) } == true ? area : column(of: block.element, frame: block.frame, area: area)
         if let own = markerRange(of: block.element, in: area), let page = markerRange(of: end, in: area),
            let range = axParameterizedAttribute(area, "AXTextMarkerRangeForUnorderedTextMarkers",
                                                 parameter: [AXTextMarkerRangeCopyStartMarker(own), AXTextMarkerRangeCopyEndMarker(page)] as CFArray),
@@ -182,10 +190,11 @@ enum PointerCapture {
            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // The element is the paragraph, so the node map prefers its own words for the start of the read.
             let c = Capture(text: text, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer)
-            if text.utf16.count > maxText {   // too long to check for hidden text in one walk: read the first part as it is
+            if text.utf16.count > maxText {   // too long to place hidden nodes in one walk: the first part, through the text-only net
                 let ns = text as NSString
                 let head = ns.substring(with: ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: maxText)))
-                return Capture(text: head, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer)
+                return TextCapture.withoutHiddenText(Capture(text: head, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer),
+                                                     root: area, selection: nil)
             }
             return TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
         }
