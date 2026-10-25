@@ -70,8 +70,10 @@ public enum Cleanup {
     static func fillerPattern(_ languages: [String]) -> String {
         let fillers: [String: [String]] = ["en": ["umm", "um", "uh", "erm", "er", "ah", "hmm"], "fr": ["euh", "heu"],
                                            "de": ["äh", "ähm"], "it": ["ehm", "uhm"]]
-        let words: [String: Set<String>] = ["de": ["er", "um"], "pt": ["um"], "fr": ["ah"]]   // "uns um acht", "ah bon"
-        let drop = (fillers["en"]! + languages.flatMap { fillers[$0] ?? [] }).filter { f in !languages.contains { words[$0]?.contains(f) == true } }
+        let words: [String: Set<String>] = ["de": ["er", "um"], "pt": ["um"]]   // "Er kommt", "uns um acht", "Quero um café"
+        var drop = (fillers["en"]! + languages.flatMap { fillers[$0] ?? [] }).filter { f in !languages.contains { words[$0]?.contains(f) == true } }
+        // French "ah bon", "ah oui" are words; an "ah" before anything else is still a hesitation.
+        if languages.contains("fr") { drop = drop.map { $0 == "ah" ? "ah(?!,?[ \\t]+(?:bon|oui|non|d['’]accord|bah|ça|là)\\b)" : $0 } }
         var seen = Set<String>()
         return "(?i)[ \\t]*\\b(?:\(drop.filter { seen.insert($0).inserted }.joined(separator: "|")))\\b,?"
     }
@@ -86,8 +88,14 @@ public enum Cleanup {
             ("open quote", openQuote), ("close quote", closeQuote), ("dash", " – ")
         ]
         guard languages.contains("fr") else { return english }
-        return [("nouveau paragraphe", "\n\n"), ("à la ligne", "\n"), ("point final", "."), ("point[ -]virgule", ";"),
-                ("point d['’]interrogation", "?"), ("point d['’]exclamation", "!"), ("deux[ -]points", ":"), ("virgule", ","),
+        // "point final" and "à la ligne" are also ordinary French ("mettre un point final à", "à la ligne de touche"), so
+        // they count only at the end or before a capital; "deux points" (a score) is not a command at all; "virgule"
+        // between two numbers is a decimal comma ("deux virgule cinq buts attendus").
+        let clauseEnd = "(?=[ \\t]*(?:$|\\n)|[ \\t]+(?-i:\\p{Lu}))"
+        let number = "(?:\\d{1,9}|zéro|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)"
+        return [("nouveau paragraphe", "\n\n"), ("à la ligne\(clauseEnd)", "\n"), ("point final\(clauseEnd)", "."),
+                ("point[ -]virgule", ";"), ("point d['’]interrogation", "?"), ("point d['’]exclamation", "!"),
+                ("(?<!\\b\(number)[ \\t])virgule|virgule(?![ \\t]+\(number)\\b)", ","),
                 ("ouvrez les guillemets|ouvrir les guillemets", openQuote), ("fermez les guillemets|fermer les guillemets", closeQuote)]
             + english
     }

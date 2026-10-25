@@ -33,6 +33,7 @@ final class FormattingTests: XCTestCase {
         XCTAssertEqual(clean("It's the second May bank holiday"), "It's the second May bank holiday")
         XCTAssertEqual(clean("We met during the first March I lived here"), "We met during the first March I lived here")
         XCTAssertEqual(clean("We went to 2 10pm screenings"), "We went to 2 10pm screenings")
+        XCTAssertEqual(clean("We left after 2 10pm screenings."), "We left after 2 10pm screenings.")
         XCTAssertEqual(clean("Book the pitch for seven, actually 8, on Friday."), "Book the pitch for 8 on Friday.")
         XCTAssertEqual(clean("someone, actually one of them"), "Someone, actually one of them")
         XCTAssertEqual(clean("I actually enjoyed 2 of them"), "I actually enjoyed 2 of them")

@@ -60,7 +60,13 @@ final class CleanupTests: XCTestCase {
         // French commands with French on; English ones still work, and "point" alone is a word.
         let fr = { (s: String) in Cleanup.apply(s, vocabulary: [:], removeFillers: true, languages: ["en", "fr"]) }
         XCTAssertEqual(fr("Bonjour virgule comment allez-vous point d'interrogation"), "Bonjour, comment allez-vous?")
-        XCTAssertEqual(fr("C'est le point important point final à la ligne Ensuite deux-points rien"), "C'est le point important.\nEnsuite: rien")
+        XCTAssertEqual(fr("C'est le point important point final à la ligne Ensuite on continue"), "C'est le point important.\nEnsuite on continue")
+        // ... but not in ordinary French.
+        XCTAssertEqual(fr("Il court à la ligne de touche."), "Il court à la ligne de touche.")
+        XCTAssertEqual(fr("Nous avons deux points de retard."), "Nous avons deux points de retard.")
+        XCTAssertEqual(fr("Il faut mettre un point final à ce débat."), "Il faut mettre un point final à ce débat.")
+        XCTAssertEqual(fr("Deux virgule cinq buts attendus, 1 virgule 4 xG."), "Deux virgule cinq buts attendus, 1 virgule 4 xG.")
+        XCTAssertEqual(fr("Ah, the tricky part is the timing."), "The tricky part is the timing.", "an English ah is still a filler")
         XCTAssertEqual(fr("Hello comma world full stop"), "Hello, world.")
         XCTAssertEqual(clean("Bonjour virgule"), "Bonjour virgule", "French commands only with French on")
         XCTAssertEqual(clean("The end. New paragraph Next part"), "The end.\n\nNext part", "a line break keeps the full stop")

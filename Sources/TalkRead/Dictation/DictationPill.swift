@@ -122,21 +122,16 @@ struct DictationPillView: View {
         let copyable = dictation.copyable != nil   // done, or not typed: Copy and the paste-last tip
         return DictationPillStatus(message: message, levels: dictation.levels, recording: recording, words: words,
                                    copy: copyable ? { dictation.copyResult() } : nil, copied: dictation.copied, closes: dictation.state.showsResult,
-                                   tip: copyable ? DictationPillStatus.pasteTip(TalkReadCore.Settings.load().pasteLastShortcut) : nil) {
+                                   tip: copyable ? DictationPillStatus.pasteTip(TalkReadCore.Settings.load().pasteLastShortcut)
+                                       : recording || dictation.state == .transcribing ? dictation.languageNotice : nil) {
             dictation.dismiss()
         }
-    }
-
-    /// The microphone and language notices, both when both apply.
-    private var notice: String? {
-        let both = [dictation.micNotice, dictation.languageNotice].compactMap { $0 }
-        return both.isEmpty ? nil : both.joined(separator: ". ")
     }
 
     private var message: String {
         switch dictation.state {
         case .idle: ""
-        case .recording(_, let partial): dictation.preparing && partial.isEmpty ? "Preparing…" : partial.isEmpty ? notice ?? "Listening" : partial
+        case .recording(_, let partial): dictation.preparing && partial.isEmpty ? "Preparing…" : partial.isEmpty ? dictation.micNotice ?? "Listening" : partial
         case .transcribing: dictation.lastPartial.isEmpty ? "Transcribing…" : dictation.lastPartial
         case .done(let text): text
         case .failed(let reason): reason
@@ -158,7 +153,7 @@ struct DictationPillStatus: View {
     var copied = false
     /// The ✕ closes a result rather than cancelling a dictation (its VoiceOver label).
     var closes = false
-    /// "Didn't land? Press ⌃⌘V to paste it" (nil: hidden).
+    /// "Didn't land? Press ⌃⌘V to paste it", or while recording the English-only notice (nil: hidden).
     var tip: String? = nil
     let cancel: () -> Void
 

@@ -68,7 +68,7 @@ extension Cleanup {
         text = text.replacingOccurrences(of: "\\b(1[0-2]|[1-9])([0-5]\\d)(\\s?[aApP]\\.?\\s?[mM]\\b)", with: "$1:$2$3", options: .regularExpression)
         // "at 3 30pm" (Parakeet v3 spaces the minutes) → "at 3:30pm"; only after a word that introduces a time, so "book 2
         // 10pm slots" keeps its count.
-        text = text.replacingOccurrences(of: "(?i)\\b(at|by|from|until|till|before|after|since) (1[0-2]|[1-9]) ([0-5]\\d)(\\s?[aApP]\\.?\\s?[mM]\\b)",
+        text = text.replacingOccurrences(of: "(?i)\\b(at|by|from|until|till) (1[0-2]|[1-9]) ([0-5]\\d)(\\s?[aApP]\\.?\\s?[mM]\\b)",
                                          with: "$1 $2:$3$4", options: .regularExpression)
         text = replaceAll("\\b(\\d{1,2}(?::\\d{2})?)\\s?([aApP])\\.?\\s?[mM]\\b(?:\\.(?!\\s*$|\\s+[A-Z]|\\s*\\n))?", in: text) {
             $0[1] + $0[2].lowercased() + "m"

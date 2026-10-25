@@ -54,7 +54,7 @@ enum DictationError: LocalizedError, Equatable {
     @Published private(set) var micNotice: String?
     /// Set while recording when other languages are chosen but their model is not downloaded yet, so this one is English.
     @Published private(set) var languageNotice: String?
-    static let languageFallback = "English only until the multilingual model is downloaded (Settings ▸ Dictation)"
+    static let languageFallback = "English only: download the multilingual model in Settings"
 
     static let user = "user"
     /// The one admission slot for live dictation and file transcription: one owner at a time; other control callers
@@ -156,7 +156,7 @@ enum DictationError: LocalizedError, Equatable {
         lastPartial = ""
         state = .recording(level: 0, partial: "")
         showPill()
-        let asr = recogniser()
+        let asr = recogniser(), languages = languages        // this utterance keeps the languages it started with
         if languages != ["en"], asr !== multilingual {
             languageNotice = Self.languageFallback
         }
@@ -171,7 +171,7 @@ enum DictationError: LocalizedError, Equatable {
         let drain = draining                                      // the slot is reserved; the microphone waits for it
         work = Task { [weak self] in
             await drain?.value
-            return await self?.finish(gen, transcript)
+            return await self?.finish(gen, transcript, languages: languages)
         }
     }
 
@@ -184,7 +184,6 @@ enum DictationError: LocalizedError, Equatable {
         feed = nil
         _ = audio.stop()
         micNotice = nil
-        languageNotice = nil
         state = .transcribing
         play("Pop")
     }
@@ -232,7 +231,7 @@ enum DictationError: LocalizedError, Equatable {
     /// cancels it, and it then throws `busy` with the new owner.
     func transcribe(file: URL, caller: String) async throws -> String {
         if let busy = owner { throw DictationError.busy(owner: busy) }
-        let asr = recogniser(), decode = decode
+        let asr = recogniser(), decode = decode, languages = languages
         if languages != ["en"], asr !== multilingual {
             throw AppError(code: "model_missing", message: "Dictation languages are \(languages.joined(separator: ", ")), but the multilingual model is not downloaded yet: download it in Settings ▸ Dictation, or set dictationLanguages to en.")
         }
@@ -248,7 +247,7 @@ enum DictationError: LocalizedError, Equatable {
         defer { if fileJob == job { fileJob = nil; owner = nil } }   // after a takeover the slot is no longer ours
         let raw = await job.result
         guard fileJob == job else { throw DictationError.busy(owner: owner ?? Self.user) }
-        return await clean(try raw.get())
+        return await clean(try raw.get(), languages: languages)
     }
 
     func pasteLast() {
@@ -295,7 +294,7 @@ enum DictationError: LocalizedError, Equatable {
 
     // MARK: Utterance
 
-    private func finish(_ gen: Int, _ transcript: Task<Transcript, Error>) async -> String? {
+    private func finish(_ gen: Int, _ transcript: Task<Transcript, Error>, languages: [String]) async -> String? {
         // The microphone is asked for only by the current utterance, and only while it is still recording: a stale
         // task never starts audio (it would stop the newer utterance's input) and a stop that came first is honoured.
         guard gen == generation else { return nil }
@@ -323,7 +322,7 @@ enum DictationError: LocalizedError, Equatable {
             show(failure: .failed("Could not transcribe: \(error.localizedDescription)"))
             return nil
         }
-        let text = await clean(raw)
+        let text = await clean(raw, languages: languages)
         guard gen == generation else { return nil }
         guard !text.isEmpty else {
             owner = nil
@@ -347,11 +346,11 @@ enum DictationError: LocalizedError, Equatable {
         return result.landed ? text : nil
     }
 
-    private func clean(_ raw: Transcript) async -> String {
+    private func clean(_ raw: Transcript, languages: [String]) async -> String {
         let settings = Settings.load()
         // Paragraphs are chosen on the raw text, where the pauses line up with its sentences; Cleanup keeps the breaks.
         let spoken = settings.paragraphs ? Paragraphs.split(raw.text, pauses: raw.pauses) : raw.text
-        let languages = languages, dictionaries = Self.dictionaries(for: languages)
+        let dictionaries = Self.dictionaries(for: languages)
         var text = Cleanup.apply(spoken, vocabulary: vocabulary(), removeFillers: settings.removeFillers, languages: languages,
                                  isWord: { Self.isCommonWord($0, dictionaries: dictionaries) })
         if britishSpelling { text = BritishSpelling.apply(text, languages: languages) }
