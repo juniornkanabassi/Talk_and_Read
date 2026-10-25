@@ -409,6 +409,8 @@ extension EngineKind {
             MiniPlayer.shared.flash("Select some text first")
             return nil
         }
+        Log.write("read: capture via \(capture.source), \(capture.text.utf16.count) characters"
+                  + (capture.hiddenRemoved > 0 ? ", hidden text cut \(capture.hiddenRemoved)" : ""))
         let s = startSession(capture.text, capture: capture, id: id)   // the player says "Reading clipboard" itself
         appendRead(capture.text, app: app?.localizedName, bundleID: app?.bundleIdentifier)
         return s

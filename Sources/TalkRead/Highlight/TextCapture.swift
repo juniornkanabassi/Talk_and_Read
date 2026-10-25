@@ -16,6 +16,8 @@ struct Capture {
     /// UTF-16 offset of `text` within `element`'s value, when known exactly.
     let selectionStart: Int?
     let source: Source
+    /// UTF-16 units of hidden text (a screen reader heading, a hover toolbar) cut from the selection, for the log.
+    var hiddenRemoved = 0
 
     /// Sources whose text has a place on screen; the Highlighter draws only for these. Clipboard text only with a window
     /// (an xterm terminal's own ⌘C, see `TextCapture.read`).
@@ -51,7 +53,9 @@ enum TextCapture {
         let focusedWindow = axElement(appElement, kAXFocusedWindowAttribute)
         let window = focusedWindow ?? focused.flatMap { axElement($0, kAXWindowAttribute) }
             ?? (axAttribute(appElement, kAXWindowsAttribute) as? [AXUIElement])?.first
-        if let c = selection(appElement: appElement, pid: pid, focused: focused, focusedWindow: focusedWindow, window: window) { return c }
+        if let c = selection(appElement: appElement, pid: pid, focused: focused, focusedWindow: focusedWindow, window: window) {
+            return withoutHiddenText(c)
+        }
         let secure = focused.map(isSecure) ?? false   // never copy from, or read the value of, a password field
         if !secure {
             switch await copySelection(appElement: appElement) {
@@ -116,6 +120,100 @@ enum TextCapture {
             }
         }
         return loose
+    }
+
+    // MARK: - 1b. Hidden text
+
+    /// The selection without the text a web view exposes but never draws (`HiddenText`): Claude's chat puts a screen
+    /// reader heading, "Claude responded: <its first sentence>", before every message and a hover toolbar with its
+    /// timestamps after it, and Chromium's selected text includes both. The selection's text markers place each hidden
+    /// node exactly; when those offsets do not reproduce the node's text, each hidden string is cut once, in order. Last,
+    /// a heading straight before its own copy goes whatever the tree said, and after any cut the button placeholders
+    /// (U+FFFC) go too. Offsets into the element no longer hold after
+    /// a cut, so `selectionStart` is then nil (the node map and selection bounds place the words instead).
+    static func withoutHiddenText(_ c: Capture) -> Capture {
+        guard let element = c.element else { return withoutHiddenText(c, root: nil, selection: nil) }
+        var area: AXUIElement? = element
+        for _ in 0..<40 where area.map({ (axAttribute($0, kAXRoleAttribute) as? String) != "AXWebArea" }) == true {
+            area = area.flatMap { axElement($0, kAXParentAttribute) }
+        }
+        let root = area ?? element
+        let selection = [root, element].lazy.compactMap { axAttribute($0, "AXSelectedTextMarkerRange") }
+            .first { CFGetTypeID($0) == AXTextMarkerRangeGetTypeID() }
+        return withoutHiddenText(c, root: root, selection: selection.map { $0 as! AXTextMarkerRange })
+    }
+
+    /// The same for an explicit text marker range of `root` (the self-test's stand-in for a mouse selection).
+    static func withoutHiddenText(_ c: Capture, root: AXUIElement?, selection: AXTextMarkerRange?) -> Capture {
+        var text = c.text, removed = 0
+        if let root, let selection, let hidden = hiddenRanges(root: root, selection: selection, text: text) {
+            let cut = hidden.exact ? HiddenText.cut(text, ranges: hidden.ranges) : HiddenText.cut(text, strings: hidden.strings)
+            (text, removed) = (cut.text, cut.removed)
+        }
+        let net = HiddenText.cut(text, ranges: HiddenText.repeatedHeadings(text))
+        (text, removed) = (net.text, removed + net.removed)
+        if removed > 0 {   // the hidden toolbar's buttons leave their placeholders behind
+            let objects = HiddenText.cut(text, ranges: HiddenText.objectReplacements(text))
+            (text, removed) = (objects.text, removed + objects.removed)
+        }
+        guard removed > 0, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return c }
+        var out = Capture(text: text, pid: c.pid, element: c.element, window: c.window, selectionStart: nil, source: c.source)
+        out.hiddenRemoved = removed
+        return out
+    }
+
+    /// Hidden nodes inside a web area's selection: their ranges in `text` (exact when every one reproduces its node's
+    /// text there) and their strings in document order. nil when the selection's text is not `text`. The walk stays near
+    /// the selection: subtrees whose frame misses its bounds (by more than 60 pt, which keeps a toolbar above a message)
+    /// are skipped.
+    // ponytail: up to 4000 nodes and five AX calls per hidden node; Claude's chat window is about 400 nodes.
+    private static func hiddenRanges(root: AXUIElement, selection: AXTextMarkerRange, text: String) -> (ranges: [Range<Int>], strings: [String], exact: Bool)? {
+        guard (axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: selection) as? String) == text else { return nil }
+        let length = text.utf16.count
+        let selStart = AXTextMarkerRangeCopyStartMarker(selection), selEnd = AXTextMarkerRangeCopyEndMarker(selection)
+        func distance(_ a: AXTextMarker, _ b: AXTextMarker) -> Int? {
+            guard let range = axParameterizedAttribute(root, "AXTextMarkerRangeForUnorderedTextMarkers", parameter: [a, b] as CFArray) else { return nil }
+            return (axParameterizedAttribute(root, "AXLengthForTextMarkerRange", parameter: range) as? NSNumber)?.intValue
+        }
+        var bounds: CGRect?
+        if let value = axParameterizedAttribute(root, "AXBoundsForTextMarkerRange", parameter: selection), CFGetTypeID(value) == AXValueGetTypeID() {
+            var rect = CGRect.zero
+            if AXValueGetValue(value as! AXValue, .cgRect, &rect), !rect.isEmpty { bounds = rect.insetBy(dx: -60, dy: -60) }
+        }
+        let ns = text as NSString
+        var ranges: [Range<Int>] = [], strings: [String] = [], exact = true
+        var stack: [(AXUIElement, HiddenText.Visibility)] = [(root, .init())]
+        var visited = 0
+        while let (node, parent) = stack.popLast(), visited < 4000 {
+            visited += 1
+            if let bounds, let frame = axFrame(node), !frame.isEmpty, !frame.intersects(bounds) { continue }
+            let visibility = parent.child(role: axAttribute(node, kAXRoleAttribute) as? String,
+                                          classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [])
+            guard visibility.drawsText else {
+                guard let own = axParameterizedAttribute(root, "AXTextMarkerRangeForUIElement", parameter: node),
+                      CFGetTypeID(own) == AXTextMarkerRangeGetTypeID(),
+                      let string = axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: own) as? String,
+                      !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                let start = AXTextMarkerRangeCopyStartMarker(own as! AXTextMarkerRange)
+                guard let d1 = distance(selStart, start), let d2 = distance(start, selEnd) else { exact = false; strings.append(string); continue }
+                // Inside the selection when the two distances add up to it; before it (overlapping its start) when the
+                // node's start is d1 before the selection's.
+                let offset: Int
+                if d1 + d2 == length { offset = d1 } else if d2 == d1 + length { offset = -d1 } else { continue }
+                let n = string.utf16.count
+                let r = max(0, offset)..<min(length, offset + n)
+                guard !r.isEmpty else { continue }
+                let expected = (string as NSString).substring(with: NSRange(location: r.lowerBound - offset, length: r.count))
+                if ns.substring(with: NSRange(location: r.lowerBound, length: r.count)) != expected { exact = false }
+                ranges.append(r)
+                strings.append(string)
+                continue
+            }
+            if let children = axAttribute(node, kAXChildrenAttribute) as? [AXUIElement] {
+                stack.append(contentsOf: children.reversed().map { ($0, visibility) })
+            }
+        }
+        return ranges.isEmpty && strings.isEmpty ? nil : (ranges, strings, exact)
     }
 
     // MARK: - 2. Copy

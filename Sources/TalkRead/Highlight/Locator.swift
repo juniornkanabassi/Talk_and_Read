@@ -137,8 +137,9 @@ import TalkReadCore
     /// Depth-first walk of `capture.window` (document order) collecting AXStaticText/AXTextArea/AXTextField values,
     /// tokenised into one word stream and aligned against the selection's tokens from word `start`. Entries the new
     /// alignment does not place are kept. Text under a chrome role never stands in for a selection word.
-    // ponytail: a full window walk per rebuild (Claude's window: 417 nodes, 24 ms), at most once a second while the
-    // spoken word has no live node; walk only the subtree around the last mapped node if a big window makes this slow.
+    // ponytail: a full window walk per rebuild (Claude's window: 417 nodes, 24 ms; web nodes cost one more AX call for
+    // their visibility), at most once a second while the spoken word has no live node; walk only the subtree around
+    // the last mapped node if a big window makes this slow.
     private func buildNodeMap(from start: Int) {
         var map = nodeMap ?? [:]
         defer { nodeMap = map; nodeMapBuiltAt = Date().timeIntervalSince1970 }
@@ -146,13 +147,18 @@ import TalkReadCore
 
         var nodes: [(element: AXUIElement, value: String, chrome: Bool, inside: Bool)] = []
         var webAreas: [AXUIElement] = []
-        var stack: [(element: AXUIElement, chrome: Bool, inside: Bool)] = [(window, false, false)]
+        // Inside a web area, text that is never drawn (HiddenText.Visibility: Claude's screen reader headings, a hover
+        // toolbar's timestamps) counts as chrome too, so the visible copy of a sentence is the one boxed.
+        var stack: [(element: AXUIElement, chrome: Bool, inside: Bool, web: HiddenText.Visibility?)] = [(window, false, false, nil)]
         var visited = 0
-        while let (node, parentChrome, parentInside) = stack.popLast(), visited < 8000 {
+        while let (node, parentChrome, parentInside, parentWeb) = stack.popLast(), visited < 8000 {
             visited += 1
             let children = axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]
             let role = axAttribute(node, kAXRoleAttribute) as? String
-            let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome)
+            let web = role == "AXWebArea" ? HiddenText.Visibility() : parentWeb.map {
+                $0.child(role: role, classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [])
+            }
+            let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome) || web?.drawsText == false
             let inside = parentInside || capture.element.map { CFEqual($0, node) } == true
             var descend = true
             if role == "AXWebArea" { webAreas.append(node) }
@@ -169,7 +175,7 @@ import TalkReadCore
                     nodes.append((node, value, chrome, inside))
                 }
             }
-            if descend, let children { stack.append(contentsOf: children.reversed().map { ($0, chrome, inside) }) }
+            if descend, let children { stack.append(contentsOf: children.reversed().map { ($0, chrome, inside, web) }) }
         }
 
         let stream = NodeAlignment.stream(nodes.map { ($0.value, $0.chrome) })
