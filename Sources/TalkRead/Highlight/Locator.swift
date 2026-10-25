@@ -226,7 +226,7 @@ import TalkReadCore
         if let element = capture.element, let start = capture.selectionStart {
             result = axBounds(element, location: start, length: capture.text.utf16.count)
         } else {
-            let wanted = capture.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let wanted = (capture.selected ?? capture.text).trimmingCharacters(in: .whitespacesAndNewlines)   // as selected, before any cut
             for area in (capture.element.map { [$0] } ?? []) + webAreas {
                 guard let marker = axAttribute(area, "AXSelectedTextMarkerRange"),
                       (axParameterizedAttribute(area, "AXStringForTextMarkerRange", parameter: marker) as? String)?

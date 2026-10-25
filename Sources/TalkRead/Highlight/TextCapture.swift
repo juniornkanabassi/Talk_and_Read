@@ -18,6 +18,8 @@ struct Capture {
     let source: Source
     /// UTF-16 units of hidden text (a screen reader heading, a hover toolbar) cut from the selection, for the log.
     var hiddenRemoved = 0
+    /// The selection's own text when hidden text was cut from it: the Locator still recognises the live selection by it.
+    var selected: String?
 
     /// Sources whose text has a place on screen; the Highlighter draws only for these. Clipboard text only with a window
     /// (an xterm terminal's own ⌘C, see `TextCapture.read`).
@@ -60,11 +62,11 @@ enum TextCapture {
         if !secure {
             switch await copySelection(appElement: appElement) {
             case .text(let text):
-                // Chromium's Copy serialises the screen reader headings too; the tree cannot place them in a copy.
-                let net = HiddenText.safetyNet(text)
-                var c = Capture(text: net.removed > 0 && !net.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? net.text : text,
-                                pid: pid, element: focused, window: window, selectionStart: nil, source: .copied)
-                c.hiddenRemoved = c.text == text ? 0 : net.removed
+                // Claude's Copy serialises its screen reader headings too; the tree cannot place them in a copy.
+                let net = isClaude(pid) ? HiddenText.safetyNet(text) : (text: text, removed: 0)
+                let kept = net.removed > 0 && !net.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                var c = Capture(text: kept ? net.text : text, pid: pid, element: focused, window: window, selectionStart: nil, source: .copied)
+                if kept { (c.hiddenRemoved, c.selected) = (net.removed, text) }
                 return c
             case .clipboardChanged:
                 Log.write("capture aborted: the clipboard changed while copying the selection")
@@ -132,10 +134,10 @@ enum TextCapture {
     /// The selection without the text a web view exposes but never draws (`HiddenText`): Claude's chat puts a screen
     /// reader heading, "Claude responded: <its first sentence>", before every message and a hover toolbar with its
     /// timestamps after it, and Chromium's selected text includes both. The selection's text markers place each hidden
-    /// node exactly; when those offsets do not reproduce the node's text, each hidden string is cut once, in order. Last,
-    /// a heading straight before its own copy goes whatever the tree said, and after any cut the button placeholders
-    /// (U+FFFC) go too. Offsets into the element no longer hold after
-    /// a cut, so `selectionStart` is then nil (the node map and selection bounds place the words instead).
+    /// node (`hiddenRanges`). Last, in Claude only, a heading straight before its own copy goes whatever the tree said,
+    /// and after any cut the button placeholders (U+FFFC) go too. Offsets into the element no longer hold after a cut,
+    /// so `selectionStart` is then nil and `selected` keeps the original text (the node map and selection bounds
+    /// place the words instead).
     static func withoutHiddenText(_ c: Capture) -> Capture {
         guard let element = c.element else { return withoutHiddenText(c, root: nil, selection: nil) }
         var area: AXUIElement? = element
@@ -151,23 +153,29 @@ enum TextCapture {
     /// The same for an explicit text marker range of `root` (the self-test's stand-in for a mouse selection).
     static func withoutHiddenText(_ c: Capture, root: AXUIElement?, selection: AXTextMarkerRange?) -> Capture {
         var text = c.text, removed = 0
-        if let root, let selection, let hidden = hiddenRanges(root: root, selection: selection, text: text) {
-            let cut = hidden.exact ? HiddenText.cut(text, ranges: hidden.ranges) : HiddenText.cut(text, strings: hidden.strings)
-            (text, removed) = (cut.text, cut.removed)
+        if let root, let selection, let ranges = hiddenRanges(root: root, selection: selection, text: text) {
+            (text, removed) = HiddenText.cut(text, ranges: ranges)
         }
-        (text, removed) = HiddenText.safetyNet(text, removed: removed)
+        if isClaude(c.pid) { (text, removed) = HiddenText.safetyNet(text, removed: removed) }
         guard removed > 0, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return c }
         var out = Capture(text: text, pid: c.pid, element: c.element, window: c.window, selectionStart: nil, source: c.source)
-        out.hiddenRemoved = removed
+        (out.hiddenRemoved, out.selected) = (removed, c.text)
         return out
     }
 
-    /// Hidden nodes inside a web area's selection: their ranges in `text` (exact when every one reproduces its node's
-    /// text there) and their strings in document order. nil when the selection's text is not `text`. The walk stays near
-    /// the selection: subtrees whose frame misses its bounds (by more than 60 pt, which keeps a toolbar above a message)
-    /// are skipped.
-    // ponytail: up to 4000 nodes and five AX calls per hidden node; Claude's chat window is about 400 nodes.
-    private static func hiddenRanges(root: AXUIElement, selection: AXTextMarkerRange, text: String) -> (ranges: [Range<Int>], strings: [String], exact: Bool)? {
+    /// The Claude desktop app, whose chat headings the text-only safety net knows; elsewhere repeated prose is prose.
+    static func isClaude(_ pid: pid_t) -> Bool {
+        NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.anthropic.claudefordesktop"
+    }
+
+    /// The ranges in `text` of the hidden nodes inside a web area's selection; nil when the selection's text is not
+    /// `text`. Each node is placed on its own (`HiddenText.place`): exactly when its text-marker distances add up and
+    /// its text is there, else only where `HiddenText.locate` finds its text once beside that place. A node whose
+    /// distances cannot be read is left in. The walk stays near the selection: subtrees whose frame misses its bounds
+    /// (by more than 60 pt, which keeps a toolbar above a message) are skipped.
+    // ponytail: up to 4000 nodes, two AX calls each (role, classes) plus a frame for pruning, and five per hidden node;
+    // Claude's chat window is about 400 nodes. Walk only the selection's common ancestor if big pages make this slow.
+    private static func hiddenRanges(root: AXUIElement, selection: AXTextMarkerRange, text: String) -> [Range<Int>]? {
         guard (axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: selection) as? String) == text else { return nil }
         let length = text.utf16.count
         let selStart = AXTextMarkerRangeCopyStartMarker(selection), selEnd = AXTextMarkerRangeCopyEndMarker(selection)
@@ -181,7 +189,7 @@ enum TextCapture {
             if AXValueGetValue(value as! AXValue, .cgRect, &rect), !rect.isEmpty { bounds = rect.insetBy(dx: -60, dy: -60) }
         }
         let ns = text as NSString
-        var ranges: [Range<Int>] = [], strings: [String] = [], exact = true
+        var ranges: [Range<Int>] = []
         var stack: [(AXUIElement, HiddenText.Visibility)] = [(root, .init())]
         var visited = 0
         while let (node, parent) = stack.popLast(), visited < 4000 {
@@ -195,25 +203,22 @@ enum TextCapture {
                       let string = axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: own) as? String,
                       !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 let start = AXTextMarkerRangeCopyStartMarker(own as! AXTextMarkerRange)
-                guard let d1 = distance(selStart, start), let d2 = distance(start, selEnd) else { exact = false; strings.append(string); continue }
-                // Inside the selection when the two distances add up to it; before it (overlapping its start) when the
-                // node's start is d1 before the selection's.
-                let offset: Int
-                if d1 + d2 == length { offset = d1 } else if d2 == d1 + length { offset = -d1 } else { continue }
-                let n = string.utf16.count
-                let r = max(0, offset)..<min(length, offset + n)
-                guard !r.isEmpty else { continue }
-                let expected = (string as NSString).substring(with: NSRange(location: r.lowerBound - offset, length: r.count))
-                if ns.substring(with: NSRange(location: r.lowerBound, length: r.count)) != expected { exact = false }
-                ranges.append(r)
-                strings.append(string)
+                guard let d1 = distance(selStart, start), let d2 = distance(start, selEnd),
+                      let placed = HiddenText.place(d1: d1, d2: d2, length: length, nodeLength: string.utf16.count) else { continue }
+                // The part of the node's text that falls inside the selection, as the selection holds it.
+                let part = (string as NSString).substring(with: NSRange(location: placed.skip, length: placed.range.count))
+                if placed.exact, ns.substring(with: NSRange(location: placed.range.lowerBound, length: placed.range.count)) == part {
+                    ranges.append(placed.range)
+                } else if let found = HiddenText.locate(string, in: text, near: placed.range) {
+                    ranges.append(found)
+                }
                 continue
             }
             if let children = axAttribute(node, kAXChildrenAttribute) as? [AXUIElement] {
                 stack.append(contentsOf: children.reversed().map { ($0, visibility) })
             }
         }
-        return ranges.isEmpty && strings.isEmpty ? nil : (ranges, strings, exact)
+        return ranges
     }
 
     // MARK: - 2. Copy

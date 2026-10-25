@@ -107,7 +107,10 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(make("He [sic] (again) said").text, "He [sic] (again) said")
         XCTAssertEqual(make("[note](see\nbelow)").text, "[note](see. below)")
         // the first ")" ends the target, so prose after a link survives
-        XCTAssertEqual(make("[x](a b) and (c) d").text, "x and (c) d")
+        XCTAssertEqual(make("[x](a/b c) and (c) d").text, "x and (c) d")
+        // spaces only in a path- or address-like target: bracketed prose before parentheses stays
+        XCTAssertEqual(make("options [A](which is best) or [B]").text, "options [A](which is best) or [B]")
+        XCTAssertEqual(make("[A](x) or [B](y)").text, "A or B")
     }
 
     func testFilePathsAreSpokenAsTheirFileName() {
@@ -119,6 +122,16 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(origin(sp, "AGENTS.md", s), "~/Documents/JuniorOS/AGENTS.md")
         XCTAssertEqual(make("Open file:///Users/j/01%20About%20Me/Talk%20%26%20Read.md now").text, "Open Talk & Read.md now")
         XCTAssertEqual(make("In /mnt/project-files/brief.pdf").text, "In brief.pdf")
+        XCTAssertEqual(make("The folder /Users/j/Talk/ is new").text, "The folder Talk is new")   // no stray "/"
+        XCTAssertEqual(make("See /Users/j/Law_(UK) now").text, "See Law_(UK) now")
+        XCTAssertEqual(make("(see /Users/j/a/b.md), then").text, "(see b.md), then")
+        XCTAssertEqual(make("Kept in /a/b/report.final.pdf.").text, "Kept in report.final.pdf.")
+        // not file paths: no known root and no file name, or a command line in backticks
+        for kept in ["/r/soccer", "/api/v1/users", "/dev/null", "cd /usr/local/bin", "his/her", "/a/b/c"] {
+            XCTAssertEqual(make(kept).text, kept)
+        }
+        XCTAssertEqual(make("Run `/bin/ls -la /tmp/x` now").text, "Run /bin/ls -la /tmp/x now")
+        XCTAssertEqual(make("Run `/usr/bin/env python3 a.py`").text, "Run /usr/bin/env python3 a.py")
         XCTAssertEqual(make("See /Users/j/Source/App.swift:42 for it").text, "See App.swift for it")
         XCTAssertEqual(make("The file `/Users/j/02 Projects/Talk & Read/guide.md` is new").text, "The file guide.md is new")
         XCTAssertEqual(make("([/Users/j/a/notes.md](/Users/j/a/notes.md))").text, "(notes.md)")
@@ -128,6 +141,23 @@ final class SpeakableTests: XCTestCase {
             if !kept.hasPrefix("http") { XCTAssertEqual(make(kept).text, kept) }
         }
         XCTAssertEqual(make("src/app/main.swift stays").text, "src/app/main.swift stays")
+    }
+
+    /// TR-006: a read speaks chunk by chunk, and the chunker cuts a long sentence at spaces, so a link or path it cuts
+    /// through must be read whole by the chunk it starts in and skipped by the next.
+    func testLinksAndPathsAcrossChunks() {
+        func read(_ s: String) -> String {
+            TextKit.chunks(s, tokens: TextKit.tokenize(s)).map { Speakable.make(s, range: $0.range, lexicon: [:]).text }
+                .filter { !$0.isEmpty }.joined(separator: " ")
+        }
+        XCTAssertEqual(read("See [guide](/Users/j/01 About Me/guide.md) now and then more words here."),
+                       "See guide now and then more words here.")
+        XCTAssertEqual(read("Saved to /Users/junior/Documents/notes/plan.md, then done."), "Saved to plan.md, then done.")
+        let long = "Hello there. " + String(repeating: "word ", count: 50)
+            + "[the long link label](/Users/junior.nkanabassi/Documents/JuniorOS/02 Projects/Development/Talk & Read/Outputs/guide.md) end."
+        XCTAssertEqual(read(long), "Hello there. " + String(repeating: "word ", count: 50) + "the long link label end.")
+        let code = String(repeating: "word ", count: 30) + "the file `/Users/j/02 Projects/Talk & Read/a long folder name/guide.md` is new."
+        XCTAssertEqual(read(code), String(repeating: "word ", count: 30) + "the file guide.md is new.")
     }
 
     func testListItemsGetAPause() {
@@ -310,7 +340,7 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(cited("Claim [citation needed](https://example.com) here."), "Claim here.")
         XCTAssertEqual(cited("A [link](https://example.com) and [3](#n) stay."), "A link and 3 stay.")
         // The look-ahead runs out in spaces: no crash, and too little evidence to drop the 12.
-        let s = "void.12" + String(repeating: " ", count: 100) + "Next"
+        let s = "void.12" + String(repeating: " ", count: 700) + "Next"
         XCTAssertEqual(Speakable.make(s, range: 0..<7, lexicon: [:], skipCitations: true).text, "void.12")
     }
 

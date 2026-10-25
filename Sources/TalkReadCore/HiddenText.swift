@@ -2,14 +2,15 @@
 // message, a hover toolbar's "Quick reactions available" hint and its timestamps. A web view's selected text includes
 // it, so a read said the opening sentence twice and the toolbar aloud. Pure, so it is tested here; `TextCapture` (app
 // target) walks the tree, decides visibility with `Visibility` and places each hidden node with the selection's text
-// markers.
+// markers (`place`, `locate`). Every rule leans towards keeping text: a visible word cut is worse than a hidden one read.
 import Foundation
 
 public enum HiddenText {
     /// Whether an element's text is drawn on screen, inherited down the tree. Only never-drawn text counts: an inline
     /// chip with `user-select: none` (a session link in a sentence) is on screen and is read.
     public struct Visibility: Equatable, Sendable {
-        /// Never drawn: a screen-reader-only node, anything inside one, a toolbar (its buttons' labels, hints and times).
+        /// Not read: a screen-reader-only node, anything inside one, a toolbar (its buttons' labels, hints and times:
+        /// app chrome, which the node map already never boxes).
         public var hidden = false
 
         public init(hidden: Bool = false) { self.hidden = hidden }
@@ -19,27 +20,35 @@ public enum HiddenText {
 
         /// The visibility of a child of this element, from its role and DOM classes.
         ///
-        /// Hidden: a toolbar; the `sr-only` / `visually-hidden` classes; a zero-height box (`h-0`), which is how Claude's
-        /// chat hangs a message's hover timestamps below it, unless it grows (`flex-1 h-0` is a flex layout's pane).
+        /// Hidden: a toolbar; the `sr-only` / `visually-hidden` classes, unless a `not-sr-only` variant shows the node
+        /// somewhere; a zero-height box (`h-0`), which is how Claude's chat hangs a message's hover timestamps below it,
+        /// unless anything else sets its height (`min-h-10`, `md:h-auto`, `group-hover:h-auto`, `size-4`), it grows
+        /// (`flex-1 h-0` is a flex layout's pane) or it lets its content show (`overflow-visible`).
         /// Frames are no guide: Chromium reports visible text 1 pt tall while its window is behind others, and the
         /// text inside an `sr-only` clip at full size.
         public func child(role: String?, classes: [String]) -> Visibility {
             var v = self
-            if role == "AXToolbar" || classes.contains(where: Self.hiddenClasses.contains) { v.hidden = true }
-            if classes.contains("h-0"), !classes.contains(where: Self.growClasses.contains) { v.hidden = true }
+            let bases = classes.map { $0.split(separator: ":").last.map(String.init) ?? $0 }
+            if role == "AXToolbar" { v.hidden = true }
+            if classes.contains(where: Self.hiddenClasses.contains), !bases.contains("not-sr-only") { v.hidden = true }
+            if classes.contains("h-0"),
+               !zip(classes, bases).contains(where: { full, base in
+                   full != "h-0" && ["h-", "min-h-", "max-h-", "size-"].contains(where: base.hasPrefix) }),
+               !bases.contains(where: Self.showClasses.contains) { v.hidden = true }
             return v
         }
 
         static let hiddenClasses: Set<String> = ["sr-only", "visually-hidden", "visuallyhidden", "screen-reader-text", "a11y-hidden"]
-        static let growClasses: Set<String> = ["flex-1", "grow", "flex-grow", "flex-auto"]
+        static let showClasses: Set<String> = ["flex-1", "grow", "flex-grow", "flex-auto", "overflow-visible", "overflow-y-visible"]
     }
 
-    /// `text` without the UTF-16 `ranges` (clamped, overlaps merged), and how many units went. A cut between two
-    /// non-space characters leaves one space, so the messages either side of a hidden toolbar do not run together.
+    /// `text` without the UTF-16 `ranges` (clamped at both ends, overlaps merged). `removed` counts the units cut; a cut
+    /// between two non-space characters leaves one space, so the messages either side of a hidden toolbar do not run
+    /// together, which `removed` does not subtract.
     public static func cut(_ text: String, ranges: [Range<Int>]) -> (text: String, removed: Int) {
         let u = Array(text.utf16)
         var merged: [Range<Int>] = []
-        for r in ranges.map({ max(0, $0.lowerBound)..<min(u.count, max($0.upperBound, max(0, $0.lowerBound))) })
+        for r in ranges.map({ min(max(0, $0.lowerBound), u.count)..<min(max(0, $0.upperBound, $0.lowerBound), u.count) })
             .filter({ !$0.isEmpty }).sorted(by: { $0.lowerBound < $1.lowerBound }) {
             if let last = merged.last, r.lowerBound <= last.upperBound { merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, r.upperBound) }
             else { merged.append(r) }
@@ -50,30 +59,52 @@ public enum HiddenText {
         for r in merged {
             out += u[a..<r.lowerBound]
             removed += r.count
-            if let before = out.last, r.upperBound < u.count, !isSpace(before), !isSpace(u[r.upperBound]) { out.append(0x20); removed -= 1 }
+            if let before = out.last, r.upperBound < u.count, !isSpace(before), !isSpace(u[r.upperBound]) { out.append(0x20) }
             a = r.upperBound
         }
         out += u[a...]
         return (String(decoding: out, as: UTF16.self), removed)
     }
 
-    /// Fallback when the offsets cannot be trusted: each of `strings`, in order, cut at its first occurrence after the
-    /// previous one. A string not found is skipped; whitespace-only strings are never cut.
-    public static func cut(_ text: String, strings: [String]) -> (text: String, removed: Int) {
-        let ns = text as NSString
-        var ranges: [Range<Int>] = [], from = 0
-        for s in strings where !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let r = ns.range(of: s, options: .literal, range: NSRange(location: from, length: ns.length - from))
-            guard r.location != NSNotFound else { continue }
-            ranges.append(r.location..<r.location + r.length)
-            from = r.location + r.length
-        }
-        return cut(text, ranges: ranges)
+    /// Where a hidden node of `nodeLength` units sits in a selection of `length`, from two text-marker distances: `d1`
+    /// from the selection's start to the node's start, `d2` from the node's start to the selection's end. Inside when
+    /// d1 + d2 is the selection's length, starting d1 before it when d2 is d1 + length (it may overlap the start).
+    /// Chromium can count a block boundary's line break on one side only, so within `tolerance` the place is kept but
+    /// not `exact` (the caller then looks for the text nearby instead). `skip`: how much of the node's text lies
+    /// before the selection. nil when the node is outside the selection.
+    public static func place(d1: Int, d2: Int, length: Int, nodeLength: Int, tolerance: Int = 2) -> (range: Range<Int>, exact: Bool, skip: Int)? {
+        guard d1 >= 0, d2 >= 0, length > 0, nodeLength > 0 else { return nil }
+        let offset: Int, exact: Bool
+        if abs(d1 + d2 - length) <= tolerance { (offset, exact) = (d1, d1 + d2 == length) }
+        else if abs(d2 - d1 - length) <= tolerance { (offset, exact) = (-d1, d2 - d1 == length) }
+        else { return nil }
+        let lo = max(0, offset), hi = min(length, offset + nodeLength)
+        return lo < hi ? (lo..<hi, exact, lo - offset) : nil
     }
 
-    /// Safety net for what the tree walk missed: a screen reader heading straight before the text it repeats,
-    /// "Claude responded: X" or "You said: X" followed by X (a long heading is cut short with "…", so then X's
-    /// opening). Returns the headings' ranges; text that merely mentions "You said:" is never followed by a copy of itself.
+    /// The one occurrence of `string` within `slack` units of `near`, or nil (none, or more than one). For a hidden node
+    /// whose offsets did not line up exactly: never a search of the whole selection, which could cut a visible "Copy"
+    /// out of "Copyright".
+    public static func locate(_ string: String, in text: String, near: Range<Int>, slack: Int = 8) -> Range<Int>? {
+        let ns = text as NSString, n = (string as NSString).length
+        guard n > 0, !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let lo = max(0, near.lowerBound - slack), hi = min(ns.length, max(near.upperBound, near.lowerBound + n) + slack)
+        guard hi - lo >= n else { return nil }
+        var found: [Range<Int>] = []
+        var from = lo
+        while from + n <= hi {
+            let r = ns.range(of: string, options: .literal, range: NSRange(location: from, length: hi - from))
+            guard r.location != NSNotFound else { break }
+            found.append(r.location..<r.location + r.length)
+            from = r.location + 1
+        }
+        return found.count == 1 ? found[0] : nil
+    }
+
+    /// Safety net for what the tree walk missed, for Claude only (the caller decides): a screen reader heading straight
+    /// before the text it repeats, "Claude responded: X" or "You said: X" followed by X (a long heading is cut short
+    /// with "…", so then X's opening). The longest X that repeats wins, so "You said: I love you. I love you. Stay."
+    /// before its message cuts the whole heading, not one "I love you.". Returns the headings' ranges.
     public static func repeatedHeadings(_ text: String) -> [Range<Int>] {
         let u = Array(text.utf16).map(plainQuote)   // the heading has straight quotes where the message has curly ones
         var found: [Range<Int>] = []
@@ -81,16 +112,16 @@ public enum HiddenText {
             let p = Array(prefix.utf16)
             var i = 0
             while i + p.count <= u.count {
-                guard Array(u[i..<i + p.count]) == p else { i += 1; continue }
+                guard u[i..<i + p.count].elementsEqual(p) else { i += 1; continue }
                 let a = i + p.count
                 // The heading's own text runs from a to e; the message body, starting at e, opens with the same text.
                 var hit: Int?
-                var e = a + minimum
-                while hit == nil, e <= min(u.count, a + 600) {
+                var e = min(u.count, a + window)
+                while e >= a + minimum {
                     var h = e - a
                     if u[e - 1] == 0x2026 { h -= 1 }   // "…": the heading was cut short, the body goes on
-                    if h >= minimum, e + h <= u.count, u[a..<a + h].elementsEqual(u[e..<e + h]) { hit = e }
-                    e += 1
+                    if h >= minimum, e + h <= u.count, u[a..<a + h].elementsEqual(u[e..<e + h]) { hit = e; break }
+                    e -= 1
                 }
                 if let hit { found.append(i..<hit); i = hit } else { i += 1 }
             }
@@ -119,6 +150,8 @@ public enum HiddenText {
     public static func objectReplacements(_ text: String) -> [Range<Int>] {
         text.utf16.enumerated().filter { $0.element == 0xFFFC }.map { $0.offset..<$0.offset + 1 }
     }
-    /// Shortest heading text taken as a repeat (shorter ones could be ordinary repetition: "No. No.").
-    static let minimum = 12
+
+    /// Shortest heading text taken as a repeat, and the longest looked for (a heading holds one sentence, or about
+    /// 150 characters and "…").
+    static let minimum = 12, window = 600
 }

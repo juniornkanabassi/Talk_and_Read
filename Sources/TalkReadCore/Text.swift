@@ -59,11 +59,13 @@ public enum TextKit {
         return tokens
     }
 
-    /// True when a gap that contains a sentence mark is not a sentence end: "3.5", "U.S.", "Mr. Patel", "9 a.m. on".
+    /// True when a gap that contains a sentence mark is not a sentence end: "3.5", "U.S.", "Mr. Patel", "9 a.m. on",
+    /// "guide.md". A full stop glued to a capital ("here.Next", as Chromium joins paragraphs) still ends one.
     private static func joins(_ gap: String, _ prev: String, _ initials: String, _ next: String) -> Bool {
         guard gap.first == "." else { return false }
-        if gap.count == 1 {   // no space: decimals, dates and dotted initials
+        if gap.count == 1 {   // no space: decimals, dates, dotted initials, and file names and addresses ("plan.md", "bbc.co.uk")
             return prev.allSatisfy(\.isNumber) && next.allSatisfy(\.isNumber) || prev.count == 1 && prev.first!.isLetter && next.first!.isLetter
+                || next.first!.isLowercase
         }
         guard gap.dropFirst().allSatisfy({ $0 == " " || $0 == "\t" }) else { return false }
         let word = prev.lowercased()
