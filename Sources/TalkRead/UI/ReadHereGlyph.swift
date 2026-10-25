@@ -290,6 +290,9 @@ import TalkReadCore
 
     private func play() {
         guard let block else { return }
+        // Its app must still be what shows there: a window or dialog may have covered the paragraph since.
+        let line = CGPoint(x: block.frame.minX + min(8, block.frame.width / 2), y: Self.glyphFrame(block).midY)
+        guard PointerCapture.hit(line)?.pid == block.pid else { hidePanel(); self.block = nil; return }
         woken.remove(block.pid)   // the read's Highlighter puts the app back when it ends (E8)
         self.block = nil
         // Out of the panel's own mouseDown first: closing it there would release the window that is handling the click.

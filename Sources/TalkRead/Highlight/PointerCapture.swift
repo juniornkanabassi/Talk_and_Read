@@ -93,7 +93,7 @@ enum PointerCapture {
             steps += 1
         }
         // The page itself, or a container most of a screen tall, is no paragraph: the pointer is in a margin or a gap.
-        guard !CFEqual(current, area), let frame = axFrame(current), !frame.isEmpty,
+        guard !CFEqual(current, area), !inChrome(current, below: area), let frame = axFrame(current), !frame.isEmpty,
               frame.height < max(240, areaFrame.height * 0.6) || onlyText(current), frame.insetBy(dx: -4, dy: -4).contains(point),
               !isContainer(current, frame: frame), hasText(current, area: area) else { return nil }
         return Block(pid: pid, element: current, frame: frame, start: nil, viewport: areaFrame)
@@ -154,6 +154,17 @@ enum PointerCapture {
             guard let f = axFrame(child), f.width >= max(60, c.width * 0.2), f.height >= 1, !f.contains(c) else { return false }
             return (f.maxX <= c.minX + 1 || f.minX >= c.maxX - 1) && f.minY < c.maxY && c.minY < f.maxY
         }
+    }
+
+    /// Inside a toolbar, a menu or other page chrome (or chrome itself): its labels are no paragraph.
+    private static func inChrome(_ element: AXUIElement, below area: AXUIElement) -> Bool {
+        var current: AXUIElement? = element
+        for _ in 0..<40 {
+            guard let e = current, !CFEqual(e, area) else { return false }
+            if NodeAlignment.isChrome(role: axAttribute(e, kAXRoleAttribute) as? String, parentChrome: false) { return true }
+            current = axElement(e, kAXParentAttribute)
+        }
+        return false
     }
 
     /// Nothing but text runs inside: a paragraph however tall, never a container of blocks.

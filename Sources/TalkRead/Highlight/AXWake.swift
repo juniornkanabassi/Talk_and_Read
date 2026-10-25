@@ -15,6 +15,7 @@ import ApplicationServices
 
     static func wake(_ app: AXUIElement, pid: pid_t) async {
         prune()
+        AXUIElementSetMessagingTimeout(app, 0.25)   // its writes and read-backs too: a hung app must not stall the main thread
         _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         // The probe is main-actor work across a process boundary: 250 ms in total, and a short timeout per call, on an
         // element of its own so the caller's keeps its timeout. Out of time counts as "no text found".
@@ -41,6 +42,7 @@ import ApplicationServices
         prune()
         guard ledger.contains(pid) else { return }
         let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
         _ = AXUIElementSetAttributeValue(app, enhanced, kCFBooleanFalse)
         if !isOn(app) { ledger.remove(pid) }   // read-back, not the return code; still on keeps the pid for `restoreAll` at quit
     }
