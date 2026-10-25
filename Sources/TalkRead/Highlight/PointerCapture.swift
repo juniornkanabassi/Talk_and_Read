@@ -77,7 +77,10 @@ enum PointerCapture {
         if TextCapture.isSecure(element) { return nil }   // never read a password field, natively or as part of a page
         // A text view, or a web page's editable text when it answers like one; a contenteditable that does not falls
         // through to the web path below.
-        if nativeText.contains(role), !TextCapture.isXterm(element), let b = nativeBlock(element, pid: pid, point: point) { return b }
+        if nativeText.contains(role), !TextCapture.isXterm(element) {
+            // A view that answers positions has decided: a gap or its padding is no paragraph, not a web page's text.
+            if positions(element) { return nativeBlock(element, pid: pid, point: point) }
+        }
         guard let area = TextCapture.webArea(of: element), (axAttribute(area, kAXRoleAttribute) as? String) == "AXWebArea",
               let areaFrame = axFrame(area) else { return nil }
         // Chromium's hit test can stop at a list of messages: go down to the deepest element under the point first,
@@ -154,6 +157,13 @@ enum PointerCapture {
             guard let f = axFrame(child), f.width >= max(60, c.width * 0.2), f.height >= 1, !f.contains(c) else { return false }
             return (f.maxX <= c.minX + 1 || f.minX >= c.maxX - 1) && f.minY < c.maxY && c.minY < f.maxY
         }
+    }
+
+    /// The element answers AXRangeForPosition, so the native path can place a point in its text.
+    private static func positions(_ element: AXUIElement) -> Bool {
+        var names: CFArray?
+        guard AXUIElementCopyParameterizedAttributeNames(element, &names) == .success else { return false }
+        return ((names as? [String]) ?? []).contains("AXRangeForPosition")
     }
 
     /// Inside a toolbar, a menu or other page chrome (or chrome itself): its labels are no paragraph.
