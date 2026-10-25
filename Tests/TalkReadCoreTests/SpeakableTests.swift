@@ -245,6 +245,28 @@ final class SpeakableTests: XCTestCase {
         // A range that starts before the chunk is clipped to it.
         XCTAssertEqual(Speakable.make(s, range: 7..<29, lexicon: [:], skip: [3..<12]).text, "text here. Footer")
     }
+
+    func testNoMatchReachesIntoSkippedText() {
+        // "York" is a skipped line: the "New York" key must not swallow it, nor give it a spoken, timed source.
+        let s = "New\nYork\nTail."
+        let sp = Speakable.make(s, range: 0..<14, lexicon: ["New York": "nyc"], skip: [4..<8])
+        XCTAssertFalse(sp.text.contains("nyc"), sp.text)
+        XCTAssertFalse(sp.covers(4..<8))
+    }
+
+    func testMarksAtAChunkStartAreJudgedInContext() {
+        // The chunker splits at "consideration." so "12 The…" opens the next chunk; the mark is still a footnote.
+        let s = "There was no consideration.12 The court agreed. It was void[3] then."
+        let ns = s as NSString
+        func from(_ needle: String) -> String {
+            Speakable.make(s, range: ns.range(of: needle).location..<ns.length, lexicon: [:], skipCitations: true).text
+        }
+        XCTAssertEqual(from("12 The"), "The court agreed. It was void then.")
+        XCTAssertEqual(from("[3] then"), "then.")
+        // A chunk that opens its line still keeps a line-leading paragraph number.
+        let j = "Intro.\n[23] The claimant appealed."
+        XCTAssertEqual(Speakable.make(j, range: 7..<(j as NSString).length, lexicon: [:], skipCitations: true).text, "[23] The claimant appealed.")
+    }
 }
 
 private extension NSRange {
