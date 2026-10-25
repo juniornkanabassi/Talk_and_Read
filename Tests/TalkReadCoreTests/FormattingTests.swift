@@ -87,7 +87,7 @@ final class FormattingTests: XCTestCase {
 
     func testNearMissesLeaveRealWordsAlone() {
         let v = ["Kestrelco": "Kestrelco", "Caparo": "Caparo"]
-        XCTAssertEqual(clean("the football club", v), "The football club", "a shorter piece of the term")
+        XCTAssertEqual(clean("the kestrel club", v), "The kestrel club", "a shorter piece of the term")
         XCTAssertEqual(clean("a trip to Capri", v), "A trip to Capri")
         XCTAssertEqual(clean("kestrelco, ltd", v), "Kestrelco, ltd")
         XCTAssertEqual(clean("see kestrelco.com", v), "See kestrelco.com", "addresses are held")
