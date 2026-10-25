@@ -36,18 +36,26 @@ import TalkReadCore
     /// The pointer is over the player (a docked dictation's hide waits, as over its own pill).
     var containsPointer: Bool { panel.map { $0.isVisible && NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? false }
 
-    func dock(_ dictation: DictationController) {
-        guard docked !== dictation else { return }
+    /// false when another dictation is already docked (one slot).
+    func dock(_ dictation: DictationController) -> Bool {
+        if docked === dictation { return true }
+        guard docked == nil else { return false }
         docked = dictation
         dockedHeight = MiniPlayerView.dockEstimate   // until the dictation reports its laid-out height
-        resize()
+        resizeAfterLayout()
+        return true
     }
 
     func undock(_ dictation: DictationController) {
         guard docked === dictation else { return }
         docked = nil
         dockedHeight = 0
-        resize()
+        resizeAfterLayout()
+    }
+
+    /// The panel changes size once SwiftUI has drawn the new content, so the old content never shows in the new frame.
+    private func resizeAfterLayout() {
+        DispatchQueue.main.async { [weak self] in self?.resize() }
     }
 
     /// The docked dictation laid out at `height`; the panel follows on the next turn (not during layout).
@@ -106,7 +114,10 @@ import TalkReadCore
     func resize() {
         guard let panel, let model else { return }
         let height = MiniPlayerView.height(expanded: model.settings.subtitlesExpanded, notice: hasNotice) + dockedHeight
-        panel.setContentSize(NSSize(width: MiniPlayerView.width, height: height))
+        var frame = panel.frame   // setFrame keeps minY explicitly; the card grows and shrinks at the top
+        frame.size = panel.frameRect(forContentRect: NSRect(origin: .zero, size: NSSize(width: MiniPlayerView.width, height: height))).size
+        guard frame != panel.frame else { return }
+        panel.setFrame(frame, display: true)
     }
 
     /// Sentence ranges of the current session, worked out once per session.
