@@ -42,12 +42,16 @@ public struct Speakable: Sendable {
         // ponytail: scanned as a slice so regex cost is per chunk, not per document; callers pass chunk-sized ranges.
         // The slice starts up to 80 characters early, back to its line's start, so a mark at the chunk's start is judged
         // in context (a footnote "12" the chunker split from "consideration.", a "[12]" glued to the previous chunk's
-        // last word). That context is read, never spoken.
+        // last word); it also runs up to 80 characters past the chunk, so what follows a mark at the chunk's end is the
+        // real next word, not the cut ("scored;12" | "points"). That context is read, never spoken.
         var ctx = lo
         while ctx > 0, lo - ctx < 80, ns.character(at: ctx - 1) != 0x0A, ns.character(at: ctx - 1) != 0x0D { ctx -= 1 }
-        let slice = ns.substring(with: NSRange(location: ctx, length: hi - ctx))
+        let tail = min(ns.length, hi + 80)
+        let slice = ns.substring(with: NSRange(location: ctx, length: tail - ctx))
         var maker = Maker(slice, lexicon: lexicon, french: language == "fr")
         maker.citations = skipCitations
+        maker.end = hi - ctx
+        maker.endsText = tail == ns.length
         for r in skip.sorted(by: { $0.lowerBound < $1.lowerBound }) {   // into slice coordinates, overlaps merged
             let a = max(r.lowerBound, lo) - ctx, b = min(r.upperBound, hi) - ctx
             guard a < b else { continue }
@@ -113,6 +117,9 @@ private struct Maker {
     /// with its footer and running head removed), so it gets no full stop.
     var skippedAt: Set<Int> = []
     var citations = false
+    /// Where the chunk ends in the slice (the rest is look-ahead context), and whether the slice reaches the text's end.
+    var end = 0
+    var endsText = true
 
     init(_ slice: String, lexicon: [String: String], french: Bool) {
         self.slice = slice
@@ -193,7 +200,7 @@ private struct Maker {
     /// match reaches into skipped text (a skipped word would otherwise be spoken and timed).
     mutating func scanAll(from: Int, sliceStartsLine: Bool) {
         var a = from
-        for r in skip + [u.count..<u.count] where r.upperBound > a {
+        for r in skip + [end..<end] where r.upperBound > a {
             if r.lowerBound > a { scan(a, r.lowerBound, lineStart: startsLine(a, sliceStartsLine: sliceStartsLine)) }
             if !r.isEmpty { skippedAt.insert(units.count) }
             a = max(a, r.upperBound)
@@ -218,7 +225,7 @@ private struct Maker {
         let before = u[p - 1]
         // "paras [12],[13]": a comma straight after a bracket continues a list of references, which is read.
         if before == 0x2C, p > 1, u[p - 2] == 0x5D { return false }
-        return Maker.isWord(before) && !Maker.isDigit(before) || ".,;:)]\"'”’".utf16.contains(before)
+        return Maker.isWord(before) && !Maker.isDigit(before) || ".,;:?!)]\"'”’".utf16.contains(before)
     }
 
     /// How much source a footnote mark at p uses: superscript digits after punctuation or a long word, or 1 to 3 plain
@@ -232,7 +239,7 @@ private struct Maker {
             var q = p   // "¹,²" is one mark; a comma after the last one is the sentence's ("Smith¹, Jones")
             while q < to, superscripts.contains(u[q]) || u[q] == 0x2C && q + 1 < to && superscripts.contains(u[q + 1]) { q += 1 }
             // After punctuation, or after a word of four letters or more ("m²" and "x³" are maths and stay).
-            return ".,;:)]\"'”’".utf16.contains(before) || word(endingAt: p).count >= 4 ? q - p : nil
+            return ".,;:?!)]\"'”’".utf16.contains(before) || word(endingAt: p).count >= 4 ? q - p : nil
         }
         // Plain digits: not after a colon ("Goals:12") or a straight quote, which also opens a quotation.
         let closers = "”’)]".utf16, enders = ".;".utf16
@@ -240,9 +247,9 @@ private struct Maker {
         var q = p
         while q < to, Maker.isDigit(u[q]) { q += 1 }
         guard q - p <= 3 else { return nil }
-        var r = q   // what follows: the line's end, or spaces then a capital
-        while r < to, u[r] == 0x20 || u[r] == 0x09 || u[r] == 0xA0 { r += 1 }
-        guard r == to || u[r] == 0x0A || u[r] == 0x0D
+        var r = q   // what follows in the source (past the chunk's end): the line's or text's end, or spaces then a capital
+        while r < u.count, u[r] == 0x20 || u[r] == 0x09 || u[r] == 0xA0 { r += 1 }
+        guard r == u.count && endsText || r < u.count && (u[r] == 0x0A || u[r] == 0x0D)
                 || r > q && Unicode.Scalar(UInt32(u[r])).map({ CharacterSet.uppercaseLetters.contains($0) }) == true else { return nil }
         var w = p - 1   // back over the punctuation to the word (a closer may follow an ender: "end.”12")
         while w > 0, closers.contains(u[w]) || enders.contains(u[w]) { w -= 1 }

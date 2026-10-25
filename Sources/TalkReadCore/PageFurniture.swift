@@ -40,8 +40,9 @@ public enum PageFurniture {
             let edges = Set(all.prefix(n).map(\.lowerBound) + all.suffix(n).map(\.lowerBound))
             for r in all where edges.contains(r.lowerBound) && r.count <= maxLength {
                 let s = String(decoding: u[r], as: UTF16.self).lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
-                // An answer option or list item ("A. Yes", "(b) No", "3) Cost") is body, however often it repeats.
-                guard s.range(of: "^\\(?([a-h]|[ivx]{1,4}|[0-9]{1,2})[.)] ", options: .regularExpression) == nil else { continue }
+                // An answer option or list item ("A. Yes", "(b) No", "3) Cost", "• None") is body, however often it repeats;
+                // "- 7 -" is a page number, not a bullet.
+                guard s.range(of: "^(?:\\(?([a-h]|[ivx]{1,4}|[0-9]{1,2})[.)] |[•◦▪*+] |[-–—] (?![0-9]))", options: .regularExpression) == nil else { continue }
                 let first = s.split(whereSeparator: { !$0.isASCII || !$0.isNumber }).first
                 lines.append(Line(page: page, range: r, exact: s,
                                   shape: s.replacingOccurrences(of: "[0-9]+", with: "#", options: .regularExpression),
