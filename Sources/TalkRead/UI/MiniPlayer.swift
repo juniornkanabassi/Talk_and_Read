@@ -148,7 +148,9 @@ import TalkReadCore
     private func makePanel(_ model: AppModel) -> MiniPanel {
         let size = NSSize(width: MiniPlayerView.width, height: MiniPlayerView.height(expanded: model.settings.subtitlesExpanded, notice: hasNotice))
         let panel = MiniPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        panel.contentView = NSHostingView(rootView: MiniPlayerRoot(model: model, player: self))
+        let host = NSHostingView(rootView: MiniPlayerRoot(model: model, player: self))
+        host.sizingOptions = []   // `resize` sizes the panel (bottom edge put); the content must not move the top or bottom itself
+        panel.contentView = host
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
