@@ -206,11 +206,11 @@ enum SelfTest {
             var werOK = werR <= 0.08, rule = "WER <= 8 %"
             if rate > 2, engine.kind == .neural, language == "en" {
                 // Kokoro speaking natively at this rate, no time-pitch, same recogniser.
-                let native = KokoroAneManager(variant: .english, defaultVoice: voice, version: .legacy)
-                try await native.initialize()
+                let kokoro = KokoroAneManager(variant: .english, defaultVoice: voice, version: .legacy)
+                try await kokoro.initialize()
                 var heardNative: [String] = []
                 for text in speakables {
-                    let r = try await native.synthesizeDetailed(text: text, voice: voice, speed: rate)
+                    let r = try await kokoro.synthesizeDetailed(text: text, voice: voice, speed: rate)
                     heardNative.append((try? await asr.transcribe(r.samples, language: language).text) ?? "")
                 }
                 let werNative = wer(reference: reference, hypothesis: heardNative.joined(separator: " "))
