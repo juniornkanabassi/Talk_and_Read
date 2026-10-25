@@ -64,10 +64,11 @@ enum PointerCapture {
         guard let area = TextCapture.webArea(of: element), (axAttribute(area, kAXRoleAttribute) as? String) == "AXWebArea",
               let areaFrame = axFrame(area) else { return nil }
         // Chromium's hit test can stop at a list of messages: go down to the deepest element under the point first,
-        // then climb past the inline parts to the first element that is a block of its own, stopping below the web area.
+        // then climb past the inline parts (and groups on a line beside their parent's text) to the first element that is
+        // a block of its own, stopping below the web area.
         var current = deepest(element, at: point), steps = 0
-        while steps < 12, !CFEqual(current, area), inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? "") {
-            guard let parent = axElement(current, kAXParentAttribute) else { break }
+        while steps < 12, !CFEqual(current, area), let parent = axElement(current, kAXParentAttribute),
+              inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? "") || sharesLine(current, in: parent) {
             current = parent
             steps += 1
         }
@@ -108,6 +109,16 @@ enum PointerCapture {
         return best
     }
 
+    /// A generic group on one line beside its parent's own text (a chip, a code span, a styled run) is part of that
+    /// paragraph, not a block of its own.
+    private static func sharesLine(_ element: AXUIElement, in parent: AXUIElement) -> Bool {
+        guard let f = axFrame(element), f.height < 60 else { return false }
+        return ((axAttribute(parent, kAXChildrenAttribute) as? [AXUIElement]) ?? []).prefix(40).contains { s in
+            guard !CFEqual(s, element), inline.contains(axAttribute(s, kAXRoleAttribute) as? String ?? ""), let o = axFrame(s) else { return false }
+            return o.minY < f.maxY - 1 && f.minY < o.maxY - 1
+        }
+    }
+
     /// A message or a section rather than a paragraph: two of its children are wide blocks stacked one above the other
     /// (the pointer is in a gap between paragraphs). Inline code and links are narrow, so a paragraph holding them is not.
     private static func isContainer(_ element: AXUIElement, frame: CGRect) -> Bool {
@@ -134,7 +145,8 @@ enum PointerCapture {
         var end = ns.rangeOfCharacter(from: .newlines, range: NSRange(location: start, length: ns.length - start)).location
         if end == NSNotFound { end = ns.length }
         guard end > start, !ns.substring(with: NSRange(location: start, length: end - start)).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let frame = axBounds(element, location: start, length: end - start), !frame.isEmpty else { return nil }
+              let frame = axBounds(element, location: start, length: end - start), !frame.isEmpty,
+              frame.insetBy(dx: -4, dy: -4).contains(point) else { return nil }   // the nearest character to a margin or a gap is not under it
         return Block(pid: pid, element: element, frame: frame, start: start, length: end - start)
     }
 
@@ -186,7 +198,9 @@ enum PointerCapture {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         let ns = text as NSString
         let clipped = ns.length > maxText ? ns.substring(with: ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: maxText))) : text
-        return Capture(text: clipped, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer)
+        // No markers to place hidden nodes with: in Claude's chat the text-only net still drops its headings.
+        return TextCapture.withoutHiddenText(Capture(text: clipped, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer),
+                                             root: area, selection: nil)
     }
 
     /// The element's own text-marker range in its web area, when the app answers with one.

@@ -48,6 +48,7 @@ import TalkReadCore
     /// Raw key data from the hotkey tap (main thread), with the shortcuts in force.
     func key(_ type: CGEventType, keyCode: UInt16, flags: UInt64, at time: Double, settings: Settings) {
         guard let event = Self.revealEvent(type, keyCode: keyCode, flags: flags, settings: settings) else { return }
+        if event == .otherKey, timer == nil, block != nil { hidePanel(); block = nil }   // typing puts a hover glyph away
         apply(state.handle(event, at: time))
         if event == .keyDown {
             DispatchQueue.main.asyncAfter(deadline: .now() + RevealState.delay) { [weak self] in
@@ -57,7 +58,10 @@ import TalkReadCore
         }
     }
 
-    func reset() { apply(state.reset()) }
+    func reset() {
+        apply(state.reset())
+        if timer == nil { hidePanel(); block = nil }   // a hover glyph has no held key for reset() to see
+    }
 
     /// Raw key data -> reveal event (pure; checked by the dictation self-test). Fn only when dictation does not hold it.
     nonisolated static func revealEvent(_ type: CGEventType, keyCode: UInt16, flags: UInt64, settings: Settings) -> RevealEvent? {
