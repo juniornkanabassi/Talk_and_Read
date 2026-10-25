@@ -121,6 +121,7 @@ extension AppModel {
             })]) { $1 }
 
         case "dictate-start":
+            try checkInsertAgain()
             try dictation.start(caller: r.caller, force: r.force)
             return ["state": .string(Self.name(dictation.state))]
 
@@ -137,6 +138,7 @@ extension AppModel {
             return ["state": .string(Self.name(dictation.state))]
 
         case "insert-again":
+            try checkInsertAgain()
             // The Dictation page's Insert Again (and Paste last transcript, without an id).
             let entry: DictationEntry
             if let raw = a["id"] {
@@ -150,7 +152,7 @@ extension AppModel {
                 entry = e
             }
             if let o = dictation.owner, o != r.caller, !r.force, !Self.isHuman(r.caller) { throw AppError.busy(o) }
-            guard let outcome = await reinsertInOtherApp(entry.id) else {
+            guard let outcome = try await reinsertInOtherApp(entry.id) else {
                 throw AppError(code: "no_target", message: "No other app came forward. Click where the text should go, then retry.")
             }
             switch outcome.result {
@@ -253,7 +255,7 @@ extension AppModel {
             let title = a["title"]?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let title, title.isEmpty || title.count > 200 { throw AppError.badArgs("title must be 1 to 200 characters.") }
             try checkOwner(r.caller, force: r.force)
-            let (item, s) = readPasted(text, title: title, id: reserve(r.caller))
+            let (item, s) = try readPasted(text, title: title, id: reserve(r.caller))
             WindowRouter.shared.open(item)
             if a["show"] == "1" { WindowRouter.shared.showMainWindow() }
             var data: [String: JSONValue] = ["id": .string(item.id.uuidString), "title": .string(item.title)]
@@ -271,14 +273,15 @@ extension AppModel {
 
         case "library-open":
             // A Library card: shows it in the reader; with read 1, Read (saved position) or Read from the start.
-            let item = try libraryItem(a["id"])
+            var item = try libraryItem(a["id"])
             let andRead = a["read"] == "1"
             if a["from"] != nil && !andRead { throw AppError.badArgs("from goes with --read 1.") }
             let text: String
             do { text = try documentText(item) } catch {
                 throw AppError(code: "failed", message: "Could not open “\(item.title)”: \(error.localizedDescription)")
             }
-            let words = await Task.detached { TextKit.tokenize(text).count }.value   // a book takes a moment: off the main actor
+            let words = await documentWordCount(text)   // a book takes a moment: off the main actor
+            item = try libraryItem(a["id"])
             let start: Int?                                      // nil: the saved position
             switch a["from"] ?? "saved" {
             case "saved": start = nil
@@ -289,7 +292,7 @@ extension AppModel {
                 }
                 start = n
             }
-            if andRead { try checkOwner(r.caller, force: r.force) }
+            try checkOwner(r.caller, force: r.force)
             WindowRouter.shared.open(item)                       // the reader shows it; no window comes forward
             if a["show"] == "1" { WindowRouter.shared.showMainWindow() }
             var data: [String: JSONValue] = ["id": .string(item.id.uuidString), "title": .string(item.title), "kind": .string(item.kind),
@@ -418,11 +421,11 @@ extension AppModel {
 
     /// `open` and `open-url`: imports, shows the item in the reader (no focus change unless show is 1) and, with read 1,
     /// reads it. The read is reserved before the import, so another caller cannot start one in between.
-    private func openImported(_ r: ControlRequest, name: String, _ load: () async throws -> LibraryItem) async throws -> [String: JSONValue] {
+    func openImported(_ r: ControlRequest, name: String, _ load: () async throws -> LibraryItem) async throws -> [String: JSONValue] {
         let a = r.args
         var id: UUID?
+        try checkOwner(r.caller, force: r.force)
         if a["read"] == "1" {
-            try checkOwner(r.caller, force: r.force)
             id = reserve(r.caller)
         }
         let item: LibraryItem
@@ -430,12 +433,18 @@ extension AppModel {
             if let id, owner?.sessionID == id { owner = nil }
             throw AppError(code: "failed", message: "Could not open \(name): \(error.localizedDescription)")
         }
-        WindowRouter.shared.open(item)                       // the reader shows it; no window comes forward
+        if let id, owner?.sessionID != id { throw AppError(code: "superseded", message: "Another read started first.") }
+        let current: LibraryItem
+        do { current = try libraryItem(item.id.uuidString) } catch {
+            if let id, owner?.sessionID == id { owner = nil }
+            throw error
+        }
+        try checkOwner(r.caller, force: r.force)
+        WindowRouter.shared.open(current)                    // the reader shows it; no window comes forward
         if a["show"] == "1" { WindowRouter.shared.showMainWindow() }
         var data: [String: JSONValue] = ["id": .string(item.id.uuidString), "title": .string(item.title), "kind": .string(item.kind)]
         if let id {
-            guard owner?.sessionID == id else { throw AppError(code: "superseded", message: "Another read started first.") }
-            data.merge(try await firstAudio(startDocument(item, text: try documentText(item), fromToken: nil, id: id))) { $1 }
+            data.merge(try await firstAudio(startDocument(current, text: try documentText(current), fromToken: nil, id: id))) { $1 }
         }
         return data
     }

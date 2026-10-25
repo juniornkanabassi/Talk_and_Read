@@ -213,7 +213,13 @@ struct HomePane: View {
 
     private func play() {
         guard !isBlank else { return }
-        router.open(model.readPasted(text, id: model.reserve("user")).item)
+        do {
+            router.open(try model.readPasted(text, id: model.reserve("user")).item)
+        } catch let error as AppError {
+            MiniPlayer.shared.flash(error.message)
+        } catch {
+            MiniPlayer.shared.flash(error.localizedDescription)
+        }
     }
 
     private var hint: some View {

@@ -98,6 +98,7 @@ enum ControlSelfTest {
         await step("a skip -2 (still reading)", ["skip", "-2", "--caller", "a"], .ok)
         await step("a stop", ["stop", "--caller", "a"], .ok)
         await librarySteps(cli, model, &results)
+        await admissionSteps(cli, model, &results)
         await wordListSteps(cli, model, &results)
 
         // Two callers transcribe at once: the shared transcriber admits one, the other is told busy.
@@ -326,7 +327,9 @@ enum ControlSelfTest {
         let o4 = await call(cli, ["read-pasted", text, "--caller", "a"])
         results.append(check("a read-pasted", o4, .audio))
         let pasted = model.library.first
-        record("read-pasted keeps Library and History", pasted?.kind == "pasted" && pasted?.title == text && model.recentReads.first?.text == text,
+        record("read-pasted keeps Library and History", pasted?.kind == "pasted" && pasted?.title == text && model.recentReads.first?.text == text
+               && WindowRouter.shared.libraryPath.last?.id == pasted?.id && model.sessionInfo.item == pasted?.id
+               && pasted.flatMap { try? model.documentText($0) } == text,
                pasted?.title ?? "-")
         let o5 = await call(cli, ["read-again", "--caller", "b"])
         results.append(check("b read-again while a reads", o5, .busy))
@@ -335,6 +338,117 @@ enum ControlSelfTest {
         let o7 = await call(cli, ["stop", "--caller", "a"])
         results.append(check("a stop", o7, .ok))
         if let pasted { model.remove(pasted) }
+    }
+
+    @MainActor private static func admissionSteps(_ cli: URL, _ model: AppModel, _ results: inout [Bool]) async {
+        func record(_ label: String, _ pass: Bool) {
+            results.append(pass)
+            print("\(pass ? "PASS" : "FAIL")  \(label)")
+        }
+        let item = model.importText("A document for admission tests.", title: "Admission")
+        let path = WindowRouter.shared.libraryPath
+        let active = await call(cli, ["speak", "Keep reading while navigation is refused.", "--caller", "a"])
+        record("navigation fixture is reading", active.response?.ok == true && model.liveSession != nil)
+        for args in [["library-open", item.id.uuidString], ["library-open", item.id.uuidString, "--read", "1"],
+                     ["open", "Tests/Fixtures/documents/sample.txt"], ["open", "Tests/Fixtures/documents/sample.txt", "--read", "1"],
+                     ["open-url", "https://example.com"], ["open-url", "https://example.com", "--read", "1"]] {
+            let result = await call(cli, args + ["--caller", "b"])
+            record("navigation refuses another owner: \(args.joined(separator: " "))",
+                   result.response?.code == "busy" && WindowRouter.shared.libraryPath == path)
+        }
+        model.stopSession()
+        do {
+            _ = try await model.openImported(ControlRequest(command: "open", args: ["read": "1"], caller: "a"), name: "test") {
+                await Task.yield()
+                _ = model.reserve("b")
+                return item
+            }
+            record("superseded import preserves navigation", false)
+        } catch let error as AppError {
+            record("superseded import preserves navigation", error.code == "superseded" && WindowRouter.shared.libraryPath == path)
+        } catch { record("superseded import preserves navigation", false) }
+        model.stopSession()
+        do {
+            _ = try await model.openImported(ControlRequest(command: "open", caller: "a"), name: "test") {
+                await Task.yield()
+                _ = model.reserve("b")
+                return item
+            }
+            record("import rechecks ownership after await", false)
+        } catch let error as AppError {
+            record("import rechecks ownership after await", error.code == "busy" && WindowRouter.shared.libraryPath == path)
+        } catch { record("import rechecks ownership after await", false) }
+        model.stopSession()
+
+        let countWords = model.documentWordCount
+        model.documentWordCount = { text in
+            await Task.yield()
+            model.remove(item)
+            return TextKit.tokenize(text).count
+        }
+        let removed = await call(cli, ["library-open", item.id.uuidString, "--read", "1", "--caller", "a"])
+        model.documentWordCount = countWords
+        record("library-open rechecks removal after tokenisation", removed.response?.code == "not_found"
+               && model.liveSession == nil && WindowRouter.shared.libraryPath == path)
+        let removedImport = model.importText("Removed during import.", title: "Removed")
+        do {
+            _ = try await model.openImported(ControlRequest(command: "open", args: ["read": "1"], caller: "a"), name: "test") {
+                await Task.yield()
+                model.remove(removedImport)
+                return removedImport
+            }
+            record("import rechecks removal after await", false)
+        } catch let error as AppError {
+            record("import rechecks removal after await", error.code == "not_found" && model.owner == nil && WindowRouter.shared.libraryPath == path)
+        } catch { record("import rechecks removal after await", false) }
+
+        let target = model.insertAgainTarget
+        var release: CheckedContinuation<NSRunningApplication?, Never>?
+        model.insertAgainTarget = { await withCheckedContinuation { release = $0 } }
+        let insertion = Task { try await model.reinsertInOtherApp(UUID()) }
+        let entered = await waitUntil(1) { release != nil }
+        record("insert-again reserves before awaiting target", entered && model.insertingAgain)
+        let second = await call(cli, ["insert-again", "--caller", "b"])
+        let dictate = await call(cli, ["dictate-start", "--caller", "b"])
+        record("concurrent insert-again is busy", second.response?.code == "busy")
+        record("dictate-start during insert-again is busy", dictate.response?.code == "busy" && model.dictation.owner == nil)
+        do {
+            _ = try await model.reinsertInOtherApp(UUID())
+            record("GUI shares insert-again guard", false)
+        } catch let error as AppError { record("GUI shares insert-again guard", error.code == "busy") }
+        catch { record("GUI shares insert-again guard", false) }
+        release?.resume(returning: nil)
+        _ = try? await insertion.value
+        model.insertAgainTarget = target
+        record("insert-again releases its guard", !model.insertingAgain)
+
+        let saved = Paths.documents.appendingPathExtension("admission-backup")
+        let historyCount = model.recentReads.count
+        do {
+            try FileManager.default.moveItem(at: Paths.documents, to: saved)
+            defer {
+                try? FileManager.default.removeItem(at: Paths.documents)
+                try? FileManager.default.moveItem(at: saved, to: Paths.documents)
+            }
+            try Data().write(to: Paths.documents)   // a file blocks the directory even when running as root
+            let failed = await call(cli, ["read-pasted", "Cannot persist this text.", "--caller", "a"])
+            record("read-pasted reports persistence failure", failed.response?.code == "failed"
+                   && failed.response?.message == "Could not open “Cannot persist this text.”"
+                   && model.liveSession == nil && model.owner == nil && model.recentReads.count == historyCount
+                   && WindowRouter.shared.libraryPath == path)
+            if let failedItem = model.library.first { model.remove(failedItem) }
+        } catch { record("read-pasted persistence fixture", false) }
+        do {
+            let text = "Home play still records and opens the saved text."
+            let (homeItem, session) = try model.readPasted(text, id: model.reserve("user"))
+            WindowRouter.shared.open(homeItem)
+            record("Home play reads, records History and opens its item", model.session === session
+                   && model.sessionInfo.item == homeItem.id && model.recentReads.count == historyCount + 1
+                   && model.recentReads.first?.text == text && WindowRouter.shared.libraryPath.last?.id == homeItem.id
+                   && (try? model.documentText(homeItem)) == text)
+            model.stopSession()
+            model.remove(homeItem)
+        } catch { record("Home play reads, records History and opens its item", false) }
     }
 
     /// Vocabulary, pronunciations and shortcuts through the CLI: written where the Settings editors read them.
