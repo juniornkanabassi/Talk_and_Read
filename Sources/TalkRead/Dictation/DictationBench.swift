@@ -1,4 +1,5 @@
-// `TalkRead --selftest-asr <dir> --bench [--engines parakeet,apple-speech,apple-dictation] [--context]`: compares recognisers on a
+// `TalkRead --selftest-asr <dir> --bench [--engines parakeet,parakeet-v3,apple-speech,apple-dictation]
+// [--languages en,fr] [--context]`: compares recognisers on a
 // fixture folder through the live streaming path (real-time 100 ms buffers). Per engine: WER of the cleaned text
 // (numbers, £, %, am/pm compared leniently), key terms from terms.txt typed exactly, clips typed exactly, latency from
 // the last sample to the transcript, release-to-paste through the real DictationController, and app memory.
@@ -19,6 +20,8 @@ import TalkReadCore
         let terms = ((try? String(contentsOf: dir.appendingPathComponent("terms.txt"), encoding: .utf8)) ?? "")
             .split(separator: "\n").map { $0.replacingOccurrences(of: "\\n", with: "\n") }
         let names = argument("--engines")?.split(separator: ",").map(String.init) ?? ["parakeet", "apple-speech", "apple-dictation"]
+        // The clean-up's languages (British spelling only on English sentences, near misses in every dictionary).
+        let languages = argument("--languages")?.split(separator: ",").map(String.init) ?? ["en"]
         print("bench: \(clips.count) clips, \(vocabulary.count) vocabulary entries, \(terms.count) key terms; app footprint at start \(Int(footprintMB())) MB")
         var summary: [String] = []
         var failed = false
@@ -26,6 +29,7 @@ import TalkReadCore
             let asr: DictationASR
             switch name {
             case "parakeet": asr = Transcriber()
+            case "parakeet-v3": asr = ParakeetV3Transcriber()
             case "apple-speech", "apple-dictation":
                 let apple = AppleTranscriber(model: name == "apple-speech" ? .speech : .dictation)
                 if CommandLine.arguments.contains("--context") { apple.contextualStrings = Cleanup.terms(vocabulary) }
@@ -43,7 +47,10 @@ import TalkReadCore
                 let raw: String, ms: Double
                 do { (raw, ms) = try await DictationSelfTest.live(samples, asr) } catch { print("\(clip.lastPathComponent)\tfailed: \(error)"); return 1 }
                 peak = max(peak, footprintMB())
-                let text = BritishSpelling.apply(Cleanup.apply(raw, vocabulary: vocabulary, removeFillers: true))
+                let dictionaries = DictationController.dictionaries(for: languages)
+                let text = BritishSpelling.apply(Cleanup.apply(raw, vocabulary: vocabulary, removeFillers: true, languages: languages,
+                                                               isWord: { DictationController.isCommonWord($0, dictionaries: dictionaries) }),
+                                                 languages: languages)
                 let ref = lenient(reference), e = DictationSelfTest.editDistance(ref, lenient(text))
                 let wanted = terms.filter { reference.contains($0) }, got = wanted.filter { text.contains($0) }
                 errors += e; words += ref.count; hits += got.count; termTotal += wanted.count; latencies.append(ms)
@@ -53,7 +60,7 @@ import TalkReadCore
                              100 * Double(e) / Double(max(1, ref.count)), ms, got.count, wanted.count, text == reference ? "yes" : "no",
                              text.replacingOccurrences(of: "\n", with: "⏎"), missed.isEmpty ? "" : "  [missed: \(missed.joined(separator: "; "))]"))
             }
-            let e2e = await releaseToPaste(asr, clips: clips)
+            let e2e = await releaseToPaste(asr, clips: clips, languages: languages)
             let sorted = latencies.sorted()
             let line = String(format: "%@: WER %.1f%%, key terms %d/%d, exact %d/%d, after last sample median %.0f ms (max %.0f), release to paste median %.0f ms (max %.0f) over %d of %d insertions, app memory +%.0f MB loaded, peak %.0f MB",
                               name, 100 * Double(errors) / Double(max(1, words)), hits, termTotal, exact, clips.count,
@@ -89,14 +96,16 @@ import TalkReadCore
 
     /// Release (the clip's last buffer, then `stop`) to the moment the controller hands the text to the inserter, for
     /// clips of 4–7 s, through the production DictationController (clean-up, settings and vocabulary reads included).
-    static func releaseToPaste(_ asr: DictationASR, clips: [URL]) async -> (median: Double, max: Double, count: Int, tried: Int) {
+    static func releaseToPaste(_ asr: DictationASR, clips: [URL], languages: [String] = ["en"]) async -> (median: Double, max: Double, count: Int, tried: Int) {
         var times: [Double] = [], tried = 0
         for clip in clips {
             guard let samples = try? Transcriber.samples(of: clip), (4 * 16_000...7 * 16_000).contains(samples.count) else { continue }
             tried += 1
             let audio = ClipAudio(samples: samples)
             var pasted: Date?
-            let controller = DictationController(audio: audio, asr: asr, insert: { _, _, _, _ in pasted = Date(); return .inserted(confirmed: true) })
+            // The engine under test serves both roles, so the languages pick its clean-up and nothing else.
+            let controller = DictationController(audio: audio, asr: asr, multilingual: asr, insert: { _, _, _, _ in pasted = Date(); return .inserted(confirmed: true) })
+            controller.languages = languages
             controller.quiet = true
             let fed = AsyncStream<Void>.makeStream()
             audio.done = { fed.continuation.finish() }

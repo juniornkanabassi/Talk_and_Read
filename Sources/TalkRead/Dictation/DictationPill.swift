@@ -167,7 +167,8 @@ struct DictationPillView: View {
         let copyable = dictation.copyable != nil   // done, or not typed: Copy and the paste-last tip
         return DictationPillStatus(message: message, levels: dictation.levels, recording: recording, words: words,
                                    copy: copyable ? { dictation.copyResult() } : nil, copied: dictation.copied, closes: dictation.state.showsResult,
-                                   tip: copyable ? DictationPillStatus.pasteTip(TalkReadCore.Settings.load().pasteLastShortcut) : nil,
+                                   tip: copyable ? DictationPillStatus.pasteTip(TalkReadCore.Settings.load().pasteLastShortcut)
+                                       : recording || dictation.state == .transcribing ? dictation.languageNotice : nil,
                                    docked: docked) {
             dictation.dismiss()
         }
@@ -198,7 +199,7 @@ struct DictationPillStatus: View {
     var copied = false
     /// The ✕ closes a result rather than cancelling a dictation (its VoiceOver label).
     var closes = false
-    /// "Didn't land? Press ⌃⌘V to paste it" (nil: hidden).
+    /// "Didn't land? Press ⌃⌘V to paste it", or while recording the English-only notice (nil: hidden).
     var tip: String? = nil
     /// Inside the mini player: its width, a microphone in front to tell it from the reading, no surface of its own.
     var docked = false

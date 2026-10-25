@@ -52,6 +52,9 @@ enum DictationError: LocalizedError, Equatable {
     var microphoneUID: String?
     /// Set while recording when the saved microphone is not connected and the default is used instead (the pill shows it).
     @Published private(set) var micNotice: String?
+    /// Set while recording when other languages are chosen but their model is not downloaded yet, so this one is English.
+    @Published private(set) var languageNotice: String?
+    static let languageFallback = "English only: download the multilingual model in Settings"
 
     static let user = "user"
     /// The one admission slot for live dictation and file transcription: one owner at a time; other control callers
@@ -71,6 +74,9 @@ enum DictationError: LocalizedError, Equatable {
     var learnCorrections = false
     /// Respell American spellings the British dictionary rejects (Junior writes British English; lead: a Settings row).
     var britishSpelling = true
+    /// Settings.dictationLanguages. English alone uses `asr` (or Apple's); anything else uses `multilingual` once its
+    /// model is on the Mac, and the clean-up treats each sentence in its own language.
+    var languages = ["en"]
     /// Re-spellings seen in two dictations, offered for the vocabulary (the pill offers the first one).
     @Published private(set) var suggestions: [AutoLearn.Correction] = []
     /// The suggestion the pill is offering, once each (ignored ones stay in `suggestions`).
@@ -83,6 +89,7 @@ enum DictationError: LocalizedError, Equatable {
     typealias Insert = @MainActor (_ text: String, _ targetPID: pid_t?, _ requireField: Bool, _ isCurrent: @MainActor () -> Bool) async -> InsertResult
     let audio: DictationAudio
     let asr: DictationASR
+    let multilingual: DictationASR
     private let insert: Insert
     private var fileJob: Task<Transcript, Error>?           // set while the owner's work is a file transcription
     private var feed: AsyncStream<AVAudioPCMBuffer>.Continuation?
@@ -97,14 +104,16 @@ enum DictationError: LocalizedError, Equatable {
     private let decode: @Sendable (URL) throws -> [Float]
     private var pill: DictationPill?
 
-    init(audio: DictationAudio? = nil, asr: DictationASR? = nil, insert: Insert? = nil,
+    init(audio: DictationAudio? = nil, asr: DictationASR? = nil, multilingual: DictationASR? = nil, insert: Insert? = nil,
          decode: (@Sendable (URL) throws -> [Float])? = nil) {
         self.audio = audio ?? Recorder()
         self.asr = asr ?? Transcriber()
+        self.multilingual = multilingual ?? ParakeetV3Transcriber()
         self.insert = insert ?? { await Inserter.insert($0, targetPID: $1, requireField: $2, isCurrent: $3) }
         self.decode = decode ?? { try Transcriber.samples(of: $0) }
         history = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
         self.asr.onLoadingChange = { [weak self] in self?.updateBusy() }
+        self.multilingual.onLoadingChange = { [weak self] in self?.updateBusy() }
         Task { [weak self] in
             let installed = await AppleTranscriber.isInstalled(.speech)
             self?.appleInstalled = installed
@@ -114,6 +123,11 @@ enum DictationError: LocalizedError, Equatable {
     /// The recogniser for the next utterance: Parakeet, unless Apple's is preferred, or Parakeet's model is not on the
     /// Mac yet and Apple's is installed (no download needed).
     private func recogniser() -> DictationASR {
+        if languages != ["en"], multilingual.isLoaded || multilingual.isLoading || multilingual.isDownloaded {
+            return multilingual
+        }
+        // Until the multilingual model is downloaded (Settings ▸ Dictation offers it), dictation stays English and the pill
+        // says so (`languageNotice`); a file transcription is refused instead.
         guard asr is Transcriber, appleInstalled else { return asr }
         let parakeetReady = asr.isLoaded || asr.isLoading || Transcriber.isDownloaded
         guard preferApple || !parakeetReady else { return asr }
@@ -136,12 +150,19 @@ enum DictationError: LocalizedError, Equatable {
         offering = nil
         pillToken += 1                                            // the last result's hide no longer applies
         micNotice = nil
+        languageNotice = nil
         insertOnStop = true
         levels = levels.map { _ in 0 }
         lastPartial = ""
         state = .recording(level: 0, partial: "")
         showPill()
+        // This utterance keeps the languages it started with; on the English fallback it is cleaned as English alone.
         let asr = recogniser()
+        var languages = languages
+        if languages != ["en"], asr !== multilingual {
+            languageNotice = Self.languageFallback
+            languages = ["en"]
+        }
         if !asr.isLoaded { Task { try? await asr.load(progress: nil) } }   // load alongside any drain ("Preparing…")
         let (stream, feed) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
         self.feed = feed
@@ -153,7 +174,7 @@ enum DictationError: LocalizedError, Equatable {
         let drain = draining                                      // the slot is reserved; the microphone waits for it
         work = Task { [weak self] in
             await drain?.value
-            return await self?.finish(gen, transcript)
+            return await self?.finish(gen, transcript, languages: languages)
         }
     }
 
@@ -213,8 +234,11 @@ enum DictationError: LocalizedError, Equatable {
     /// cancels it, and it then throws `busy` with the new owner.
     func transcribe(file: URL, caller: String) async throws -> String {
         if let busy = owner { throw DictationError.busy(owner: busy) }
+        let asr = recogniser(), decode = decode, languages = languages
+        if languages != ["en"], asr !== multilingual {
+            throw AppError(code: "model_missing", message: "Dictation languages are \(languages.joined(separator: ", ")), but the multilingual model is not downloaded yet: download it in Settings ▸ Dictation, or set dictationLanguages to en.")
+        }
         owner = caller                                            // admitted before the first await
-        let asr = recogniser(), decode = decode
         let job = Task {
             // ponytail: the decode reads the whole file and cannot be interrupted; a takeover waits for it (the drain),
             // a few ms for a dictation clip. Make it chunked and cancellable if hour-long files ever matter.
@@ -226,7 +250,7 @@ enum DictationError: LocalizedError, Equatable {
         defer { if fileJob == job { fileJob = nil; owner = nil } }   // after a takeover the slot is no longer ours
         let raw = await job.result
         guard fileJob == job else { throw DictationError.busy(owner: owner ?? Self.user) }
-        return await clean(try raw.get())
+        return await clean(try raw.get(), languages: languages)
     }
 
     func pasteLast() {
@@ -265,11 +289,15 @@ enum DictationError: LocalizedError, Equatable {
 
     /// Frees the recogniser. False, freeing nothing, while dictation, a file, a drain or the model load still runs: the
     /// caller keeps its idle timer and tries again later (Sol #24).
-    @discardableResult func unloadModel() -> Bool { !isBusy && asr.unload() }
+    @discardableResult func unloadModel() -> Bool {
+        guard !isBusy else { return false }
+        let english = asr.unload(), other = multilingual.unload()
+        return english && other
+    }
 
     // MARK: Utterance
 
-    private func finish(_ gen: Int, _ transcript: Task<Transcript, Error>) async -> String? {
+    private func finish(_ gen: Int, _ transcript: Task<Transcript, Error>, languages: [String]) async -> String? {
         // The microphone is asked for only by the current utterance, and only while it is still recording: a stale
         // task never starts audio (it would stop the newer utterance's input) and a stop that came first is honoured.
         guard gen == generation else { return nil }
@@ -297,7 +325,7 @@ enum DictationError: LocalizedError, Equatable {
             show(failure: .failed("Could not transcribe: \(error.localizedDescription)"))
             return nil
         }
-        let text = await clean(raw)
+        let text = await clean(raw, languages: languages)
         guard gen == generation else { return nil }
         guard !text.isEmpty else {
             owner = nil
@@ -321,20 +349,33 @@ enum DictationError: LocalizedError, Equatable {
         return result.landed ? text : nil
     }
 
-    private func clean(_ raw: Transcript) async -> String {
+    private func clean(_ raw: Transcript, languages: [String]) async -> String {
         let settings = Settings.load()
         // Paragraphs are chosen on the raw text, where the pauses line up with its sentences; Cleanup keeps the breaks.
         let spoken = settings.paragraphs ? Paragraphs.split(raw.text, pauses: raw.pauses) : raw.text
-        var text = Cleanup.apply(spoken, vocabulary: vocabulary(), removeFillers: settings.removeFillers, isWord: Self.isCommonWord)
-        if britishSpelling { text = BritishSpelling.apply(text) }
+        let dictionaries = Self.dictionaries(for: languages)
+        var text = Cleanup.apply(spoken, vocabulary: vocabulary(), removeFillers: settings.removeFillers, languages: languages,
+                                 isWord: { Self.isCommonWord($0, dictionaries: dictionaries) })
+        if britishSpelling { text = BritishSpelling.apply(text, languages: languages) }
         if settings.paragraphs { text = Paragraphs.tidy(text) }
         return settings.polishWithAppleIntelligence ? await Polish.polish(text) : text
     }
 
     /// In the British or American dictionary in lower case, so names ("Donahue", "Nevis") are not common words: near-miss
     /// vocabulary correction leaves common words alone (Sol inspection 4 #4).
-    static func isCommonWord(_ word: String) -> Bool {
-        ["en_GB", "en_US"].contains {
+    static func isCommonWord(_ word: String) -> Bool { isCommonWord(word, dictionaries: ["en_GB", "en_US"]) }
+
+    /// The spell checker's dictionaries for the dictation's languages, so a French word ("chaise") is not taken for a near
+    /// miss either. Looked up once per dictation.
+    static func dictionaries(for languages: [String]) -> [String] {
+        let available = NSSpellChecker.shared.availableLanguages
+        return languages.flatMap { code -> [String] in
+            code == "en" ? ["en_GB", "en_US"] : available.filter { $0 == code || $0.hasPrefix(code + "_") }
+        }
+    }
+
+    static func isCommonWord(_ word: String, dictionaries: [String]) -> Bool {
+        dictionaries.contains {
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0, language: $0, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
         }
     }
@@ -397,6 +438,7 @@ enum DictationError: LocalizedError, Equatable {
     private func discard() {
         generation += 1
         micNotice = nil
+        languageNotice = nil
         work?.cancel()
         _ = audio.stop()
         feed?.finish()
@@ -427,7 +469,7 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     private func updateBusy() {
-        let preparing = draining != nil || asr.isLoading
+        let preparing = draining != nil || asr.isLoading || multilingual.isLoading
         if self.preparing != preparing { self.preparing = preparing }
         let busy = owner != nil || inserting > 0 || preparing
         if isBusy != busy { isBusy = busy }

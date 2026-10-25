@@ -186,9 +186,11 @@ struct SettingsContent: View {
         Form {
             Section {
                 MicrophonePicker(model: model)
-                Picker("Recogniser", selection: $model.settings.dictationEngine) {
-                    Text("Parakeet (most accurate, 580 MB)").tag("parakeet")
-                    Text("Apple (built in, no download)").tag("apple")
+                if !model.settings.dictatesMultilingual {      // other languages always use Parakeet v3
+                    Picker("Recogniser", selection: $model.settings.dictationEngine) {
+                        Text("Parakeet (most accurate, 580 MB)").tag("parakeet")
+                        Text("Apple (built in, no download)").tag("apple")
+                    }
                 }
                 Picker("Spelling", selection: $model.settings.britishSpelling) {
                     Text("British").tag(true)
@@ -196,12 +198,33 @@ struct SettingsContent: View {
                 }
             }
             Section {
+                LabeledContent("Languages") {
+                    Menu(DictationLanguages.summary(model.settings.dictationLanguages)) {
+                        ForEach(Settings.dictationLanguageChoices, id: \.self) { code in
+                            Toggle(DictationLanguages.name(code), isOn: languageBinding(code))
+                        }
+                    }
+                    .fixedSize()
+                }
+                if model.settings.dictatesMultilingual, let row = multilingualRow, row.state != .ready {
+                    ModelStatusRow(symbol: "globe.europe.africa", title: "Multilingual dictation model",
+                                   what: "Parakeet v3, also used for word timing", megabytes: row.megabytes, state: row.state) {
+                        model.download(row.title)
+                    }
+                }
+            } footer: {
+                Text(model.settings.dictatesMultilingual
+                     ? "Speak any of these and Talk & Read writes what you said in that language, even when you switch mid-sentence. British spelling applies to the English."
+                     : "Add a language to dictate in it as well as English. Talk & Read works out which one you are speaking.")
+                    .foregroundStyle(.secondary)
+            }
+            Section {
                 Toggle("Learn from my corrections", isOn: $model.settings.learnCorrections)
             } footer: {
                 Text("Reads the field for 15 seconds after dictating, never password fields, stays on this Mac.").foregroundStyle(.secondary)
             }
             Section {
-                Toggle("Remove filler words (um, uh, er)", isOn: $model.settings.removeFillers)
+                Toggle("Remove filler words (um, uh, er, euh)", isOn: $model.settings.removeFillers)
                 Toggle("Split long dictations into paragraphs", isOn: $model.settings.paragraphs)
                 Toggle("Polish with Apple Intelligence", isOn: $model.settings.polishWithAppleIntelligence)
             } footer: {
@@ -210,6 +233,19 @@ struct SettingsContent: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// The Parakeet v3 download the multilingual recogniser needs (the same row as the word-timing model).
+    private var multilingualRow: ModelRow? { data.models.first { $0.title.lowercased().contains("parakeet") } }
+
+    /// One language on or off; the last one cannot be turned off.
+    private func languageBinding(_ code: String) -> Binding<Bool> {
+        Binding(get: { model.settings.dictationLanguages.contains(code) }, set: { on in
+            var codes = model.settings.dictationLanguages
+            if on, !codes.contains(code) { codes.append(code) }
+            if !on, codes.count > 1 { codes.removeAll { $0 == code } }
+            model.settings.dictationLanguages = codes
+        })
     }
 
     // MARK: Pronunciations
