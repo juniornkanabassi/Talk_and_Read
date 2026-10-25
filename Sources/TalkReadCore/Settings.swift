@@ -21,7 +21,7 @@ public struct Settings: Codable, Equatable, Sendable {
 
         /// A shortcut from text (`settings-set`): modifiers by name (ctrl, option or alt, shift, cmd) joined with +, or as
         /// glyphs (⌃⌥⇧⌘), then one key: a letter, digit or punctuation key of the US layout, space, return, tab, an
-        /// arrow (left, right, up, down) or F1 to F12. `off` (or `none`) turns the shortcut off. The display is built as the
+        /// arrow (left, right, up, down) or F1 to F12; the glyphs the display shows (↩ ⇥ ← → ↑ ↓) are accepted too, so a display round-trips. `off` (or `none`) turns the shortcut off. The display is built as the
         /// recorder builds it (⌃⌥⇧⌘ then the key). nil when the text names no key or an unknown one. Whether the result
         /// may be used is `Settings.refusal`'s call.
         public init?(text: String) {
@@ -64,8 +64,8 @@ public struct Settings: Codable, Equatable, Sendable {
                 (",", 43), ("/", 44), ("n", 45), ("m", 46), (".", 47), ("`", 50)]
             for (name, code) in printable { k[name] = (code, name.uppercased()) }
             let named: [([String], UInt16, String)] = [
-                (["space"], 49, "Space"), (["return", "enter"], 36, "↩"), (["tab"], 48, "⇥"), (["left"], 123, "←"),
-                (["right"], 124, "→"), (["down"], 125, "↓"), (["up"], 126, "↑"), (["f1"], 122, "F1"), (["f2"], 120, "F2"),
+                (["space"], 49, "Space"), (["return", "enter", "↩"], 36, "↩"), (["tab", "⇥"], 48, "⇥"), (["left", "←"], 123, "←"),
+                (["right", "→"], 124, "→"), (["down", "↓"], 125, "↓"), (["up", "↑"], 126, "↑"), (["f1"], 122, "F1"), (["f2"], 120, "F2"),
                 (["f3"], 99, "F3"), (["f4"], 118, "F4"), (["f5"], 96, "F5"), (["f6"], 97, "F6"), (["f7"], 98, "F7"),
                 (["f8"], 100, "F8"), (["f9"], 101, "F9"), (["f10"], 109, "F10"), (["f11"], 103, "F11"), (["f12"], 111, "F12")]
             for (aliases, code, name) in named { for alias in aliases { k[alias] = (code, name) } }
