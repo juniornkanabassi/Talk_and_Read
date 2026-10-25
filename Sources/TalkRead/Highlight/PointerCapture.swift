@@ -115,17 +115,18 @@ enum PointerCapture {
         return best
     }
 
-    /// The last of `element`'s following siblings in its column: a sibling beside the column (a sidebar) ends it.
-    private static func lastInColumn(after element: AXUIElement, frame: CGRect, in area: AXUIElement) -> AXUIElement {
-        let siblings = (axAttribute(area, kAXChildrenAttribute) as? [AXUIElement]) ?? []
-        guard let i = siblings.firstIndex(where: { CFEqual($0, element) }) else { return area }
-        var last = element
+    /// `element` and its following siblings in the same column: a sibling beside it (a sidebar) ends the run.
+    private static func sameColumn(from element: AXUIElement, in parent: AXUIElement) -> [AXUIElement] {
+        guard let frame = axFrame(element) else { return [element] }
+        let siblings = (axAttribute(parent, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+        guard let i = siblings.firstIndex(where: { CFEqual($0, element) }) else { return [element] }
+        var run = [element]
         for sibling in siblings[(i + 1)...].prefix(2000) {
             guard let f = axFrame(sibling), !f.isEmpty else { continue }
             if f.maxX <= frame.minX + 1 || f.minX >= frame.maxX - 1 { break }
-            last = sibling
+            run.append(sibling)
         }
-        return last
+        return run
     }
 
     /// A child of `parent` beside `column` rather than above or below it (a sidebar, a second pane): the parent holds
@@ -211,10 +212,12 @@ enum PointerCapture {
             return Capture(text: tail, pid: block.pid, element: block.element, window: window, selectionStart: start, source: .pointer)
         }
         guard let area = TextCapture.webArea(of: block.element) else { return nil }
-        // A paragraph straight under the page (plain HTML) has no column element: the read ends at the last block after it
-        // in its column. The text-node walk then covers the page, since that block is no ancestor to walk under.
+        // The read covers the paragraph's column. A paragraph straight under the page (plain HTML) has no column element:
+        // it and the blocks after it in its column, up to one beside it (a sidebar). Elsewhere the column's own later
+        // siblings are not read: in the Claude and Codex apps they are the message box (with any draft) and its footer.
         let direct = axElement(block.element, kAXParentAttribute).map { CFEqual($0, area) } == true
-        let end = direct ? lastInColumn(after: block.element, frame: block.frame, in: area) : column(of: block.element, frame: block.frame, area: area)
+        let run = direct ? sameColumn(from: block.element, in: area) : [column(of: block.element, frame: block.frame, area: area)]
+        let end = run.last ?? block.element
         if let own = markerRange(of: block.element, in: area), let page = markerRange(of: end, in: area),
            let range = axParameterizedAttribute(area, "AXTextMarkerRangeForUnorderedTextMarkers",
                                                 parameter: [AXTextMarkerRangeCopyStartMarker(own), AXTextMarkerRangeCopyEndMarker(page)] as CFArray),
@@ -232,7 +235,7 @@ enum PointerCapture {
             return TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
         }
         // No text markers: the page's text nodes from the block on, in document order.
-        let nodes = textNodes(under: direct ? area : end, from: block.element, limit: 6000)
+        let nodes = run.enumerated().flatMap { i, root in textNodes(under: root, from: i == 0 ? block.element : nil, limit: 6000) }
         let text = ReadHere.join(nodes.map { node in
             let f = axFrame(node.element)
             return (node.text, f.map { Double($0.minY) }, f.map { Double($0.maxY) }, f.map { Double($0.minX) }, f.map { Double($0.maxX) })

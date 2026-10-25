@@ -179,10 +179,10 @@ import TalkReadCore
 
     // MARK: Hover mode
 
+    /// Held or hovering, the glyph's paragraph is on the Space just left: look again on this one.
     private func spaceChanged() {
-        guard timer == nil else { return }
         hidePanel()
-        (block, rest) = (nil, nil)
+        (block, rest, lastPoint) = (nil, nil, nil)
     }
 
     private func setHover(_ on: Bool) {
