@@ -47,8 +47,9 @@ import TalkReadCore
                 let raw: String, ms: Double
                 do { (raw, ms) = try await DictationSelfTest.live(samples, asr) } catch { print("\(clip.lastPathComponent)\tfailed: \(error)"); return 1 }
                 peak = max(peak, footprintMB())
-                let text = BritishSpelling.apply(Cleanup.apply(raw, vocabulary: vocabulary, removeFillers: true,
-                                                               isWord: { DictationController.isCommonWord($0, languages: languages) }),
+                let dictionaries = DictationController.dictionaries(for: languages)
+                let text = BritishSpelling.apply(Cleanup.apply(raw, vocabulary: vocabulary, removeFillers: true, languages: languages,
+                                                               isWord: { DictationController.isCommonWord($0, dictionaries: dictionaries) }),
                                                  languages: languages)
                 let ref = lenient(reference), e = DictationSelfTest.editDistance(ref, lenient(text))
                 let wanted = terms.filter { reference.contains($0) }, got = wanted.filter { text.contains($0) }

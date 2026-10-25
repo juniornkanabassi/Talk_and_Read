@@ -26,6 +26,10 @@ final class CleanupTests: XCTestCase {
 
     func testFillersKeptWhenSwitchedOff() {
         XCTAssertEqual(clean("so um I think", fillers: false), "So um I think")
+        // Each language's own fillers; a filler that is a real word in a chosen language stays.
+        XCTAssertEqual(Cleanup.apply("Alors euh je pense que oui.", vocabulary: [:], removeFillers: true, languages: ["en", "fr"]), "Alors je pense que oui.")
+        XCTAssertEqual(Cleanup.apply("Er kommt äh morgen.", vocabulary: [:], removeFillers: true, languages: ["en", "de"]), "Er kommt morgen.")
+        XCTAssertEqual(Cleanup.apply("Quero um café.", vocabulary: [:], removeFillers: true, languages: ["pt"]), "Quero um café.")
     }
 
     func testFillerRemovalKeepsLineBreaks() {

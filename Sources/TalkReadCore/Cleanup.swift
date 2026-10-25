@@ -7,8 +7,10 @@ public enum Cleanup {
     /// vocabulary, vocabulary near misses, capitalisation, double spaces, trim. URLs, email addresses and vocabulary
     /// replacements are swapped for placeholders while the other rules run, so nothing inside them is altered (a
     /// vocabulary entry like "iOS" is not capitalised at the start of a sentence). `isWord` (the app's spell checker) keeps
-    /// real words out of near-miss correction; explicit vocabulary entries always apply.
-    public static func apply(_ raw: String, vocabulary: [String: String], removeFillers: Bool, isWord: (String) -> Bool = { _ in false }) -> String {
+    /// real words out of near-miss correction; explicit vocabulary entries always apply. `languages`: the dictation's, for
+    /// the fillers (German "er" and Portuguese "um" are words, not fillers).
+    public static func apply(_ raw: String, vocabulary: [String: String], removeFillers: Bool, languages: [String] = ["en"],
+                             isWord: (String) -> Bool = { _ in false }) -> String {
         var protected: [String] = []
         func hold(_ text: String) -> String {
             protected.append(text)
@@ -19,7 +21,7 @@ public enum Cleanup {
         text = webForms(text)
         text = replaceAll(urlPattern, in: text) { hold(lowerHost($0[0])) }
 
-        if removeFillers { text = text.replacingOccurrences(of: fillerPattern, with: "", options: .regularExpression) }
+        if removeFillers { text = text.replacingOccurrences(of: fillerPattern(languages), with: "", options: .regularExpression) }
 
         for (pattern, replacement) in spoken {
             // A spoken mark replaces one the recogniser already wrote ("John, comma" is "John,", not "John,,"; Parakeet v3
@@ -60,7 +62,16 @@ public enum Cleanup {
     private static let openQuote = "\u{E010}", closeQuote = "\u{E011}"
     /// Web addresses, email addresses, and bare domains with a known ending and an optional path.
     private static let urlPattern = "(?i)\\b(?:https?://|www\\.)\\S*[^\\s.,;:!?)\\]\"']|[A-Za-z0-9._+-]+@\(domain)|\\b\(domain)(?:/[A-Za-z0-9._~%/-]*[A-Za-z0-9_~%/-])?"
-    private static let fillerPattern = "(?i)[ \\t]*\\b(?:umm|um|uh|erm|er|ah|hmm|euh|heu)\\b,?"
+    /// Hesitations to drop: the English ones whatever the language (people say "um" in French too), each language's own,
+    /// less any that is a real word in one of the languages.
+    static func fillerPattern(_ languages: [String]) -> String {
+        let fillers: [String: [String]] = ["en": ["umm", "um", "uh", "erm", "er", "ah", "hmm"], "fr": ["euh", "heu"],
+                                           "de": ["äh", "ähm"], "it": ["ehm", "uhm"]]
+        let words: [String: Set<String>] = ["de": ["er"], "pt": ["um"]]
+        let drop = (fillers["en"]! + languages.flatMap { fillers[$0] ?? [] }).filter { f in !languages.contains { words[$0]?.contains(f) == true } }
+        var seen = Set<String>()
+        return "(?i)[ \\t]*\\b(?:\(drop.filter { seen.insert($0).inserted }.joined(separator: "|")))\\b,?"
+    }
 
     /// Whole spoken phrases and what they become.
     private static let spoken: [(String, String)] = [

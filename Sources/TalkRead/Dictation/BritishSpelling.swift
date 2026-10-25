@@ -12,11 +12,12 @@ enum BritishSpelling {
         ("([aeiou])l(ed|ing|er|ers)$", "$1ll$2"), ("ll(ment|ments)?$", "l$1")
     ]
 
-    /// Only the English runs of a dictation in several languages (a French "favorite" is not respelt).
+    /// Only the sentences confidently English in a dictation in several languages (a French "favorite" is not respelt,
+    /// even in a sentence too short to place).
     @MainActor static func apply(_ text: String, languages: [String]) -> String {
         guard languages.contains("en") else { return text }
         guard languages.count > 1 else { return apply(text) }
-        return Language.runs(text, among: languages).map { $0.language == "en" ? apply(String($0.text)) : String($0.text) }.joined()
+        return Language.runs(text, among: languages, inherit: false).map { $0.language == "en" ? apply(String($0.text)) : String($0.text) }.joined()
     }
 
     @MainActor static func apply(_ text: String) -> String {

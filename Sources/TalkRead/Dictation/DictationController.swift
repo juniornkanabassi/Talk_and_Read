@@ -50,7 +50,8 @@ enum DictationError: LocalizedError, Equatable {
     private(set) var lastPartial = ""
     /// Settings.dictationMicrophone: the input for the next recording (nil = system default).
     var microphoneUID: String?
-    /// Set while recording when the saved microphone is not connected and the default is used instead (the pill shows it).
+    /// Set while recording when the saved microphone is not connected and the default is used instead, or when other
+    /// languages are chosen but their model is not downloaded yet (the pill shows it until words arrive).
     @Published private(set) var micNotice: String?
 
     static let user = "user"
@@ -123,7 +124,8 @@ enum DictationError: LocalizedError, Equatable {
         if languages != ["en"], multilingual.isLoaded || multilingual.isLoading || multilingual.isDownloaded {
             return multilingual
         }
-        // ponytail: until the multilingual model is downloaded (Settings ▸ Dictation starts it), dictation stays English.
+        // Until the multilingual model is downloaded (Settings ▸ Dictation offers it), dictation stays English and the pill
+        // says so (`micNotice`).
         guard asr is Transcriber, appleInstalled else { return asr }
         let parakeetReady = asr.isLoaded || asr.isLoading || Transcriber.isDownloaded
         guard preferApple || !parakeetReady else { return asr }
@@ -152,6 +154,9 @@ enum DictationError: LocalizedError, Equatable {
         state = .recording(level: 0, partial: "")
         showPill()
         let asr = recogniser()
+        if languages != ["en"], asr !== multilingual {
+            micNotice = "English only until the multilingual model is downloaded (Settings ▸ Dictation)"
+        }
         if !asr.isLoaded { Task { try? await asr.load(progress: nil) } }   // load alongside any drain ("Preparing…")
         let (stream, feed) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
         self.feed = feed
@@ -290,7 +295,7 @@ enum DictationError: LocalizedError, Equatable {
         guard case .recording = state else { return released() }
         play("Tink")                                              // the microphone starts now, after any drain
         let mic = Microphone.resolve(microphoneUID, in: Microphone.inputs())   // decided per recording, never mid-recording
-        micNotice = mic.notice
+        micNotice = mic.notice ?? micNotice                       // a microphone notice outranks the language one
         (audio as? Recorder)?.microphoneUID = mic.device?.uid
         do {
             try await audio.start()
@@ -339,9 +344,9 @@ enum DictationError: LocalizedError, Equatable {
         let settings = Settings.load()
         // Paragraphs are chosen on the raw text, where the pauses line up with its sentences; Cleanup keeps the breaks.
         let spoken = settings.paragraphs ? Paragraphs.split(raw.text, pauses: raw.pauses) : raw.text
-        let languages = languages
-        var text = Cleanup.apply(spoken, vocabulary: vocabulary(), removeFillers: settings.removeFillers,
-                                 isWord: { Self.isCommonWord($0, languages: languages) })
+        let languages = languages, dictionaries = Self.dictionaries(for: languages)
+        var text = Cleanup.apply(spoken, vocabulary: vocabulary(), removeFillers: settings.removeFillers, languages: languages,
+                                 isWord: { Self.isCommonWord($0, dictionaries: dictionaries) })
         if britishSpelling { text = BritishSpelling.apply(text, languages: languages) }
         if settings.paragraphs { text = Paragraphs.tidy(text) }
         return settings.polishWithAppleIntelligence ? await Polish.polish(text) : text
@@ -349,15 +354,19 @@ enum DictationError: LocalizedError, Equatable {
 
     /// In the British or American dictionary in lower case, so names ("Donahue", "Nevis") are not common words: near-miss
     /// vocabulary correction leaves common words alone (Sol inspection 4 #4).
-    static func isCommonWord(_ word: String) -> Bool { isCommonWord(word, languages: ["en"]) }
+    static func isCommonWord(_ word: String) -> Bool { isCommonWord(word, dictionaries: ["en_GB", "en_US"]) }
 
-    /// The same in any of the dictation's languages, so a French word ("chaise") is not taken for a near miss either.
-    static func isCommonWord(_ word: String, languages: [String]) -> Bool {
+    /// The spell checker's dictionaries for the dictation's languages, so a French word ("chaise") is not taken for a near
+    /// miss either. Looked up once per dictation.
+    static func dictionaries(for languages: [String]) -> [String] {
         let available = NSSpellChecker.shared.availableLanguages
-        let dictionaries = languages.flatMap { code -> [String] in
+        return languages.flatMap { code -> [String] in
             code == "en" ? ["en_GB", "en_US"] : available.filter { $0 == code || $0.hasPrefix(code + "_") }
         }
-        return dictionaries.contains {
+    }
+
+    static func isCommonWord(_ word: String, dictionaries: [String]) -> Bool {
+        dictionaries.contains {
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0, language: $0, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
         }
     }

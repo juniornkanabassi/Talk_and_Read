@@ -186,9 +186,11 @@ struct SettingsContent: View {
         Form {
             Section {
                 MicrophonePicker(model: model)
-                Picker("Recogniser", selection: $model.settings.dictationEngine) {
-                    Text("Parakeet (most accurate, 580 MB)").tag("parakeet")
-                    Text("Apple (built in, no download)").tag("apple")
+                if !model.settings.dictatesMultilingual {      // other languages always use Parakeet v3
+                    Picker("Recogniser", selection: $model.settings.dictationEngine) {
+                        Text("Parakeet (most accurate, 580 MB)").tag("parakeet")
+                        Text("Apple (built in, no download)").tag("apple")
+                    }
                 }
                 Picker("Spelling", selection: $model.settings.britishSpelling) {
                     Text("British").tag(true)

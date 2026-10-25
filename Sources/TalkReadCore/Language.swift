@@ -25,11 +25,12 @@ public enum Language {
     /// Dictation's text cut into runs of one language each, so the clean-up can treat each in its own language (British
     /// spelling only on English, for instance). Each sentence is classified among `languages` alone; one with fewer than
     /// 12 letters, or whose best guess is under 60 %, takes the language of the sentence before it (at the start, of the
-    /// first one placed; with none placed, `fallback`, else the first of `languages`). Neighbours in the same language
-    /// merge, and the runs joined give back `text` exactly.
-    public static func runs(_ text: String, among languages: [String], fallback: String? = nil) -> [(text: Substring, language: String)] {
+    /// first one placed; with none placed, `fallback`, else the first of `languages`). With `inherit` false such a sentence
+    /// is labelled "" (unknown) instead, for a rule that must not touch the wrong language ("Ma favorite." after an English
+    /// sentence is not respelt). Neighbours in the same language merge, and the runs joined give back `text` exactly.
+    public static func runs(_ text: String, among languages: [String], fallback: String? = nil, inherit: Bool = true) -> [(text: Substring, language: String)] {
         let fallback = fallback.flatMap { languages.contains($0) ? $0 : nil } ?? languages.first ?? "en"
-        guard languages.count > 1, !text.isEmpty else { return text.isEmpty ? [] : [(text[...], fallback)] }
+        guard languages.count > 1, !text.isEmpty else { return text.isEmpty ? [] : [(text[...], fallback)] }   // one language: certain
         let recogniser = NLLanguageRecognizer()
         recogniser.languageConstraints = languages.map { NLLanguage(rawValue: $0) }
         let tokenizer = NLTokenizer(unit: .sentence)
@@ -45,12 +46,12 @@ public enum Language {
             guesses.append(best.flatMap { $0.value >= 0.6 ? $0.key.rawValue : nil })
             return true
         }
-        guard !starts.isEmpty else { return [(text[...], fallback)] }
+        guard !starts.isEmpty else { return [(text[...], inherit ? fallback : "")] }
         starts[0] = text.startIndex                                  // leading spaces belong to the first sentence
         var current = guesses.compactMap { $0 }.first ?? fallback
         var out: [(text: Substring, language: String)] = []
         for (i, start) in starts.enumerated() {
-            if let g = guesses[i] { current = g }
+            if let g = guesses[i] { current = g } else if !inherit { current = "" }
             let end = i + 1 < starts.count ? starts[i + 1] : text.endIndex
             if let last = out.last, last.language == current {
                 out[out.count - 1] = (text[last.text.startIndex..<end], current)

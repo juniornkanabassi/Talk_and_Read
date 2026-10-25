@@ -74,6 +74,16 @@ final class LanguageTests: XCTestCase {
         XCTAssertEqual(runs("Oui merci"), ["en: Oui merci"], "no fallback: the first language")
     }
 
+    func testWithoutInheritingShortSentencesAreUnknown() {
+        XCTAssertEqual(runs2("I really liked the second half of that match. Ma favorite."),
+                       ["en: I really liked the second half of that match. ", ": Ma favorite."])
+        XCTAssertEqual(runs2("Oui merci"), [": Oui merci"])
+    }
+
+    private func runs2(_ text: String) -> [String] {
+        Language.runs(text, among: ["en", "fr"], inherit: false).map { "\($0.language): \($0.text)" }
+    }
+
     func testOneLanguageIsOneRun() {
         XCTAssertEqual(runs("Bonjour à tous, bienvenue dans le podcast de cette semaine.", ["en"]),
                        ["en: Bonjour à tous, bienvenue dans le podcast de cette semaine."])

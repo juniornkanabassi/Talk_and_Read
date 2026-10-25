@@ -72,24 +72,35 @@ import TalkReadCore
             guard let m = manager else { throw ASRError.notInitialized }
             var samples: [Float] = []
             let preview = Preview()
-            for await buffer in audio {
-                try Task.checkCancellation()
-                if let data = buffer.floatChannelData?[0] { samples += UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)) }
-                // A preview once there is a second more audio than the last one had and that one has finished; longer
-                // clips preview less often, so the cost of decoding everything again stays about level.
-                if !preview.busy, samples.count >= 16_000, samples.count - preview.at >= max(16_000, samples.count / 8) {
-                    preview.busy = true
-                    preview.at = samples.count
-                    let clip = samples
-                    preview.task = Task { @MainActor in
-                        if let text = try? await Self.decode(m, clip).text, !Task.isCancelled { partial(text) }
-                        preview.busy = false
+            // Every way out of the loop (a cancel included) ends the preview first: it decodes on the same manager, so it
+            // must be over before this utterance gives up the queue or an idle unload frees the model.
+            func endPreview() async {
+                preview.stopped = true
+                preview.task?.cancel()
+                await preview.task?.value
+            }
+            do {
+                for await buffer in audio {
+                    try Task.checkCancellation()
+                    if let data = buffer.floatChannelData?[0] { samples += UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)) }
+                    // A preview once there is a second more audio than the last one had and that one has finished; longer
+                    // clips preview less often, so the cost of decoding everything again stays about level.
+                    if !preview.busy, samples.count >= 16_000, samples.count - preview.at >= max(16_000, samples.count / 8) {
+                        preview.busy = true
+                        preview.at = samples.count
+                        let clip = samples
+                        preview.task = Task { @MainActor in
+                            if let text = try? await Self.decode(m, clip).text, !Task.isCancelled, !preview.stopped { partial(text) }
+                            preview.busy = false
+                        }
                     }
                 }
+                try Task.checkCancellation()
+            } catch {
+                await endPreview()
+                throw error
             }
-            preview.task?.cancel()
-            await preview.task?.value                      // the manager decodes one clip at a time
-            try Task.checkCancellation()
+            await endPreview()
             if samples.count < 16_000 { samples += [Float](repeating: 0, count: 16_000 - samples.count) }
             let result = try await Self.decode(m, samples)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -109,6 +120,8 @@ import TalkReadCore
 
     @MainActor private final class Preview {
         var busy = false
+        /// The utterance has moved on: a decode that finishes now shows nothing.
+        var stopped = false
         var at = 0
         var task: Task<Void, Never>?
     }
