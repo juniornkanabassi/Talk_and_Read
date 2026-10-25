@@ -19,7 +19,8 @@ import TalkReadCore
     let player = Player()
     /// The speed the user chose. The Player stretches by `rate / nativeSpeed`.
     private(set) var rate: Float
-    /// How fast an engine that `speaksFaster` (Kokoro) speaks the chunks queued since the last restart; 1 for the others.
+    /// How much faster than its 1x pace an engine that `speaksFaster` (Kokoro) really speaks the chunks queued since the
+    /// last restart (it is asked for `Settings.kokoroSetting(forPace:)`); 1 for the others.
     private(set) var nativeSpeed: Float = 1
     /// Where the last restart began, until playback reports a word: a speed change before then restarts there, not at a
     /// word from before a paused skip or seek.
@@ -206,11 +207,13 @@ import TalkReadCore
     /// so the read restarts at the word playing (audio already made is at the old pace). The Player takes the new rate at
     /// once; the restart waits until the speed has rested `paceSettle` seconds, so a slider drag or several ⌥D presses
     /// restart once, not once per step (each would leave a cancelled Kokoro chunk running ahead of the next).
+    /// A rate the queued audio cannot reach through the Player (4x audio slowed to 0.5x) restarts at once instead.
     func setRate(_ r: Float) {
         rate = r
         player.rate = r / nativeSpeed
         paceRestart?.cancel()
         guard speakingSpeed(for: effectiveVoice) != nativeSpeed, state != .finished, !tokens.isEmpty else { return }
+        guard TalkReadCore.Settings.speedRange.contains(r / nativeSpeed) else { return restart(from: restartToken ?? currentToken ?? startToken) }
         let gen = generation
         paceRestart = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.paceSettle * 1e9))
@@ -248,7 +251,8 @@ import TalkReadCore
         if effectiveVoice == voice, let limit = engines.engine(for: voice).keepsUpTo, rate > limit {
             useFallback("\(voice.engine.modelName) keeps up to \(String(format: "%g", limit))×; \(fallbackName) is reading at \(String(format: "%g", rate))×")
         }
-        // A later hand-over to Kokoro above the stretch limit restarts the read (produce).
+        // A hand-over to Kokoro later in the read keeps 1: the slow engine's queued chunks are at their 1x pace, and the
+        // Player has one rate for all of them (Kokoro is stretched there until the next restart).
         nativeSpeed = speakingSpeed(for: effectiveVoice)
         player.rate = rate / nativeSpeed
         restartToken = token
@@ -313,11 +317,6 @@ import TalkReadCore
                 } else {
                     useFallback(keepUpReason)
                 }
-            }
-            // A hand-over to Kokoro above `Settings.stretchLimit`: it speaks the rate itself, which the slow engine's queued
-            // audio (stretched) cannot share the Player with, so the read restarts with Kokoro from the word playing.
-            if synth == nil, speakingSpeed(for: effectiveVoice) != nativeSpeed {
-                return restart(from: restartToken ?? currentToken ?? next)
             }
             if synth == nil {
                 if chunk == nil {
@@ -501,7 +500,8 @@ import TalkReadCore
         }
         let engine = engines.engine(for: effectiveVoice)
         do {
-            return try await engine.synthesize(speakable, voice: effectiveVoice.id, speed: nativeSpeed)
+            return try await engine.synthesize(speakable, voice: effectiveVoice.id,
+                                               speed: nativeSpeed == 1 ? 1 : TalkReadCore.Settings.kokoroSetting(forPace: nativeSpeed))
         } catch let error where engine.kind == .neural && !(error is CancellationError) {
             if nativeSpeed != 1 { throw FastPaceFailed(underlying: error) }
             let retry = systemVoice

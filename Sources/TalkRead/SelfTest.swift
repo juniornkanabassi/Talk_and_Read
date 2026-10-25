@@ -223,34 +223,22 @@ enum SelfTest {
                 }
                 return 0
             }
-            let native = engine.speaksFaster ? TalkReadCore.Settings.nativeSpeed(for: rate) : 1
-            let (werR, seconds) = try await playedWER(native: native, wav: "tts-\(rate)x.wav")
-            let how = native == 1 ? "" : String(format: " (Kokoro at %gx itself)", native)
-            print("WER at \(rate)x through the Player graph\(how): \(pct(werR)) (\(fmt(seconds)) s rendered)")
-            if native != 1 {   // what stretching would have given, to keep `stretchLimit` honest
-                let stretched = try await playedWER(native: 1, wav: nil)
-                print("split check at \(rate)x: stretched 1x audio alone: WER \(pct(stretched.wer))")
-            }
+            // As ReadSession plays it: Kokoro asked for the setting that really gives `pace`, the Player stretching the rest.
+            let pace = engine.speaksFaster ? TalkReadCore.Settings.nativeSpeed(for: rate) : 1
+            let setting = pace == 1 ? 1 : TalkReadCore.Settings.kokoroSetting(forPace: pace)
+            let (werR, seconds) = try await playedWER(native: setting, stretch: rate / pace, wav: "tts-\(rate)x.wav")
+            let heardSpeed = audioSeconds / (seconds - 0.5)
+            let how = pace == 1 ? "" : String(format: " (Kokoro asked %.3gx for %.3gx, stretched %.3gx)", setting, pace, rate / pace)
+            print("WER at \(rate)x through the Player graph\(how): \(pct(werR)) (\(fmt(seconds)) s rendered, heard at \(String(format: "%.2f", heardSpeed))x)")
             var werOK = werR <= 0.08, rule = "WER <= 8 %"
-            if rate > 2, engine.kind == .neural, language == "en" {
-                // Kokoro speaking natively at this rate, no time-pitch, same recogniser.
-                let kokoro = KokoroAneManager(variant: .english, defaultVoice: voice, version: .legacy)
-                try await kokoro.initialize()
-                var heardNative: [String] = []
-                for text in speakables {
-                    let r = try await kokoro.synthesizeDetailed(text: text, voice: voice, speed: rate)
-                    heardNative.append((try? await asr.transcribe(r.samples, language: language).text) ?? "")
-                }
-                let werNative = wer(reference: reference, hypothesis: heardNative.joined(separator: " "))
-                print("reference: Kokoro speaking natively at \(rate)x, same recogniser: WER \(pct(werNative))")
-                if native == rate {   // the read is Kokoro at this rate itself: through the 1x graph it should match the reference
-                    werOK = werR <= werNative + 0.03
-                    rule = "WER \(pct(werR)) within 3 points of native \(pct(werNative))"
-                } else {
-                    werOK = werR < werNative
-                    rule = "WER \(pct(werR)) < native \(pct(werNative))"
-                }
-            }   // ponytail: a system voice above 2x has no native reference, so it keeps the 8 % bar
+            if pace != 1 {
+                // Kokoro's 1x audio stretched the whole way is what this replaces: no worse than it, and really at the rate
+                // (Kokoro's pace per setting drifts a few per cent between chunks; asked for 4x itself it plays 2.3x).
+                let stretched = try await playedWER(native: 1, stretch: rate, wav: nil)
+                print("stretched 1x audio alone at \(rate)x: WER \(pct(stretched.wer))")
+                werOK = werR <= stretched.wer + 0.03 && abs(heardSpeed / Double(rate) - 1) <= 0.08
+                rule = "WER \(pct(werR)) within 3 points of stretching alone \(pct(stretched.wer)), heard at \(String(format: "%.2f", heardSpeed))x within 8 %"
+            }   // ponytail: a system voice above 2x keeps the 8 % bar
             let ok = clockOK && werOK
             print("R3: \(ok ? "PASS" : "FAIL") (clock within 20 ms at 0.5-4x; \(rule))")
             pass = pass && ok

@@ -296,7 +296,7 @@ rules() {
     grep -q 'system voice keeps reading ok' $OUT/long.txt && pass R11 "system voice keeps reading (no download)" || fail R11 "system voice check missing or failed"
   fi
 
-  # ---- English Kokoro at 2.5x, 2x and the 4x top of the speed panel: R2, R3
+  # ---- English Kokoro at 2.5x, 2x and the 4x top of the speed panel (Kokoro faster itself, stretched 2x): R2, R3
   for f in en25 en2 en4; do
     R $f || continue
     if [[ $f == en25 ]]; then
@@ -306,10 +306,9 @@ rules() {
     fi
     line=$(L $OUT/$f.txt '^R3: ')
     if [[ $line == 'R3: PASS'* ]]; then
-      w=$(num $OUT/$f.txt '^WER at .*Player graph: ([0-9.]+) %.*')
+      w=$(num $OUT/$f.txt '^WER at .*Player graph[^:]*: ([0-9.]+) %.*')
       case $f in
-        en25) pass R3 "2.5x WER ${w} % through the Player graph, below Kokoro's own 2.5x ($(num $OUT/en25.txt '^reference: Kokoro.*WER ([0-9.]+) %.*') %)" ;;
-        en4) pass R3 "4x WER ${w} % (Kokoro at 4x itself), within 3 points of the reference ($(num $OUT/en4.txt '^reference: Kokoro.*WER ([0-9.]+) %.*') %)" ;;
+        en25|en4) pass R3 "$( [[ $f == en25 ]] && print 2.5 || print 4 )x WER ${w} % through the Player graph, no worse than stretching alone ($(num $OUT/$f.txt '^stretched 1x audio alone.*WER ([0-9.]+) %.*') %), $(L $OUT/$f.txt '^WER at' | grep -oE 'heard at [0-9.]+x')" ;;
         *) pass R3 "2x WER ${w} % (limit 8)" ;;
       esac
     elif [[ -n $line ]]; then fail R3 "$line; $(L $OUT/$f.txt '^WER at')"; else crash R3 $f; fi

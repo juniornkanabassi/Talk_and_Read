@@ -168,15 +168,28 @@ public struct Settings: Codable, Equatable, Sendable {
     /// The speed panel's chips, the menu bar's Speed menu and the Voices page.
     public static let speedPresets: [Float] = [1, 1.5, 2, 2.5, 2.75, 3]
 
-    /// The fastest the Player stretches a voice that can speak faster itself (Kokoro). Measured 25 Oct on the M3 Max
-    /// (R3 fixture, Parakeet word errors, af_heart): stretched 1x audio 11.7 % at 2.5x (Kokoro at 2.5x itself 24.9 %),
-    /// but 47 % at 3x and 91 % at 4x, against 29-34 % for Kokoro speaking at 3-4x itself. Splits (Kokoro faster, then
-    /// stretched 2-3x) were no better: 3.5x 61-80 %, 4x 74-88 %; bf_emma at 3.5x the same.
-    public static let stretchLimit: Float = 2.5
+    /// The most the Player stretches a voice that can speak faster itself (Kokoro); above it Kokoro speaks the rest.
+    /// Speed grid, 25 Oct, M3 Max (af_heart, R3 fixture, Parakeet word errors at the real speed heard): stretching 1x
+    /// audio alone gave 11.7 % at 2.5x, 33 % at 2.75x, 47 % at 3x and 91 % at 4x; Kokoro about 1.25x stretched 2x gave
+    /// 8.1 %, 20-36 %, 44 % and 80 %. Every split loses most words past about 3x; the recogniser is not a listener there.
+    public static let stretchLimit: Float = 2
 
-    /// How fast such a voice speaks itself at `rate`: 1 (the Player stretches) up to `stretchLimit`, the whole rate
-    /// above it (the Player plays at 1x).
-    public static func nativeSpeed(for rate: Float) -> Float { rate > stretchLimit ? rate : 1 }
+    /// How much faster than its 1x pace such a voice really speaks at `rate`: 1 up to `stretchLimit`, the rest above.
+    public static func nativeSpeed(for rate: Float) -> Float { max(1, rate / stretchLimit) }
+
+    // ponytail: Kokoro's `speed` setting against the pace it really speaks (1x audio length over the audio's length),
+    // the speed grid of 25 Oct (FluidAudio c79c410, .legacy, af_heart). It flattens out: asked 4x, it speaks 2.33x.
+    // Re-measure with TALKREAD_SPEED_GRID=1 if the model or FluidAudio changes.
+    static let kokoroPaces: [(setting: Float, pace: Float)] = [(1, 1), (1.25, 1.188), (1.5, 1.549), (1.75, 1.686), (2, 1.865),
+                                                               (2.25, 2.014), (2.5, 2.093), (3, 2.217), (4, 2.332)]
+
+    /// The `speed` to ask Kokoro for so that it really speaks `pace`× faster (between measured points, linearly).
+    public static func kokoroSetting(forPace pace: Float) -> Float {
+        for (a, b) in zip(kokoroPaces, kokoroPaces.dropFirst()) where pace <= b.pace {
+            return a.setting + max(0, pace - a.pace) / (b.pace - a.pace) * (b.setting - a.setting)
+        }
+        return kokoroPaces.last!.setting
+    }
 
     /// The next 0.25 mark above or below `speed`, so 2.6 goes to 2.75 or 2.5 and 2.5 to 2.75 or 2.25; clamped to `speedRange`.
     public static func steppedSpeed(_ speed: Float, up: Bool) -> Float {

@@ -152,9 +152,14 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(Settings.steppedSpeed(0.6, up: false), 0.5)
         XCTAssertEqual(Settings.speedPresets, [1, 1.5, 2, 2.5, 2.75, 3])
         XCTAssertEqual(Settings.nativeSpeed(for: 1), 1)
-        XCTAssertEqual(Settings.nativeSpeed(for: 2.5), 1)
-        XCTAssertEqual(Settings.nativeSpeed(for: 2.75), 2.75)
-        XCTAssertEqual(Settings.nativeSpeed(for: 4), 4)
+        XCTAssertEqual(Settings.nativeSpeed(for: 2), 1)
+        XCTAssertEqual(Settings.nativeSpeed(for: 2.5), 1.25)
+        XCTAssertEqual(Settings.nativeSpeed(for: 4), 2)
+        XCTAssertEqual(Settings.kokoroSetting(forPace: 1), 1)
+        XCTAssertEqual(Settings.kokoroSetting(forPace: 1.865), 2, accuracy: 0.001)
+        XCTAssertEqual(Settings.kokoroSetting(forPace: 2), 2.227, accuracy: 0.01)     // 4x: Kokoro asked about 2.23x
+        XCTAssertEqual(Settings.kokoroSetting(forPace: 9), 4)
+        XCTAssertLessThanOrEqual(Settings.nativeSpeed(for: Settings.speedRange.upperBound), 2.332)   // within what Kokoro can do
         XCTAssertTrue(Settings.speedPresets.allSatisfy { Settings.speedRange.contains($0) })
     }
 
