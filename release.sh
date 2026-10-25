@@ -64,8 +64,12 @@ if (( ! DRY )); then
     TAGGED=1
   fi
   gh auth status >/dev/null 2>&1 || die "gh is not signed in"
+  # Assets on a private repo 404 for everyone else, so the appcast and website links would break.
+  VISIBILITY=$(gh repo view $REPO --json visibility --jq .visibility 2>/dev/null) || die "could not read $REPO's visibility"
+  [[ $VISIBILITY == PUBLIC ]] || die "$REPO is ${VISIBILITY:l}: its release downloads would fail for everyone; make it public first"
   # The release is made from the pushed tag, so a tag already on origin must be this HEAD (peeled, for annotated tags).
-  RTAG=$(git -C "$ROOT" ls-remote origin "refs/tags/v$SRC_VERSION" "refs/tags/v$SRC_VERSION^{}" | sort -k2 | tail -1 | cut -f1)
+  RTAGS=$(git -C "$ROOT" ls-remote origin "refs/tags/v$SRC_VERSION" "refs/tags/v$SRC_VERSION^{}") || die "could not read tags from origin"
+  RTAG=$(print -r -- "$RTAGS" | sort -k2 | tail -1 | cut -f1)
   [[ -z $RTAG || $RTAG == $HEAD ]] || die "tag v$SRC_VERSION on origin points at another commit ($RTAG)"
   # A tag pushed by an earlier run is reused as it is: a fresh annotated tag would be a different object and its push refused.
   if [[ -n $RTAG ]] && (( ! TAGGED )); then
@@ -73,8 +77,10 @@ if (( ! DRY )); then
     git -C "$ROOT" fetch -q origin "refs/tags/v$SRC_VERSION:refs/tags/v$SRC_VERSION" || die "could not fetch tag v$SRC_VERSION from origin"
     TAGGED=1
   fi
-  if gh release view "v$SRC_VERSION" --repo $REPO >/dev/null 2>&1; then
+  if DRAFT=$(gh release view "v$SRC_VERSION" --repo $REPO --json isDraft --jq .isDraft 2>/dev/null); then
     (( RESUME )) || die "release v$SRC_VERSION already exists on $REPO; --resume finishes it if it holds this zip"
+    [[ $DRAFT == false ]] || die "release v$SRC_VERSION on $REPO is a draft, whose downloads 404 for everyone; publish or delete it on GitHub, then rerun"
+    [[ -n $RTAG ]] || die "release v$SRC_VERSION on $REPO has no tag on origin; fix it on GitHub, then rerun"
     EXISTS=1
   fi
 else
@@ -292,7 +298,9 @@ else
       git -C "$ROOT" tag -a "v$VERSION" -m "Talk & Read $VERSION" || die "git tag failed"
       TAGGED=1
     fi
-    git -C "$ROOT" push origin "refs/tags/v$VERSION" || die "could not push tag v$VERSION (rerun with --resume)"
+    if [[ -z $RTAG ]]; then   # a tag already on origin was fetched above and is used as it is
+      git -C "$ROOT" push origin "refs/tags/v$VERSION" || die "could not push tag v$VERSION (rerun with --resume)"
+    fi
     gh release create "v$VERSION" --verify-tag "$WORK/Talk_and_Read_$VERSION.zip" "$WORK/Talk_and_Read_$VERSION.dmg" --repo $REPO --title "Talk & Read $VERSION" --notes-file "$NOTES" || die "gh release create failed (rerun with --resume)"
   fi
   for name in $NAMES; do
@@ -320,11 +328,8 @@ print "Wrote $APPCAST"
 
 step "7. Tag v$VERSION"
 if (( DRY )); then
-  print "dry run, not run: git tag -a v$VERSION -m 'Talk & Read $VERSION'"
+  print "dry run: step 5 would tag v$VERSION and push it to origin"
   print "\nDry run done: appcast $APPCAST"
-elif (( TAGGED )); then
-  print "v$VERSION is on HEAD. The website session commits $APPCAST and the release object above."
 else
-  git -C "$ROOT" tag -a "v$VERSION" -m "Talk & Read $VERSION" || die "git tag failed"
-  print "Tagged v$VERSION (not pushed). The website session commits $APPCAST and the release object above."
+  print "v$VERSION is on HEAD and on origin. The website session commits $APPCAST and the release object above."
 fi
