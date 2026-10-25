@@ -129,10 +129,10 @@ import TalkReadCore
                     if hit.pid != model?.liveSession?.capture?.pid { AXWake.restore(hit.pid) }
                     return
                 }
-                woken.insert(hit.pid)
                 if let again = PointerCapture.hit(point), again.pid == hit.pid {
                     found = PointerCapture.block(from: again.element, pid: again.pid, point: point)
                 }
+                if found == nil { lastPoint = nil }   // a cold tree fills in over the next ticks: look here again
             }
             guard timer != nil else { return }   // the key went up meanwhile
             if let found { show(found) } else if block.map({ !Self.band($0).contains(point) }) ?? true { hidePanel(); block = nil }

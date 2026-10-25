@@ -46,7 +46,11 @@ enum PointerCapture {
         if let b = block(from: first.element, pid: first.pid, point: point) { return b }
         guard wake else { return nil }
         await AXWake.wake(AXUIElementCreateApplication(first.pid), pid: first.pid)
-        if let again = hit(point), again.pid == first.pid, let b = block(from: again.element, pid: again.pid, point: point) { return b }
+        // A cold Electron tree (Codex, Claude) fills in over the next half second or so: try a few times.
+        for attempt in 0..<5 {
+            if let again = hit(point), again.pid == first.pid, let b = block(from: again.element, pid: again.pid, point: point) { return b }
+            if attempt < 4 { try? await Task.sleep(for: .milliseconds(150)) }
+        }
         AXWake.restore(first.pid)   // nothing to read there: no Highlighter will put the app back
         return nil
     }
@@ -59,8 +63,9 @@ enum PointerCapture {
         if nativeText.contains(role), !TextCapture.isXterm(element), let b = nativeBlock(element, pid: pid, point: point) { return b }
         guard let area = TextCapture.webArea(of: element), (axAttribute(area, kAXRoleAttribute) as? String) == "AXWebArea",
               let areaFrame = axFrame(area) else { return nil }
-        // Climb past the inline parts to the first element that is a block of its own, stopping below the web area.
-        var current = element, steps = 0
+        // Chromium's hit test can stop at a list of messages: go down to the deepest element under the point first,
+        // then climb past the inline parts to the first element that is a block of its own, stopping below the web area.
+        var current = deepest(element, at: point), steps = 0
         while steps < 12, !CFEqual(current, area), inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? "") {
             guard let parent = axElement(current, kAXParentAttribute) else { break }
             current = parent
@@ -71,6 +76,36 @@ enum PointerCapture {
               frame.height < max(240, areaFrame.height * 0.6), frame.insetBy(dx: -4, dy: -4).contains(point),
               !isContainer(current, frame: frame), hasText(current, area: area) else { return nil }
         return Block(pid: pid, element: current, frame: frame, start: nil)
+    }
+
+    /// The deepest descendant of `element` (itself when none) whose frame holds the point; ten levels, 200 children each.
+    private static func deepest(_ element: AXUIElement, at point: CGPoint) -> AXUIElement {
+        var current = element
+        for _ in 0..<10 {
+            if inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? "") { break }   // the climb starts here
+            let children = (axAttribute(current, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+            guard let next = children.prefix(200).first(where: { axFrame($0).map { !$0.isEmpty && $0.insetBy(dx: -1, dy: -1).contains(point) } ?? false })
+            else { break }
+            current = next
+        }
+        return current
+    }
+
+    /// Where a read from `block` ends: the end of its column, the highest ancestor below the web area no wider than about
+    /// the paragraph. A chat beside a thread pane or a browser pane (Claude, Codex), or an article beside a sidebar,
+    /// then stops at the end of its own column instead of reading on into the next one. A short heading or list item is
+    /// narrower than its column, so an ancestor up to three quarters of the page's width still counts as the column.
+    private static func column(of element: AXUIElement, frame: CGRect, area: AXUIElement) -> AXUIElement {
+        let limit = max(frame.width * 1.6 + 60, (axFrame(area)?.width ?? 0) * 0.75)
+        var best = element, current = element
+        for _ in 0..<40 {
+            guard let parent = axElement(current, kAXParentAttribute), !CFEqual(parent, area) else { break }
+            current = parent
+            guard let f = axFrame(current), !f.isEmpty else { continue }   // an ignored wrapper: look above it
+            if f.width > limit { break }
+            best = current
+        }
+        return best
     }
 
     /// A message or a section rather than a paragraph: two of its children are wide blocks stacked one above the other
@@ -126,7 +161,8 @@ enum PointerCapture {
             return Capture(text: tail, pid: block.pid, element: block.element, window: window, selectionStart: start, source: .pointer)
         }
         guard let area = TextCapture.webArea(of: block.element) else { return nil }
-        if let own = markerRange(of: block.element, in: area), let page = markerRange(of: area, in: area),
+        let end = column(of: block.element, frame: block.frame, area: area)
+        if let own = markerRange(of: block.element, in: area), let page = markerRange(of: end, in: area),
            let range = axParameterizedAttribute(area, "AXTextMarkerRangeForUnorderedTextMarkers",
                                                 parameter: [AXTextMarkerRangeCopyStartMarker(own), AXTextMarkerRangeCopyEndMarker(page)] as CFArray),
            CFGetTypeID(range) == AXTextMarkerRangeGetTypeID(),
@@ -142,7 +178,7 @@ enum PointerCapture {
             return TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
         }
         // No text markers: the page's text nodes from the block on, in document order.
-        let nodes = textNodes(under: area, from: block.element, limit: 6000)
+        let nodes = textNodes(under: end, from: block.element, limit: 6000)
         let text = ReadHere.join(nodes.map { node in
             let f = axFrame(node.element)
             return (node.text, f.map { Double($0.minY) }, f.map { Double($0.maxY) })
