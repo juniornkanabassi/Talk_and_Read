@@ -50,6 +50,10 @@ final class PageFurnitureTests: XCTestCase {
         let (text, starts) = join(pages)
         let found = lines(text, PageFurniture.ranges(text, pageStarts: starts))
         XCTAssertEqual(found, (1...4).map { "Page \($0) of 4" }, "a numbered line with other words is read, even a running head")
+        for bullet in ["● No duty of care", "●No duty of care", "‣ No duty of care"] {
+            let other = join((0..<3).map { "Question \($0 + 1)\nThe \(words[$0]) facts.\n\(bullet)" })
+            XCTAssertEqual(PageFurniture.ranges(other.text, pageStarts: other.starts), [], bullet)
+        }
         let dashed = join((0..<3).map { "The \(words[$0]) term.\n- \($0 + 40) -" })
         XCTAssertEqual(lines(dashed.text, PageFurniture.ranges(dashed.text, pageStarts: dashed.starts)), ["- 40 -", "- 41 -", "- 42 -"])
     }
@@ -79,6 +83,10 @@ final class PageFurnitureTests: XCTestCase {
         let pages = (0..<3).map { "Question \($0 + 1)\nThe \(words[$0]) fact.\n• None of the above" }
         let (text, starts) = join(pages)
         XCTAssertEqual(PageFurniture.ranges(text, pageStarts: starts), [])
+        for bullet in ["● No duty of care", "●No duty of care", "‣ No duty of care"] {
+            let other = join((0..<3).map { "Question \($0 + 1)\nThe \(words[$0]) facts.\n\(bullet)" })
+            XCTAssertEqual(PageFurniture.ranges(other.text, pageStarts: other.starts), [], bullet)
+        }
         let dashed = join((0..<3).map { "The \(words[$0]) fact.\n- \($0 + 1) -" })
         XCTAssertEqual(PageFurniture.ranges(dashed.text, pageStarts: dashed.starts).count, 3, "a dashed page number is still furniture")
     }
