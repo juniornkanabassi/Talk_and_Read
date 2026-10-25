@@ -47,3 +47,7 @@ talkread history-delete <id> --yes  # removals need --yes
 Several agents can work at once. Each MCP adapter has its own caller id; a read or dictation another caller started is refused with `busy` unless `--force` is given, and the person at the Mac always wins. A retried request with the same `--request-id` acts once and replays its answer (the MCP adapter uses the tool call's id). Removals (`library-remove`, `history-delete`, `vocabulary-remove`, `pronunciation-remove`, `shortcuts-reset`) are refused without `--yes` (`yes: true` over MCP).
 
 Left to the app on purpose: granting permissions, onboarding, the screenshot and listen drag, window placement, and downloading the Breeze voices, which only start beside their licence on Settings ▸ Models. `models download --model` fetches the other optional downloads (Qwen3, word timing, French).
+
+## Licence
+
+Copyright © 2026 Junior Nkanabassi. Talk & Read is free software under the GNU General Public License, version 3 or (at your option) any later version (`GPL-3.0-or-later`); see [LICENSE](LICENSE). Bundled third-party components and the optional model downloads keep their own licences.
