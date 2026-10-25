@@ -23,6 +23,7 @@ import TalkReadCore
     private var sessionWatch: AnyCancellable?
     private var stateWatch: AnyCancellable?
     private var noticeWatch: AnyCancellable?
+    private var expandedWatch: AnyCancellable?
     /// The read fell back to Kokoro (V3): the panel grows by one line for the notice.
     private var hasNotice = false
     private var hideTask: Task<Void, Never>?
@@ -72,6 +73,9 @@ import TalkReadCore
     func attach(_ model: AppModel) {
         self.model = model
         sessionWatch = model.$session.sink { [weak self] in self?.follow($0) }
+        // Settings and the CLI change it too; the hosting view no longer sizes the panel, so follow it here.
+        expandedWatch = model.$settings.map(\.subtitlesExpanded).removeDuplicates().dropFirst()
+            .sink { [weak self] _ in self?.resizeAfterLayout() }
     }
 
     func show() {
@@ -116,6 +120,8 @@ import TalkReadCore
         let height = MiniPlayerView.height(expanded: model.settings.subtitlesExpanded, notice: hasNotice) + dockedHeight
         var frame = panel.frame   // setFrame keeps minY explicitly; the card grows and shrinks at the top
         frame.size = panel.frameRect(forContentRect: NSRect(origin: .zero, size: NSSize(width: MiniPlayerView.width, height: height))).size
+        // Grown past the top of its display (dragged high, then a dictation docked): the whole card moves down to fit.
+        if let area = panel.screen?.visibleFrame, frame.maxY > area.maxY { frame.origin.y = max(area.minY, area.maxY - frame.height) }
         guard frame != panel.frame else { return }
         panel.setFrame(frame, display: true)
     }
@@ -144,14 +150,15 @@ import TalkReadCore
         if session != nil, model?.settings.showMiniPlayer == true { show() }
     }
 
-    /// A docked dictation holds the player until it has gone, so the card never splits in two mid-sentence.
+    /// A docked dictation holds the player until it has gone, so the card never splits in two mid-sentence; the pointer
+    /// over the card holds it too, as over the pill.
     private func hideLater() {
         hideTask?.cancel()
         let seconds = Double(model?.settings.miniPlayerAutoHideSeconds ?? 3)
         guard seconds > 0 else { return }
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
-            while !Task.isCancelled, self?.docked != nil { try? await Task.sleep(for: .seconds(0.5)) }
+            while !Task.isCancelled, self?.docked != nil || self?.containsPointer == true { try? await Task.sleep(for: .seconds(0.5)) }
             if !Task.isCancelled { self?.hide() }
         }
     }
