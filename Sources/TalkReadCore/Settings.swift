@@ -156,6 +156,8 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.increaseSpeedShortcut, &increaseSpeedShortcut); get(.decreaseSpeedShortcut, &decreaseSpeedShortcut)
         get(.skipBackwardShortcut, &skipBackwardShortcut); get(.skipForwardShortcut, &skipForwardShortcut)
         get(.readHereShortcut, &readHereShortcut); get(.readHereKey, &readHereKey); get(.readHereHover, &readHereHover)
+        // A file from before 1.0 may already use ⌃⇧A for something else: that binding stays, and Read from here starts off.
+        if !c.contains(.readHereShortcut), refusal(readHereShortcut, for: "readHereShortcut") != nil { readHereShortcut = .off }
         get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.showHighlight, &showHighlight); get(.highlightHex, &highlightHex); get(.highlightStyle, &highlightStyle)
         get(.tintEnabled, &tintEnabled); get(.tintHex, &tintHex); get(.opacity, &opacity); get(.showMiniPlayer, &showMiniPlayer)
         get(.miniPlayerAutoHideSeconds, &miniPlayerAutoHideSeconds); get(.miniPlayerOrigin, &miniPlayerOrigin)

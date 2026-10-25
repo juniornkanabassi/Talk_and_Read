@@ -85,6 +85,10 @@ final class ReadHereTests: XCTestCase {
         s.resetShortcuts()
         XCTAssertEqual(s.readHereKey, .leftOption)
         XCTAssertEqual(s.readHereShortcut, Settings().readHereShortcut)
+        // A file from before 1.0 that already gave ⌃⇧A to another action keeps it; Read from here starts off.
+        let clash = try JSONDecoder().decode(Settings.self, from: Data(#"{"pauseShortcut":{"keyCode":0,"modifiers":393216,"display":"⌃⇧A"}}"#.utf8))
+        XCTAssertTrue(clash.readHereShortcut.isOff)
+        XCTAssertEqual(clash.action(keyCode: 0, modifiers: Settings.Shortcut.control | Settings.Shortcut.shift), .pause)
         let old = try JSONDecoder().decode(Settings.self, from: Data(#"{"speed":2.0}"#.utf8))
         XCTAssertEqual(old.readHereKey, .leftOption, "a file from before 1.0 gets the default")
         XCTAssertEqual(old.action(keyCode: 0, modifiers: Settings.Shortcut.control | Settings.Shortcut.shift), .readHere)

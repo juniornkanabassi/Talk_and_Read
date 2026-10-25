@@ -429,7 +429,12 @@ extension EngineKind {
     /// as `id`; nil when there is no text there or another read took over.
     @discardableResult func captureHereAndRead(id: UUID, point: CGPoint, block: PointerCapture.Block?) async -> ReadSession? {
         var found = block
-        if found == nil { found = await PointerCapture.block(at: point, wake: true) }
+        if let block {
+            // Stopping the last read put its app back (E8); the glyph found this paragraph while it was awake, so wake it again.
+            await AXWake.wake(AXUIElementCreateApplication(block.pid), pid: block.pid)
+        } else {
+            found = await PointerCapture.block(at: point, wake: true)
+        }
         let capture = found.flatMap(PointerCapture.capture)
         let pid = capture?.pid ?? found?.pid
         guard owner?.sessionID == id else {

@@ -109,8 +109,12 @@ import TalkReadCore
     }
 
     private func look() {
+        // A key-up the tap missed (it was switched off a moment) must not leave the glyph and this timer running.
+        guard revealKeyIsDown() else { reset(); return }
+        guard !looking, NSEvent.pressedMouseButtons == 0 else { return }   // an Option-drag or Option-click is no reveal
         let point = Self.pointer()
-        guard point != lastPoint, !looking else { return }
+        if let block, moved(block) { hidePanel(); (self.block, lastPoint) = (nil, nil) }   // the page scrolled under it
+        guard point != lastPoint else { return }
         lastPoint = point
         if let block, Self.band(block).contains(point) { return }   // on its way to the glyph, or still on the paragraph
         looking = true
@@ -121,12 +125,35 @@ import TalkReadCore
             if found == nil, !woken.contains(hit.pid) {
                 woken.insert(hit.pid)
                 await AXWake.wake(AXUIElementCreateApplication(hit.pid), pid: hit.pid)
+                guard timer != nil else {   // the key went up during the wake, after stop() put back what it knew of
+                    if hit.pid != model?.liveSession?.capture?.pid { AXWake.restore(hit.pid) }
+                    return
+                }
+                woken.insert(hit.pid)
                 if let again = PointerCapture.hit(point), again.pid == hit.pid {
                     found = PointerCapture.block(from: again.element, pid: again.pid, point: point)
                 }
             }
             guard timer != nil else { return }   // the key went up meanwhile
             if let found { show(found) } else if block.map({ !Self.band($0).contains(point) }) ?? true { hidePanel(); block = nil }
+        }
+    }
+
+    /// The paragraph's frame moved on screen (a scroll, a reflow): the glyph no longer sits beside it.
+    private func moved(_ block: PointerCapture.Block) -> Bool {
+        let now: CGRect? = if let start = block.start { axBounds(block.element, location: start, length: block.length) } else { axFrame(block.element) }
+        guard let now else { return true }   // gone from the page
+        return abs(now.minX - block.frame.minX) > 1 || abs(now.minY - block.frame.minY) > 1
+    }
+
+    /// The reveal key as the window server sees it now, for the case where its key-up never reached the tap. Either
+    /// Option counts here: the tap already told the two apart when the glyph showed.
+    private func revealKeyIsDown() -> Bool {
+        let flags = CGEventSource.flagsState(.combinedSessionState).rawValue
+        switch model?.settings.readHereKey ?? .leftOption {
+        case .leftOption: return flags & Hotkeys.option != 0
+        case .fn: return flags & Hotkeys.secondaryFn != 0
+        case .off: return false
         }
     }
 
@@ -149,7 +176,8 @@ import TalkReadCore
     private func hoverTick() {
         guard timer == nil, !looking else { return }   // the held key has the glyph
         let point = Self.pointer(), now = ProcessInfo.processInfo.systemUptime
-        if let block, !Self.band(block).contains(point) { hidePanel(); self.block = nil }   // left the paragraph
+        if let block, !Self.band(block).contains(point) || moved(block) { hidePanel(); self.block = nil; rest = nil }   // left it, or it scrolled
+        guard NSEvent.pressedMouseButtons == 0 else { rest = nil; return }   // a drag or a click in progress
         guard let r = rest, hypot(r.point.x - point.x, r.point.y - point.y) < 3 else {
             rest = (point, now, false)
             return
@@ -225,8 +253,12 @@ import TalkReadCore
     private func play() {
         guard let block else { return }
         woken.remove(block.pid)   // the read's Highlighter puts the app back when it ends (E8)
-        hidePanel()
-        model?.readHere(block: block)
+        self.block = nil
+        // Out of the panel's own mouseDown first: closing it there would release the window that is handling the click.
+        DispatchQueue.main.async { [weak self] in
+            self?.hidePanel()
+            self?.model?.readHere(block: block)
+        }
     }
 
     /// A play triangle in a soft disc of the highlight colour; brighter under the pointer. Takes the first click, so

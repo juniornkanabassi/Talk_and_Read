@@ -16,8 +16,9 @@ enum PointerCapture {
         let element: AXUIElement
         /// The paragraph's frame in AX (top-left) coordinates: the glyph sits beside its first line.
         let frame: CGRect
-        /// Native text: the paragraph's first character within the element's value.
+        /// Native text: the paragraph's first character within the element's value, and the paragraph's length.
         let start: Int?
+        var length = 0
     }
 
     private static let maxText = 200_000
@@ -28,9 +29,11 @@ enum PointerCapture {
     /// The element under `point` (AX top-left coordinates) and its app; nil over our own windows or nothing.
     @MainActor static func hit(_ point: CGPoint) -> (element: AXUIElement, pid: pid_t)? {
         let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 0.1)   // a hung app costs one tenth of a second, not six
+        AXUIElementSetMessagingTimeout(system, 0.1)   // a hung app costs one tenth of a second, not six, for this call only
         var found: AXUIElement?
-        guard AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &found) == .success, let found else { return nil }
+        let result = AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &found)
+        AXUIElementSetMessagingTimeout(system, 0)   // the system-wide timeout is every element's: put the default back
+        guard result == .success, let found else { return nil }
         var pid: pid_t = 0
         guard AXUIElementGetPid(found, &pid) == .success, pid != getpid() else { return nil }
         return (found, pid)
@@ -50,9 +53,10 @@ enum PointerCapture {
 
     @MainActor static func block(from element: AXUIElement, pid: pid_t, point: CGPoint) -> Block? {
         let role = axAttribute(element, kAXRoleAttribute) as? String ?? ""
-        if nativeText.contains(role), !TextCapture.isSecure(element), !TextCapture.isXterm(element) {
-            return nativeBlock(element, pid: pid, point: point)
-        }
+        if TextCapture.isSecure(element) { return nil }   // never read a password field, natively or as part of a page
+        // A text view, or a web page's editable text when it answers like one; a contenteditable that does not falls
+        // through to the web path below.
+        if nativeText.contains(role), !TextCapture.isXterm(element), let b = nativeBlock(element, pid: pid, point: point) { return b }
         guard let area = TextCapture.webArea(of: element), (axAttribute(area, kAXRoleAttribute) as? String) == "AXWebArea",
               let areaFrame = axFrame(area) else { return nil }
         // Climb past the inline parts to the first element that is a block of its own, stopping below the web area.
@@ -96,7 +100,7 @@ enum PointerCapture {
         if end == NSNotFound { end = ns.length }
         guard end > start, !ns.substring(with: NSRange(location: start, length: end - start)).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let frame = axBounds(element, location: start, length: end - start), !frame.isEmpty else { return nil }
-        return Block(pid: pid, element: element, frame: frame, start: start)
+        return Block(pid: pid, element: element, frame: frame, start: start, length: end - start)
     }
 
     private static func hasText(_ element: AXUIElement, area: AXUIElement) -> Bool {
@@ -138,7 +142,7 @@ enum PointerCapture {
             return TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
         }
         // No text markers: the page's text nodes from the block on, in document order.
-        let nodes = textNodes(under: area, from: block.element, limit: 8000)
+        let nodes = textNodes(under: area, from: block.element, limit: 6000)
         let text = ReadHere.join(nodes.map { node in
             let f = axFrame(node.element)
             return (node.text, f.map { Double($0.minY) }, f.map { Double($0.maxY) })
@@ -163,8 +167,11 @@ enum PointerCapture {
         var started = from == nil
         var stack: [(element: AXUIElement, chrome: Bool)] = [(root, false)]
         var visited = 0
+        // ponytail: a whole-page walk on the main thread, only for apps without text markers; bounded by count and time.
+        let deadline = ContinuousClock.now + .milliseconds(300)
         while let (node, parentChrome) = stack.popLast(), visited < limit {
             visited += 1
+            if visited % 64 == 0, ContinuousClock.now > deadline { break }
             if !started, let from, CFEqual(node, from) { started = true }
             let role = axAttribute(node, kAXRoleAttribute) as? String
             let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome)
