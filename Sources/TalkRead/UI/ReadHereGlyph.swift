@@ -290,24 +290,24 @@ import TalkReadCore
 
     private func play() {
         guard let block else { return }
-        // Its window must still be what shows there: another window or dialog, even the same app's, may cover it since.
-        // On the paragraph and clear of the glyph, which a paragraph near the screen's left edge pushes over its text.
-        let glyph = Self.glyphFrame(block)
-        let line = CGPoint(x: min(max(block.frame.minX + min(8, block.frame.width / 2), glyph.maxX + 2), block.frame.maxX - 1), y: glyph.midY)
-        let under = PointerCapture.hit(line)
-        let sameWindow = under.map { u in
-            PointerCapture.bounded {
-                guard let a = axElement(u.element, kAXWindowAttribute), let b = axElement(block.element, kAXWindowAttribute) else { return true }
-                return CFEqual(a, b)
-            }
-        } ?? false
-        guard under?.pid == block.pid, sameWindow else { hidePanel(); self.block = nil; return }
-        woken.remove(block.pid)   // the read's Highlighter puts the app back when it ends (E8)
         self.block = nil
         // Out of the panel's own mouseDown first: closing it there would release the window that is handling the click.
+        // With the glyph gone, nothing of ours covers the paragraph, however short or close to the screen's edge it is.
         DispatchQueue.main.async { [weak self] in
-            self?.hidePanel()
-            self?.model?.readHere(block: block)
+            guard let self else { return }
+            hidePanel()
+            // Its window must still be what shows there: another window or dialog, even the same app's, may cover it since.
+            let line = CGPoint(x: block.frame.minX + min(8, block.frame.width / 2), y: Self.glyphFrame(block).midY)
+            let under = PointerCapture.hit(line)
+            let sameWindow = under.map { u in
+                PointerCapture.bounded {
+                    guard let a = axElement(u.element, kAXWindowAttribute), let b = axElement(block.element, kAXWindowAttribute) else { return true }
+                    return CFEqual(a, b)
+                }
+            } ?? false
+            guard under?.pid == block.pid, sameWindow else { return }
+            woken.remove(block.pid)   // the read's Highlighter puts the app back when it ends (E8)
+            model?.readHere(block: block)
         }
     }
 
