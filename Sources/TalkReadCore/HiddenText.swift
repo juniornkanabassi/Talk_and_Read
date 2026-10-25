@@ -51,7 +51,7 @@ public enum HiddenText {
                 v.hover = false
             }
             if chat, classes.contains("group/msg") { (v.message, v.content) = (true, false) }
-            if v.message, classes.contains("select-text") { v.content = true }
+            if v.message, classes.contains("select-text") { (v.content, v.hover) = (true, false) }   // content ends the furniture
             if v.message, !v.content, !classes.contains("group/msg") { v.hover = true }
             if chat, classes.contains("h-0"),
                !zip(classes, bases).contains(where: { full, base in

@@ -141,6 +141,8 @@ final class SpeakableTests: XCTestCase {
         }
         XCTAssertEqual(make("Run `/bin/ls -la /tmp/x` now").text, "Run /bin/ls -la /tmp/x now")
         XCTAssertEqual(make("Run `/usr/bin/env python3 a.py`").text, "Run /usr/bin/env python3 a.py")
+        XCTAssertEqual(make("Run `/Users/j/venv/bin/python scripts/train.py` now.").text, "Run /Users/j/venv/bin/python scripts/train.py now.")
+        XCTAssertEqual(make("Run `~/tools/node app/server.js` now.").text, "Run ~/tools/node app/server.js now.")
         XCTAssertEqual(make("See /Users/j/Source/App.swift:42 for it").text, "See App.swift for it")
         XCTAssertEqual(make("The file `/Users/j/02 Projects/Talk & Read/guide.md` is new").text, "The file guide.md is new")
         XCTAssertEqual(make("([/Users/j/a/notes.md](/Users/j/a/notes.md))").text, "(notes.md)")

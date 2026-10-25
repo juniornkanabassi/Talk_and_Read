@@ -159,6 +159,9 @@ final class HiddenTextTests: XCTestCase {
         XCTAssertTrue(child(child(row, "AXGroup", []), "AXStaticText", []).draws("A real sentence"))
         let body = child(row, "AXGroup", ["group/message-row", "flex", "select-text"])
         XCTAssertTrue(child(body, "AXStaticText", []).draws("now"))
+        // content inside a wrapper of the row: a separately formatted visible "today" is kept (Codex, blocking pass)
+        let wrapped = child(child(child(row, "AXGroup", []), "AXGroup", ["select-text"]), "AXStaticText", [])
+        XCTAssertTrue(wrapped.draws("today"))
         // user-select: none is drawn (an inline session link), so it is read
         XCTAssertTrue(child(root, "AXButton", ["select-none"]).drawsText)
     }

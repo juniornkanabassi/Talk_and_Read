@@ -314,13 +314,23 @@ private struct Maker {
     /// to a partial name or said twice.
     func fits(_ q: Int, _ n: Int) -> Bool { n <= Maker.context && (q + n < u.count || endsText) }
 
+    /// A command line in backticks rather than a path with spaces in its folder names: its program sits in a `bin`
+    /// folder or is a known interpreter ("`/Users/j/venv/bin/python scripts/train.py`"). Both look alike otherwise.
+    // ponytail: a fixed list; a command run by another program with spaces after it is still read as a file name.
+    static func isCommand(_ inner: String) -> Bool {
+        guard let space = inner.firstIndex(of: " ") else { return false }
+        let program = inner[..<space].split(separator: "/")
+        return program.dropLast().contains { $0 == "bin" || $0 == "sbin" }
+            || ["python", "python3", "node", "bash", "sh", "zsh", "ruby", "swift", "perl", "env", "git", "npm", "npx", "make"].contains(String(program.last ?? ""))
+    }
+
     /// A backticked path at q: the path inside, and the whole span with its backticks. A command line is not a path
     /// ("`/bin/ls -la /tmp/x`", "`/usr/bin/env python3 a.py`"); spaces in folder names are ("02 Projects").
     func codePath(at q: Int, limit: Int? = nil) -> (path: Range<Int>, whole: Range<Int>)? {
         guard let m = match(Rx.codePath, q, limit ?? u.count) else { return nil }
         let r = m.range(at: 1)
         let inner = String(decoding: u[r.location..<r.location + r.length], as: UTF16.self)
-        guard !inner.contains(" -"), !inner.contains(" /"), Maker.isFilePath(inner) else { return nil }
+        guard !inner.contains(" -"), !inner.contains(" /"), !Maker.isCommand(inner), Maker.isFilePath(inner) else { return nil }
         return (r.location..<r.location + r.length, q..<q + m.range.length)
     }
 
