@@ -156,6 +156,8 @@ extension EngineKind {
             self?.saveSettings()
         }
         if settings.voiceID != old.voiceID || settings.frenchVoiceID != old.frenchVoiceID { voiceChoiceChanged(from: old) }
+        // Highlight switched off mid-read: the overlay goes now, and its stop restores any accessibility wake (E8).
+        if old.showHighlight, !settings.showHighlight { highlighter?.stop(); highlighter = nil }
         // A new voice applies to the next read (V1, PLAN 0.3.0 rev. 4); speed is instant.
         if settings.speed != old.speed, let s = liveSession { sessionInfo.rate = settings.speed; s.setRate(settings.speed) }
     }
