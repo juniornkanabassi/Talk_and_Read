@@ -187,7 +187,10 @@ extension AppModel {
             var data: [String: JSONValue] = ["id": .string(item.id.uuidString), "title": .string(item.title), "kind": .string(item.kind)]
             if let id {
                 guard owner?.sessionID == id else { throw AppError(code: "superseded", message: "Another read started first.") }
-                data.merge(try await firstAudio(startDocument(item, text: try documentText(item), fromToken: nil, id: id))) { $1 }
+                guard let s = await startDocument(item, text: try documentText(item), fromToken: nil, id: id) else {
+                    throw AppError(code: "superseded", message: "Another read started first.")
+                }
+                data.merge(try await firstAudio(s)) { $1 }
             }
             return data
 

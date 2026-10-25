@@ -442,26 +442,33 @@ extension EngineKind {
 
     func read(_ item: LibraryItem, fromToken: Int?) {
         guard let text = try? documentText(item) else { MiniPlayer.shared.flash("Could not open “\(item.title)”"); return }
-        startDocument(item, text: text, fromToken: fromToken, id: reserve("user"))
+        let id = reserve("user")
+        Task { await startDocument(item, text: text, fromToken: fromToken, id: id) }
     }
 
-    /// Starts at `fromToken`, else at the saved position.
-    @discardableResult func startDocument(_ item: LibraryItem, text: String, fromToken: Int?, id: UUID) -> ReadSession {
+    /// Starts at `fromToken`, else at the saved position. nil when another read took over while a PDF's furniture was found.
+    @discardableResult func startDocument(_ item: LibraryItem, text: String, fromToken: Int?, id: UUID) async -> ReadSession? {
+        let skip = await furniture(item, text: text)
+        guard owner?.sessionID == id else { return nil }
         let saved = library.first { $0.id == item.id }?.position ?? item.position
-        return startSession(text, capture: nil, id: id, startToken: fromToken ?? saved, source: "document", item: item.id,
-                            skip: furniture(item, text: text))
+        return startSession(text, capture: nil, id: id, startToken: fromToken ?? saved, source: "document", item: item.id, skip: skip)
     }
 
     /// A PDF's running headers, footers and page numbers, when Settings skips them. The pages are joined exactly as the
     /// importer joined them; a stored text that no longer matches its PDF unit for unit skips nothing. Found once per
     /// document (the reader fills it in when it opens the PDF), since extracting a long PDF's text takes a while.
-    private func furniture(_ item: LibraryItem, text: String) -> [Range<Int>] {
+    private func furniture(_ item: LibraryItem, text: String) async -> [Range<Int>] {
         guard settings.skipHeadersAndFooters, item.kind == "pdf" else { return [] }
         if let known = furnitureCache[item.id] { return known }
-        guard let pdf = PDFDocument(url: Paths.documents.appendingPathComponent(item.fileName)) else { return [] }
-        let joined = Importer.pdfText(pdf)
-        rememberFurniture(item, text: text, joined: joined.text, pageStarts: joined.pageStarts)
-        return furnitureCache[item.id] ?? []
+        let url = Paths.documents.appendingPathComponent(item.fileName)
+        // Off the main actor: extracting every page of a long PDF must not freeze the UI.
+        let found = await Task.detached(priority: .userInitiated) { () -> [Range<Int>] in
+            guard let pdf = PDFDocument(url: url) else { return [] }
+            let joined = Importer.pdfText(pdf)
+            return joined.text.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: joined.pageStarts) : []
+        }.value
+        furnitureCache[item.id] = found
+        return found
     }
 
     /// `joined`: the PDF's text as `Importer.pdfText` joins it; `text`: the stored document text a read speaks.

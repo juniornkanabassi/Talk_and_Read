@@ -86,6 +86,8 @@ import TalkReadCore
     /// `engines.unloads` when the fallback last finished preparing: it is warm only while nothing has unloaded since.
     private var fallbackPreparedAt: Int?
     private var fallbackWarming: Date?
+    /// Whether this (re)start has queued real sound yet; a silent chunk (a skipped running head) does not count.
+    private var heardAudio = false
 
     /// `fallback`: the Kokoro voice of the same language the read switches to if `voice`'s engine cannot keep up (V3).
     init(text: String, capture: Capture?, voice: Voice, rate: Float, startToken: Int, engines: Engines, lexicon: [String: String], fallback: Voice? = nil,
@@ -138,8 +140,8 @@ import TalkReadCore
         warmFallback()   // a long pause may have let the idle timer unload it
         if needsRestart {
             restart(from: currentToken ?? startToken)
-        } else if chunkEnds.isEmpty {
-            state = .preparing   // first chunk still synthesising; it starts playing when queued
+        } else if !heardAudio {
+            state = .preparing   // first audible chunk still synthesising (a silent one may be queued); it starts playing when queued
         } else {
             startPlayback()
         }
@@ -204,6 +206,7 @@ import TalkReadCore
         timings = []
         made = []
         chunkEnds = []
+        heardAudio = false
         doneEnqueueing = false
         needsRestart = false
         if case .failed = state { userPaused = false }
@@ -290,11 +293,16 @@ import TalkReadCore
             next = chunk.tokens.upperBound
             // A chunk with nothing to say (a skipped running head, a lone URL) keeps its zero-length timings but is not
             // the opening chunk: playback, first audio and the slow engine's opening budget wait for real sound.
-            guard !synth.samples.isEmpty else { continue }
+            guard !synth.samples.isEmpty else {
+                // Still opening: recut from the next token so the first audible chunk is the short one and first audio stays fast.
+                if k == 0 { plan = TextKit.chunks(text, tokens: tokens, from: next)[...] }
+                continue
+            }
+            heardAudio = true
             if k == 0 { firstAudio() }
             k += 1
         }
-        if k == 0 { firstAudio() }   // nothing audible at all: start the (empty) player so the read finishes
+        if k == 0 { heardAudio = true; firstAudio() }   // nothing audible at all: start the (empty) player so the read finishes
         doneEnqueueing = true
         player.moreComing = false
     }

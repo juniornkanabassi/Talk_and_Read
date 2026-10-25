@@ -14,17 +14,21 @@ public enum PageFurniture {
     /// importer joined them (pages separated by "\n\n").
     ///
     /// Two kinds count, both only in the first or last two lines of a page (one on a page of under 8 lines), never an
-    /// answer option or list item, and only with three pages or more:
-    /// the same line on at least three pages and a fifth of them (a journal title, a running head), and a page number
-    /// ("7", "Page 3 of 40", "- 7 -") that moves in step with the page. A numbered line with other words ("Question 2",
-    /// "Matchday 3", even a running head like "12 Contract Law") is read: one question per page also counts with the page.
+    /// answer option, list item or sentence, and only with three pages or more:
+    /// - a page number ("7", "Page 3 of 40", "- 7 -") that moves in step with the page. A numbered line with other words
+    ///   ("Question 2", "Matchday 3", even a running head like "12 Contract Law") is read: one question per page also
+    ///   counts with the page.
+    /// - the same line in the same place (the same edge, the same line from it) on at least three pages and two fifths
+    ///   of them (a journal title, alternating running heads). A second line from an edge counts only under an outer line
+    ///   that is furniture too, so "Facts" under each case name, or a slide title on a few slides, is read.
     public static func ranges(_ text: String, pageStarts: [Int]) -> [Range<Int>] {
         let u = Array(text.utf16)
         guard pageStarts.count >= 3 else { return [] }
-        let needed = max(3, (pageStarts.count + 4) / 5)
+        let needed = max(3, (pageStarts.count * 2 + 4) / 5)
 
-        /// An edge line: its text lower-cased with spaces collapsed, that text with every number as "#", and its first number.
-        struct Line { let page: Int; let range: Range<Int>; let exact: String; let shape: String; let number: Int? }
+        /// An edge line: where it sits (0, 1 from the top; -1, -2 from the bottom), its text lower-cased with spaces
+        /// collapsed, that text with every number as "#", and its first number.
+        struct Line { let page: Int; let slot: Int; let range: Range<Int>; let exact: String; let shape: String; let number: Int? }
         var lines: [Line] = []
         for (page, start) in pageStarts.enumerated() {
             let end = page + 1 < pageStarts.count ? max(start, pageStarts[page + 1] - 2) : u.count
@@ -37,36 +41,45 @@ public enum PageFurniture {
             }
             // A short page (a slide, one exam question) gets one edge line a side, so its body is not all "edge".
             let n = all.count < 8 ? 1 : edgeLines
-            let edges = Set(all.prefix(n).map(\.lowerBound) + all.suffix(n).map(\.lowerBound))
-            for r in all where edges.contains(r.lowerBound) && r.count <= maxLength {
+            for (i, r) in all.enumerated() where (i < n || i >= all.count - n) && r.count <= maxLength {
+                let slot = i < n ? i : i - all.count
                 let s = String(decoding: u[r], as: UTF16.self).lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
                 // An answer option or list item ("A. Yes", "(b) No", "3) Cost", "• None") is body, however often it repeats;
                 // "- 7 -" is a page number, not a bullet.
                 guard s.range(of: "^(?:\\(?([a-h]|[ivx]{1,4}|[0-9]{1,2})[.)] |[•◦▪*+] |[-–—] (?![0-9]))", options: .regularExpression) == nil else { continue }
                 let first = s.split(whereSeparator: { !$0.isASCII || !$0.isNumber }).first
-                lines.append(Line(page: page, range: r, exact: s,
+                lines.append(Line(page: page, slot: slot, range: r, exact: s,
                                   shape: s.replacingOccurrences(of: "[0-9]+", with: "#", options: .regularExpression),
                                   number: first.flatMap { $0.count <= 4 ? Int($0) : nil }))
             }
         }
 
-        var found: [Range<Int>] = []
-        // The same line on many pages.
-        // A repeated sentence ("Explain your answer.") is an instruction, not a running head or footer.
-        let prose = Set(lines.filter { $0.exact.last.map { ".?!".contains($0) } ?? false }.map(\.exact))
-        for group in Dictionary(grouping: lines, by: \.exact).values where Set(group.map(\.page)).count >= needed && !prose.contains(group[0].exact) {
-            found += group.map(\.range)
-        }
+        var found = Set<Range<Int>>()
         // A page number whose (first) number is the page's index plus a fixed offset ("Page 3 of 40" follows by its 3).
         let numbers = lines.filter { l in
             l.number != nil && pageNumber.firstMatch(in: l.shape, range: NSRange(l.shape.startIndex..., in: l.shape)) != nil
         }
         for group in Dictionary(grouping: numbers, by: \.shape).values {
             for same in Dictionary(grouping: group, by: { $0.number! - $0.page }).values where Set(same.map(\.page)).count >= needed {
-                found += same.map(\.range)
+                found.formUnion(same.map(\.range))
             }
         }
-        return Array(Set(found)).sorted { $0.lowerBound < $1.lowerBound }
+        // The same line in the same place on many pages: the outer lines first, then the second line from each edge on
+        // pages whose outer line at that edge is such a repeated line too (a two-line running head; a heading above a
+        // page number is body). A repeated sentence ("Explain your answer.") is an instruction.
+        let place = Dictionary(lines.map { ([$0.page, $0.slot], $0.range) }, uniquingKeysWith: { a, _ in a })
+        var repeated = Set<Range<Int>>()
+        for slots in [[0, -1], [1, -2]] {
+            let candidates = lines.filter { l in
+                guard slots.contains(l.slot), !(l.exact.last.map { ".?!".contains($0) } ?? false) else { return false }
+                return l.slot == 0 || l.slot == -1 || place[[l.page, l.slot > 0 ? 0 : -1]].map(repeated.contains) == true
+            }
+            for group in Dictionary(grouping: candidates, by: { "\($0.slot) \($0.exact)" }).values where Set(group.map(\.page)).count >= needed {
+                repeated.formUnion(group.map(\.range))
+            }
+        }
+        found.formUnion(repeated)
+        return found.sorted { $0.lowerBound < $1.lowerBound }
     }
 
     /// `r` without leading and trailing spaces; nil when nothing is left.
