@@ -93,6 +93,43 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(make("[**big** news](u)").text, "big news")
     }
 
+    func testLinkTargetsWithSpacesOrAngleBracketsAreDropped() {
+        let spaced = "See [MEMORY.md](/Users/junior/Documents/JuniorOS/01 About Me/MEMORY.md) now."
+        let sp = make(spaced)
+        XCTAssertEqual(sp.text, "See MEMORY.md now.")
+        XCTAssertEqual(origin(sp, "MEMORY.md", spaced), "MEMORY.md")
+        XCTAssertFalse(sp.covers((spaced as NSString).range(of: "About Me").toRange()))
+        XCTAssertEqual(make("Read [the guide](<02 Projects/Talk & Read/guide.md>) first.").text, "Read the guide first.")
+        XCTAssertEqual(make("[plan](/Users/j/01%20About%20Me/plan.md)").text, "plan")
+        XCTAssertEqual(make("[Law](https://en.wikipedia.org/wiki/Law_(UK)) here").text, "Law here")
+        XCTAssertEqual(make("[a](x \"title\") b").text, "a b")
+        // ordinary brackets are prose: no "](" join, or the target would cross a line
+        XCTAssertEqual(make("He [sic] (again) said").text, "He [sic] (again) said")
+        XCTAssertEqual(make("[note](see\nbelow)").text, "[note](see. below)")
+        // the first ")" ends the target, so prose after a link survives
+        XCTAssertEqual(make("[x](a b) and (c) d").text, "x and (c) d")
+    }
+
+    func testFilePathsAreSpokenAsTheirFileName() {
+        let s = "Saved to /Users/junior/Documents/notes/plan.md, then ~/Documents/JuniorOS/AGENTS.md."
+        let sp = make(s)
+        XCTAssertEqual(sp.text, "Saved to plan.md, then AGENTS.md.")
+        // the name stands for the whole path, so the highlight covers what is on screen
+        XCTAssertEqual(origin(sp, "plan.md", s), "/Users/junior/Documents/notes/plan.md")
+        XCTAssertEqual(origin(sp, "AGENTS.md", s), "~/Documents/JuniorOS/AGENTS.md")
+        XCTAssertEqual(make("Open file:///Users/j/01%20About%20Me/Talk%20%26%20Read.md now").text, "Open Talk & Read.md now")
+        XCTAssertEqual(make("In /mnt/project-files/brief.pdf").text, "In brief.pdf")
+        XCTAssertEqual(make("See /Users/j/Source/App.swift:42 for it").text, "See App.swift for it")
+        XCTAssertEqual(make("The file `/Users/j/02 Projects/Talk & Read/guide.md` is new").text, "The file guide.md is new")
+        XCTAssertEqual(make("([/Users/j/a/notes.md](/Users/j/a/notes.md))").text, "(notes.md)")
+        // not paths: no leading "/" or "~/" at a word's start, or a single component
+        for kept in ["and/or", "km/h", "24/7", "14/11/2027", "1/2 cup", "w/o sugar", "a /s joke", "http://x.io/a/b"] {
+            XCTAssertFalse(make(kept).text.isEmpty, kept)
+            if !kept.hasPrefix("http") { XCTAssertEqual(make(kept).text, kept) }
+        }
+        XCTAssertEqual(make("src/app/main.swift stays").text, "src/app/main.swift stays")
+    }
+
     func testListItemsGetAPause() {
         XCTAssertEqual(make("- one\n- two\n* three.\n+ four\n\n1. five\n2) six").text, "one. two. three. four. 1. five. 2) six")
         XCTAssertEqual(make("Intro:\n- first\n- second").text, "Intro: first. second")

@@ -90,7 +90,13 @@ private enum Rx {
     }
     static let marker = make("(?:#{1,6}[ \\t]+|(?:>[ \\t]*)+|[-*+•][ \\t]+)")
     static let image = make("!\\[[^\\]]*\\]\\([^)]*\\)")
-    static let link = make("\\[([^\\]]*)\\]\\([^)\\s]*(?:\\s+\"[^\"]*\")?\\)")
+    /// The target stays on one line and may hold spaces ("01 About Me/MEMORY.md"), one level of balanced brackets
+    /// ("Law_(UK)") or be wrapped in <…>; it ends at the first ")" that closes it.
+    static let link = make("\\[([^\\]\\n]*)\\]\\((?:<[^>\\n]*>|(?:[^()\\n]|\\([^()\\n]*\\))*?)(?:[ \\t]+\"[^\"\\n]*\")?\\)")
+    /// An absolute file path or file URL: "/" or "~/" then two components or more, up to the next space. A path in
+    /// backticks may hold spaces (`codePath`).
+    static let path = make("(?:file://(?:localhost)?)?~?/(?:[^\\s/<>\"'`|]+/)+[^\\s/<>\"'`|]+", .caseInsensitive)
+    static let codePath = make("`((?:file://(?:localhost)?)?~?/(?:[^/\\n`]+/)+[^/\\n`]+)`", .caseInsensitive)
     static let email = make("[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+")
     static let url = make("https?://[^\\s<>\"]+", .caseInsensitive)
     static let citation = make("\\[\\s*(?:[0-9]{1,3}[a-z]?(?:\\s*[,–—-]\\s*[0-9]{1,3}[a-z]?)*|(?:citation|clarification) needed)\\s*\\]", .caseInsensitive)
@@ -186,6 +192,23 @@ private struct Maker {
         if let at = (h0..<h1).last(where: { u[$0] == 0x40 }) { h0 = at + 1 }
         if let colon = (h0..<h1).first(where: { u[$0] == 0x3A }) { h1 = colon }
         emitLabels(h0, h1)
+        return end - p
+    }
+
+    /// A file path or file URL matched at p: speaks the file name only (the last component, percent escapes decoded,
+    /// a ":42" line reference dropped), mapped to the whole path so the highlight covers what is on screen. Returns how
+    /// much source it used: trailing punctuation stays for the normal scan. `through`: where the mapped source ends
+    /// when that is past the path (a backticked path's closing backtick).
+    mutating func emitPath(_ p: Int, _ n: Int, through: Int? = nil) -> Int {
+        var end = p + n
+        while end > p, ".,;:!?)]}'\"".utf16.contains(u[end - 1]) { end -= 1 }
+        var a = end
+        while a > p, u[a - 1] != 0x2F { a -= 1 }
+        var name = String(decoding: u[a..<end], as: UTF16.self)
+        name = name.replacingOccurrences(of: "(?::[0-9]+){1,2}$", with: "", options: .regularExpression)
+        name = name.removingPercentEncoding ?? name
+        guard !name.isEmpty else { copy(p, end); return end - p }
+        put(name, p..<(through ?? end))
         return end - p
     }
 
@@ -287,6 +310,8 @@ private struct Maker {
                 }
                 if let m = match(Rx.email, p, to) { emitLabels(p, p + m.range.length); p += m.range.length; continue }
                 if let m = match(Rx.url, p, to) ?? match(Rx.www, p, to) { p += emitAddress(p, m.range.length); continue }
+                if c == 0x2F || c == 0x7E || c == 0x66 || c == 0x46, p == 0 || !"/.:-_~\\".utf16.contains(u[p - 1]),
+                   let m = match(Rx.path, p, to) { p += emitPath(p, m.range.length); continue }
                 if french, Maker.isDigit(c) || c == 0x20AC || c == 0x24 || c == 0xA3, let used = frenchNumber(p, to) { p += used; continue }
             }
             let next: UInt16 = p + 1 < to ? u[p + 1] : 0
@@ -301,7 +326,15 @@ private struct Maker {
                     continue
                 }
             case 0x2A where next == 0x2A, 0x5F where next == 0x5F: p += 2; continue   // ** and __
-            case 0x60, 0x2022: p += 1; continue                                         // backtick, bullet
+            case 0x60:                                                                   // backtick; `a path` -> its name
+                if let m = match(Rx.codePath, p, to) {
+                    let r = m.range(at: 1)
+                    _ = emitPath(r.location, r.length, through: p + m.range.length)
+                    p += m.range.length
+                    continue
+                }
+                p += 1; continue
+            case 0x2022: p += 1; continue                                               // bullet
             case 0x26: put(french ? " et " : " and ", p..<p + 1); p += 1; continue
             case 0x25 where follows(digitBefore: p): put(french ? " pour cent" : " percent", p..<p + 1); p += 1; continue
             case 0xB0:
