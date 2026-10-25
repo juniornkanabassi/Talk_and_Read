@@ -443,23 +443,34 @@ extension EngineKind {
     func read(_ item: LibraryItem, fromToken: Int?) {
         guard let text = try? documentText(item) else { MiniPlayer.shared.flash("Could not open “\(item.title)”"); return }
         let id = reserve("user")
+        // At once unless a PDF's furniture still has to be found.
+        if let skip = knownFurniture(item) { beginDocument(item, text: text, fromToken: fromToken, id: id, skip: skip); return }
         Task { await startDocument(item, text: text, fromToken: fromToken, id: id) }
     }
 
     /// Starts at `fromToken`, else at the saved position. nil when another read took over while a PDF's furniture was found.
     @discardableResult func startDocument(_ item: LibraryItem, text: String, fromToken: Int?, id: UUID) async -> ReadSession? {
-        let skip = await furniture(item, text: text)
+        let known = knownFurniture(item)
+        let skip = if let known { known } else { await furniture(item, text: text) }
         guard owner?.sessionID == id else { return nil }
+        return beginDocument(item, text: text, fromToken: fromToken, id: id, skip: skip)
+    }
+
+    @discardableResult private func beginDocument(_ item: LibraryItem, text: String, fromToken: Int?, id: UUID, skip: [Range<Int>]) -> ReadSession {
         let saved = library.first { $0.id == item.id }?.position ?? item.position
         return startSession(text, capture: nil, id: id, startToken: fromToken ?? saved, source: "document", item: item.id, skip: skip)
+    }
+
+    /// The ranges a read skips when no PDF has to be opened for them: none (not a PDF, or the setting is off) or cached.
+    private func knownFurniture(_ item: LibraryItem) -> [Range<Int>]? {
+        guard settings.skipHeadersAndFooters, item.kind == "pdf" else { return [] }
+        return furnitureCache[item.id]
     }
 
     /// A PDF's running headers, footers and page numbers, when Settings skips them. The pages are joined exactly as the
     /// importer joined them; a stored text that no longer matches its PDF unit for unit skips nothing. Found once per
     /// document (the reader fills it in when it opens the PDF), since extracting a long PDF's text takes a while.
     private func furniture(_ item: LibraryItem, text: String) async -> [Range<Int>] {
-        guard settings.skipHeadersAndFooters, item.kind == "pdf" else { return [] }
-        if let known = furnitureCache[item.id] { return known }
         let url = Paths.documents.appendingPathComponent(item.fileName)
         // Off the main actor: extracting every page of a long PDF must not freeze the UI.
         let found = await Task.detached(priority: .userInitiated) { () -> [Range<Int>] in
@@ -473,6 +484,7 @@ extension EngineKind {
 
     /// `joined`: the PDF's text as `Importer.pdfText` joins it; `text`: the stored document text a read speaks.
     func rememberFurniture(_ item: LibraryItem, text: String, joined: String, pageStarts: [Int]) {
+        guard settings.skipHeadersAndFooters else { return }
         furnitureCache[item.id] = joined.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: pageStarts) : []
     }
 
