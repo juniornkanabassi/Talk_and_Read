@@ -64,6 +64,9 @@ import TalkReadCore
 
     private let engines: Engines
     private let lexicon: [String: String]
+    /// Source ranges never spoken (a PDF's running headers and footers), and whether citation marks are dropped.
+    private let skip: [Range<Int>]
+    private let skipCitations: Bool
     private let startToken: Int
     private let fallback: Voice?
     private var producer: Task<Void, Never>?
@@ -83,9 +86,12 @@ import TalkReadCore
     /// `engines.unloads` when the fallback last finished preparing: it is warm only while nothing has unloaded since.
     private var fallbackPreparedAt: Int?
     private var fallbackWarming: Date?
+    /// Whether this (re)start has queued real sound yet; a silent chunk (a skipped running head) does not count.
+    private var heardAudio = false
 
     /// `fallback`: the Kokoro voice of the same language the read switches to if `voice`'s engine cannot keep up (V3).
-    init(text: String, capture: Capture?, voice: Voice, rate: Float, startToken: Int, engines: Engines, lexicon: [String: String], fallback: Voice? = nil) {
+    init(text: String, capture: Capture?, voice: Voice, rate: Float, startToken: Int, engines: Engines, lexicon: [String: String], fallback: Voice? = nil,
+         skip: [Range<Int>] = [], skipCitations: Bool = false) {
         self.text = text
         self.tokens = TextKit.tokenize(text)
         self.capture = capture
@@ -93,6 +99,8 @@ import TalkReadCore
         self.effectiveVoice = voice
         self.engines = engines
         self.lexicon = lexicon
+        self.skip = skip.sorted { $0.lowerBound < $1.lowerBound }
+        self.skipCitations = skipCitations
         self.startToken = startToken
         self.fallback = fallback
         player.rate = rate
@@ -132,8 +140,8 @@ import TalkReadCore
         warmFallback()   // a long pause may have let the idle timer unload it
         if needsRestart {
             restart(from: currentToken ?? startToken)
-        } else if chunkEnds.isEmpty {
-            state = .preparing   // first chunk still synthesising; it starts playing when queued
+        } else if !heardAudio {
+            state = .preparing   // first audible chunk still synthesising (a silent one may be queued); it starts playing when queued
         } else {
             startPlayback()
         }
@@ -150,8 +158,34 @@ import TalkReadCore
     func skip(sentences: Int) {
         guard let last = tokens.last else { return }
         let current = currentSentence ?? tokens[min(max(startToken, 0), tokens.count - 1)].sentence
-        // Clamped before the addition: any Int arrives from the CLI or socket and must not overflow.
-        let target = min(max(current + min(max(sentences, -last.sentence - 1), last.sentence + 1), 0), last.sentence)
+        // Clamped first: any Int arrives from the CLI or socket and must not overflow.
+        let n = min(max(sentences, -last.sentence - 1), last.sentence + 1), step = n < 0 ? -1 : 1
+        // Sentences with nothing to say (skipped furniture, a lone "[citation needed]") are stepped over, judged as
+        // playback judges them, so Previous reaches the last sentence actually read. Only the sentences passed are checked.
+        func audible(_ s: Int) -> Bool {
+            func firstToken(from s: Int) -> Int {   // tokens are in sentence order
+                var l = 0, h = tokens.count
+                while l < h { let m = (l + h) / 2; if tokens[m].sentence >= s { h = m } else { l = m + 1 } }
+                return l
+            }
+            let a = firstToken(from: s), b = firstToken(from: s + 1)
+            guard a < b else { return false }
+            // From the previous token's end to the next sentence's first token, so the brackets and punctuation around
+            // the words are judged too ("[citation needed]" alone is silent, as in playback).
+            let lo = a == 0 ? 0 : tokens[a - 1].range.upperBound, hi = b < tokens.count ? tokens[b].range.lowerBound : text.utf16.count
+            return Speakable.make(text, range: lo..<hi, lexicon: lexicon,
+                                  language: voice.language, skip: skip, skipCitations: skipCitations).text
+                .contains { $0.isLetter || $0.isNumber }
+        }
+        var target = current
+        for _ in 0..<abs(n) {
+            var c = target + step
+            while c >= 0, c <= last.sentence, !audible(c) { c += step }
+            guard c >= 0, c <= last.sentence else { break }
+            target = c
+        }
+        // Next with nothing audible left (only furniture or annotations after this sentence): the read is over.
+        if n > 0, target == current { return finish() }
         if let first = tokens.firstIndex(where: { $0.sentence >= target }) { restart(from: first) }
     }
 
@@ -188,6 +222,7 @@ import TalkReadCore
         timings = []
         made = []
         chunkEnds = []
+        heardAudio = false
         doneEnqueueing = false
         needsRestart = false
         if case .failed = state { userPaused = false }
@@ -266,20 +301,31 @@ import TalkReadCore
             }
             guard gen == generation, !Task.isCancelled, let chunk, let said, let synth else { return }
             let start = player.enqueue(synth)
-            chunkEnds.append(player.queuedUntil)
             made.append((chunk.tokens, effectiveVoice.id))
             timings += Timeline.timings(chunkTokens: Array(tokens[chunk.tokens]), chunkTokenOffset: chunk.tokens.lowerBound,
                                         speakable: said, spoken: synth.words, offset: start,
                                         chunkDuration: player.queuedUntil - start, language: voice.language)
-            if k == 0 { firstAudio() }
             next = chunk.tokens.upperBound
+            // A chunk with nothing to say (a skipped running head, a lone URL) keeps its zero-length timings but is not
+            // the opening chunk: playback, first audio and the slow engine's opening budget wait for real sound.
+            guard !synth.samples.isEmpty else {   // and not in chunkEnds: a silent chunk is no audio ahead
+                // Still opening: recut from the next token so the first audible chunk is the short one and first audio stays fast.
+                if k == 0 { plan = TextKit.chunks(text, tokens: tokens, from: next)[...] }
+                continue
+            }
+            chunkEnds.append(player.queuedUntil)
+            heardAudio = true
+            if k == 0 { firstAudio() }
             k += 1
         }
+        if k == 0 { return finish() }   // nothing audible from here on: the read is over, without opening the output
         doneEnqueueing = true
         player.moreComing = false
     }
 
-    private func speakable(_ c: Chunk) -> Speakable { Speakable.make(text, range: c.range, lexicon: lexicon, language: voice.language) }
+    private func speakable(_ c: Chunk) -> Speakable {
+        Speakable.make(text, range: c.range, lexicon: lexicon, language: voice.language, skip: skip, skipCitations: skipCitations)
+    }
 
     /// The next slow chunk under the time budget (PLAN 0.3.0 Sol revision 2): the largest one (at most `slowChars`) whose
     /// measured cost leaves at least `spare` plus the fallback's per-character time for it buffered at the current rate.

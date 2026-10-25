@@ -348,7 +348,7 @@ enum DictationError: LocalizedError, Equatable {
     private static var learntFile: URL { Paths.dataRoot.appendingPathComponent("learned-corrections.json") }
 
     /// Counts the corrections of one dictation; those seen twice and not yet in the vocabulary are offered.
-    private func learn(_ found: [AutoLearn.Correction]) {
+    func learn(_ found: [AutoLearn.Correction]) {
         guard !found.isEmpty else { return }
         var counts = (try? JSONDecoder().decode([String: Int].self, from: Data(contentsOf: Self.learntFile))) ?? [:]
         let ready = AutoLearn.record(found, in: &counts)
@@ -375,11 +375,13 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     /// Adds the suggestion to the vocabulary ("heard as" → "type instead").
-    func acceptSuggestion(_ c: AutoLearn.Correction) {
+    func acceptSuggestion(_ c: AutoLearn.Correction) throws {
         var map = vocabulary()
         map[c.heard.lowercased()] = c.typed
-        try? FileManager.default.createDirectory(at: Paths.vocabulary.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(map).write(to: Paths.vocabulary, options: .atomic)
+        do {
+            try FileManager.default.createDirectory(at: Paths.vocabulary.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(map).write(to: Paths.vocabulary, options: .atomic)
+        } catch { throw AppError(code: "failed", message: "Could not save: \(error.localizedDescription)") }
         dismissSuggestion(c)
     }
 

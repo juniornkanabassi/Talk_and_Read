@@ -2,6 +2,7 @@
 import AppKit
 import Combine
 import Foundation
+import PDFKit
 import TalkReadCore
 
 struct LibraryItem: Codable, Identifiable, Hashable {
@@ -89,9 +90,17 @@ extension EngineKind {
 
     /// Additive (not in ESSENTIALS): true while the shortcut recorder is listening, so the global hotkeys stand down.
     @Published var hotkeysPaused = false
+    /// Bumped when the control socket changes vocabulary.json or pronunciations.json, so an open editor reloads them.
+    @Published private(set) var wordListsRevision = 0
 
     /// Replaceable so the control self-test can read with a silent engine.
     var engines = Engines()
+    private(set) var insertingAgain = false
+    var insertAgainTarget: () async -> NSRunningApplication? = { await AppModel.otherFrontmostApp(within: 1) }
+    /// Replaceable so the control self-test can remove an item during tokenisation.
+    var documentWordCount: (String) async -> Int = { text in
+        await Task.detached { TextKit.tokenize(text).count }.value
+    }
     /// PLAN decision 16: who owns the current read. Reserved synchronously when a read is requested, held through
     /// preparing, playing and paused, released at finished, failed or stopped.
     var owner: (caller: String, sessionID: UUID)?
@@ -155,6 +164,8 @@ extension EngineKind {
             self?.saveSettings()
         }
         if settings.voiceID != old.voiceID || settings.frenchVoiceID != old.frenchVoiceID { voiceChoiceChanged(from: old) }
+        // Highlight switched off mid-read: the overlay goes now, and its stop restores any accessibility wake (E8).
+        if old.showHighlight, !settings.showHighlight { highlighter?.stop(); highlighter = nil }
         // A new voice applies to the next read (V1, PLAN 0.3.0 rev. 4); speed is instant.
         if settings.speed != old.speed, let s = liveSession { sessionInfo.rate = settings.speed; s.setRate(settings.speed) }
     }
@@ -259,7 +270,8 @@ extension EngineKind {
     }
 
     /// Downloads one of `engines.downloadables()` (Qwen3, Parakeet v3, the Kokoro French pack). Only from the user's
-    /// click on the Models or Voices page (PLAN 0.3.0 rev. 6): nothing calls this on its own.
+    /// click on the Models or Voices page (PLAN 0.3.0 rev. 6), or an explicit `talkread models download --model`, which
+    /// never offers Breeze (its licence is shown beside its download): nothing calls this on its own.
     func download(_ title: String) {
         guard let d = engines.downloadables().first(where: { $0.title == title }), !d.isModelInstalled else { return }
         if case .downloading = downloadStates[title] { return }
@@ -434,36 +446,78 @@ extension EngineKind {
     }
     /// The read `preview` started; any later read replaces `session`, so it is a preview only while it is that one.
     private weak var previewSession: ReadSession?
+    /// Furniture ranges per PDF document, found once (`furniture`).
+    private var furnitureCache: [UUID: [Range<Int>]] = [:]
 
     func read(_ item: LibraryItem, fromToken: Int?) {
         guard let text = try? documentText(item) else { MiniPlayer.shared.flash("Could not open “\(item.title)”"); return }
-        startDocument(item, text: text, fromToken: fromToken, id: reserve("user"))
+        let id = reserve("user")
+        // At once unless a PDF's furniture still has to be found.
+        if let skip = knownFurniture(item) { beginDocument(item, text: text, fromToken: fromToken, id: id, skip: skip); return }
+        Task { await startDocument(item, text: text, fromToken: fromToken, id: id) }
     }
 
-    /// Starts at `fromToken`, else at the saved position.
-    @discardableResult func startDocument(_ item: LibraryItem, text: String, fromToken: Int?, id: UUID) -> ReadSession {
+    /// Starts at `fromToken`, else at the saved position. nil when another read took over while a PDF's furniture was found.
+    @discardableResult func startDocument(_ item: LibraryItem, text: String, fromToken: Int?, id: UUID) async -> ReadSession? {
+        let known = knownFurniture(item)
+        let skip = if let known { known } else { await furniture(item, text: text) }
+        guard owner?.sessionID == id else { return nil }
+        return beginDocument(item, text: text, fromToken: fromToken, id: id, skip: skip)
+    }
+
+    @discardableResult private func beginDocument(_ item: LibraryItem, text: String, fromToken: Int?, id: UUID, skip: [Range<Int>]) -> ReadSession {
         let saved = library.first { $0.id == item.id }?.position ?? item.position
-        return startSession(text, capture: nil, id: id, startToken: fromToken ?? saved, source: "document", item: item.id)
+        return startSession(text, capture: nil, id: id, startToken: fromToken ?? saved, source: "document", item: item.id, skip: skip)
+    }
+
+    /// The ranges a read skips when no PDF has to be opened for them: none (not a PDF, or the setting is off) or cached.
+    private func knownFurniture(_ item: LibraryItem) -> [Range<Int>]? {
+        guard settings.skipHeadersAndFooters, item.kind == "pdf" else { return [] }
+        return furnitureCache[item.id]
+    }
+
+    /// A PDF's running headers, footers and page numbers, when Settings skips them. The pages are joined exactly as the
+    /// importer joined them; a stored text that no longer matches its PDF unit for unit skips nothing. Found once per
+    /// document (the reader fills it in when it opens the PDF), since extracting a long PDF's text takes a while.
+    private func furniture(_ item: LibraryItem, text: String) async -> [Range<Int>] {
+        let url = Paths.documents.appendingPathComponent(item.fileName)
+        // Off the main actor: extracting every page of a long PDF must not freeze the UI.
+        let found = await Task.detached(priority: .userInitiated) { () -> [Range<Int>] in
+            guard let pdf = PDFDocument(url: url) else { return [] }
+            let joined = Importer.pdfText(pdf)
+            return joined.text.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: joined.pageStarts) : []
+        }.value
+        furnitureCache[item.id] = found
+        return found
+    }
+
+    /// `joined`: the PDF's text as `Importer.pdfText` joins it; `text`: the stored document text a read speaks.
+    func rememberFurniture(_ item: LibraryItem, text: String, joined: String, pageStarts: [Int]) {
+        guard settings.skipHeadersAndFooters else { return }
+        furnitureCache[item.id] = joined.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: pageStarts) : []
     }
 
     @discardableResult
     func startSession(_ text: String, capture: Capture?, id: UUID, startToken: Int = 0, voice: Voice? = nil,
-                      rate: Float? = nil, source: String? = nil, item: UUID? = nil) -> ReadSession {
+                      rate: Float? = nil, source: String? = nil, item: UUID? = nil, skip: [Range<Int>] = []) -> ReadSession {
         // One language per read (PLAN 0.3.0 rev. 8): French text reads with the French voice; an explicit voice wins.
         let v = voice ?? (Language.detect(text) == "fr" ? self.voice(for: settings.frenchVoiceID, language: "fr") : self.voice(for: settings.voiceID))
         let r = rate ?? settings.speed
         let s = ReadSession(text: text, capture: capture, voice: v, rate: r, startToken: startToken, engines: engines,
-                            lexicon: Self.loadJSON(Paths.pronunciations) ?? [:], fallback: v.engine.isLarge ? kokoroFallback(v.language) : nil)
+                            lexicon: Self.loadJSON(Paths.pronunciations) ?? [:], fallback: v.engine.isLarge ? kokoroFallback(v.language) : nil,
+                            skip: skip, skipCitations: settings.skipCitations)
         session = s
         sessionInfo = (source ?? capture.map { "\($0.source)" } ?? "provided", r, item)
         modelsWarm = true
         sessionWatch = s.$state.sink { [weak self] state in self?.sessionStateChanged(state, id: id) }
         s.start()
-        if capture?.hasGeometry == true {   // clipboard and provided text have no place on screen
+        if capture?.hasGeometry == true, settings.showHighlight {   // clipboard and provided text have no place on screen
             let h = Highlighter(session: s, style: Overlay.Style(settings))
             h.useOCRFallback = settings.useOCRFallback
             h.start()
             highlighter = h
+        } else if let capture, capture.hasGeometry {
+            AXWake.restore(capture.pid)   // highlight off: no Highlighter will end this read and restore the app (E8)
         }
         return s
     }
@@ -573,15 +627,36 @@ extension EngineKind {
     func insertAgain(_ id: UUID) {
         NSApp.hide(nil)
         Task {
-            guard let app = await Self.otherFrontmostApp(within: 1) else {
-                return MiniPlayer.shared.flash("Click where the text should go, then try again")
-            }
-            switch await dictation.reinsert(id, targetPID: app.processIdentifier) {
-            case .inserted: break
-            case .refusedSecure: MiniPlayer.shared.flash(Inserter.refusal())
-            case .failed(let reason): MiniPlayer.shared.flash(reason)
+            do {
+                guard let outcome = try await reinsertInOtherApp(id) else {
+                    return MiniPlayer.shared.flash("Click where the text should go, then try again")
+                }
+                switch outcome.result {
+                case .inserted: break
+                case .refusedSecure: MiniPlayer.shared.flash(Inserter.refusal())
+                case .failed(let reason): MiniPlayer.shared.flash(reason)
+                }
+            } catch let error as AppError {
+                MiniPlayer.shared.flash(error.message)
+            } catch {
+                MiniPlayer.shared.flash(error.localizedDescription)
             }
         }
+    }
+
+    func checkInsertAgain() throws {
+        guard !insertingAgain else { throw AppError(code: "busy", message: "Insert Again is still typing. Retry when it finishes.") }
+    }
+
+    /// Insert again's typing, shared with `talkread insert-again`: hides Talk & Read if it is in front, then types the
+    /// entry into the app that is (or comes) forward. nil when no other app comes forward within a second.
+    func reinsertInOtherApp(_ id: UUID) async throws -> (app: NSRunningApplication, result: InsertResult)? {
+        try checkInsertAgain()
+        insertingAgain = true
+        defer { insertingAgain = false }
+        if NSApp.isActive { NSApp.hide(nil) }
+        guard let app = await insertAgainTarget() else { return nil }
+        return (app, await dictation.reinsert(id, targetPID: app.processIdentifier))
     }
 
     /// The frontmost app once it is not Talk & Read, waiting up to `seconds`; nil if none comes forward.
@@ -715,6 +790,30 @@ extension EngineKind {
     /// Home's "paste and listen": text typed into Talk & Read itself, kept in the history as read in Talk & Read.
     /// (Read again, the CLI's `speak` and library documents are not recorded: they would fill the history with repeats.)
     func recordOwnRead(_ text: String) { appendRead(text, app: nil, bundleID: nil) }
+
+    /// Home's play button and `talkread read-pasted`: keeps the text in the Library as pasted text (titled by its first
+    /// line unless `title` is given), reads it as the read reserved as `id`, and records it in the History.
+    @discardableResult func readPasted(_ text: String, title: String? = nil, id: UUID) throws -> (item: LibraryItem, session: ReadSession) {
+        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Pasted text"
+        let item = importText(text, title: title ?? String(firstLine.prefix(60)))
+        let savedText: String
+        do { savedText = try documentText(item) } catch {
+            if owner?.sessionID == id { owner = nil }
+            throw AppError(code: "failed", message: "Could not open “\(item.title)”")
+        }
+        let s = beginDocument(item, text: savedText, fromToken: nil, id: id, skip: knownFurniture(item) ?? [])   // pasted text has no page furniture
+        recordOwnRead(text)
+        return (item, s)
+    }
+
+    /// Changes vocabulary.json or pronunciations.json in the format the Settings editors write, then has any open editor
+    /// reload (the control socket's word list commands).
+    func updateWordList(_ url: URL, _ change: (inout [String: String]) -> Void) throws {
+        var map = WordMapEditor.load(url)
+        change(&map)
+        try WordMapEditor.save(map, to: url)
+        wordListsRevision += 1
+    }
 
     /// The Home history's Delete.
     func deleteRead(_ id: UUID) {
