@@ -167,7 +167,10 @@ final class CLITests: XCTestCase {
         let top = try cli(["--help"])
         XCTAssertEqual(top.code, 0)
         for name in ["status", "voices", "speak", "read-selection", "read-file", "pause", "resume", "stop", "skip", "speed", "voice", "mic", "dictate-start",
-                     "dictate-stop", "dictation-last", "history", "dictate-file", "open", "settings-get", "settings-set", "models", "update-check"] {
+                     "dictate-stop", "dictation-last", "history", "dictate-file", "open", "settings-get", "settings-set", "models", "update-check",
+                     "dictate-cancel", "insert-again", "history-delete", "read-again", "open-url", "read-pasted", "library", "library-open",
+                     "library-remove", "shortcuts-reset", "vocabulary", "vocabulary-set", "vocabulary-remove", "vocabulary-suggestion",
+                     "pronunciations", "pronunciation-set", "pronunciation-remove"] {
             XCTAssertTrue(top.out.contains("  \(name) "), name)
             let one = try cli([name, "--help"])
             XCTAssertEqual(one.code, 0, name)
@@ -178,8 +181,8 @@ final class CLITests: XCTestCase {
     func testManifestListsOneToolPerCommand() throws {
         let manifest = try cli(["mcp-manifest"])
         let tools = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(manifest.out.utf8)) as? [[String: Any]])
-        XCTAssertEqual(tools.count, 22)
-        XCTAssertEqual(Set(tools.compactMap { $0["name"] as? String }).count, 22)
+        XCTAssertEqual(tools.count, 39)
+        XCTAssertEqual(Set(tools.compactMap { $0["name"] as? String }).count, 39)
         let history = try XCTUnwrap(tools.first { $0["name"] as? String == "history" }?["inputSchema"] as? [String: Any])
         XCTAssertEqual(Set((history["properties"] as? [String: Any])?.keys.map { $0 } ?? []), ["kind", "limit", "search"])   // read-only: no force
         let speak = try XCTUnwrap(tools.first { $0["name"] as? String == "speak" })
@@ -188,6 +191,84 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(Set((schema["properties"] as? [String: Any])?.keys.map { $0 } ?? []), ["text", "voice", "speed", "force"])
         XCTAssertNotNil(tools.first { $0["name"] as? String == "dictate_file" })
         XCTAssertTrue(tools.allSatisfy { ($0["description"] as? String)?.isEmpty == false })
+    }
+
+    // MARK: destructive commands, Library and word lists
+
+    func testDestructiveCommandsNeedYes() throws {
+        let seen = Recorder()
+        let server = try startServer(seen)
+        defer { server.stop() }
+        let id = "0F8E2C1A-4B7D-4E3A-9C55-1D2E3F4A5B6C"
+        for args in [["history-delete", id], ["library-remove", id], ["shortcuts-reset"], ["vocabulary-remove", "marlow"],
+                     ["pronunciation-remove", "Nguyen"], ["history-delete", id, "--yes=false"], ["status", "--yes"], ["history-delete", id, "--yes=maybe"]] {
+            let r = try cli(args)
+            XCTAssertEqual(r.code, 2, "\(args): \(r.err)")
+            XCTAssertTrue(r.err.hasPrefix("usage: "), "\(args): \(r.err)")
+        }
+        XCTAssertEqual(seen.count, 0, "nothing reaches the app without --yes")
+        _ = try cli(["history-delete", id, "--yes", "--kind", "read"])
+        _ = try cli(["library-remove", id, "--yes=true"])   // the MCP adapter's form
+        _ = try cli(["vocabulary-remove", "marlow", "key", "--yes"])
+        XCTAssertEqual(seen.requests.map(\.args), [["id": id, "kind": "read", "yes": "1"], ["id": id, "yes": "1"], ["heard": "marlow key", "yes": "1"]])
+        XCTAssertTrue(try cli(["library-remove", "--help"]).out.contains("--yes (required)"))
+
+        let manifest = try cli(["mcp-manifest"])
+        let tools = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(manifest.out.utf8)) as? [[String: Any]])
+        func schema(_ name: String) throws -> [String: Any] { try XCTUnwrap(tools.first { $0["name"] as? String == name }?["inputSchema"] as? [String: Any]) }
+        let delete = try schema("history_delete")
+        XCTAssertEqual(delete["required"] as? [String], ["id", "yes"])
+        XCTAssertEqual(Set((delete["properties"] as? [String: Any])?.keys.map { $0 } ?? []), ["id", "kind", "yes"])
+        XCTAssertEqual(Set((try schema("library_remove")["properties"] as? [String: Any])?.keys.map { $0 } ?? []), ["id", "yes", "force"])
+        XCTAssertNil((try schema("library")["properties"] as? [String: Any])?["yes"])
+        for name in ["history-delete", "library-remove", "shortcuts-reset", "vocabulary-remove", "pronunciation-remove",
+                     "dictate-cancel", "insert-again", "open-url", "read-pasted", "read-again", "library-open", "vocabulary-set",
+                     "vocabulary-suggestion", "pronunciation-set"] {
+            XCTAssertTrue(ControlServer.mutatingCommands.contains(name), "\(name) must be replay-protected")
+        }
+        for name in ["library", "vocabulary", "pronunciations"] { XCTAssertFalse(ControlServer.mutatingCommands.contains(name), name) }
+    }
+
+    func testLibraryAndWordListArguments() throws {
+        let seen = Recorder()
+        let server = try startServer(seen)
+        defer { server.stop() }
+        let id = "0F8E2C1A-4B7D-4E3A-9C55-1D2E3F4A5B6C"
+        _ = try cli(["library-open", id, "--read", "1", "--from", "start"])
+        _ = try cli(["open-url", "example.com/page", "--show=1"])
+        _ = try cli(["read-pasted", "-", "--title", "Monday"], stdin: "Notes\nfor Monday")
+        _ = try cli(["vocabulary-set", "marlow key", "Marlowe", "Quay"])
+        _ = try cli(["vocabulary-suggestion", "accept", "--heard", "okafor", "--typed", "Okafor"])
+        _ = try cli(["pronunciation-set", "Nguyen", "win"])
+        _ = try cli(["models", "download", "--model", "qwen"])
+        _ = try cli(["insert-again"]); _ = try cli(["read-again", id]); _ = try cli(["dictate-cancel", "--force"])
+        XCTAssertEqual(seen.requests.map(\.args), [
+            ["id": id, "read": "1", "from": "start"], ["url": "example.com/page", "show": "1"], ["text": "Notes\nfor Monday", "title": "Monday"],
+            ["heard": "marlow key", "typed": "Marlowe Quay"], ["action": "accept", "heard": "okafor", "typed": "Okafor"],
+            ["word": "Nguyen", "say": "win"], ["action": "download", "model": "qwen"], [:], ["id": id], [:]])
+        XCTAssertTrue(seen.requests.last?.force ?? false)
+        XCTAssertEqual(try cli(["models", "download", "--model", "breeze"]).code, 2, "Breeze is not offered")
+        XCTAssertEqual(try cli(["vocabulary-suggestion", "accept", "--heard", "okafor"]).code, 2)
+        XCTAssertEqual(try cli(["library-open"]).code, 2)
+        XCTAssertEqual(try cli(["vocabulary", "--force"]).code, 2)
+    }
+
+    func testLibraryAndVocabularyListings() throws {
+        let items: JSONValue = [["id": "A1", "title": "Ferry times", "kind": "web", "added": "2026-10-24T09:00:00Z", "position": 12, "reading": true],
+                                ["id": "B2", "title": "Notes", "kind": "pasted", "added": "2026-10-23T09:00:00Z", "position": 0, "reading": false]]
+        var server = try startServer(Recorder(), response: ControlResponse(ok: true, data: ["items": items, "count": 2]))
+        XCTAssertEqual(try cli(["library"]).out, "A1  web  Ferry times  <- reading\nB2  pasted  Notes\n")
+        server.stop()
+        let entries: JSONValue = [["heard": "marlow key", "typed": "Marlowe Quay"]]
+        let suggestions: JSONValue = [["heard": "okafor", "typed": "Okafor"]]
+        server = try startServer(Recorder(), response: ControlResponse(ok: true, data: ["entries": entries, "suggestions": suggestions]))
+        defer { server.stop() }
+        XCTAssertEqual(try cli(["vocabulary"]).out, """
+            marlow key  ->  Marlowe Quay
+            Suggestions from your corrections (talkread vocabulary-suggestion accept|dismiss --heard … --typed …):
+              okafor  ->  Okafor
+
+            """)
     }
 
     // MARK: request mapping

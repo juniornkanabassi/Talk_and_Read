@@ -89,6 +89,8 @@ extension EngineKind {
 
     /// Additive (not in ESSENTIALS): true while the shortcut recorder is listening, so the global hotkeys stand down.
     @Published var hotkeysPaused = false
+    /// Bumped when the control socket changes vocabulary.json or pronunciations.json, so an open editor reloads them.
+    @Published private(set) var wordListsRevision = 0
 
     /// Replaceable so the control self-test can read with a silent engine.
     var engines = Engines()
@@ -259,7 +261,8 @@ extension EngineKind {
     }
 
     /// Downloads one of `engines.downloadables()` (Qwen3, Parakeet v3, the Kokoro French pack). Only from the user's
-    /// click on the Models or Voices page (PLAN 0.3.0 rev. 6): nothing calls this on its own.
+    /// click on the Models or Voices page (PLAN 0.3.0 rev. 6), or an explicit `talkread models download --model`, which
+    /// never offers Breeze (its licence is shown beside its download): nothing calls this on its own.
     func download(_ title: String) {
         guard let d = engines.downloadables().first(where: { $0.title == title }), !d.isModelInstalled else { return }
         if case .downloading = downloadStates[title] { return }
@@ -573,15 +576,23 @@ extension EngineKind {
     func insertAgain(_ id: UUID) {
         NSApp.hide(nil)
         Task {
-            guard let app = await Self.otherFrontmostApp(within: 1) else {
+            guard let outcome = await reinsertInOtherApp(id) else {
                 return MiniPlayer.shared.flash("Click where the text should go, then try again")
             }
-            switch await dictation.reinsert(id, targetPID: app.processIdentifier) {
+            switch outcome.result {
             case .inserted: break
             case .refusedSecure: MiniPlayer.shared.flash(Inserter.refusal())
             case .failed(let reason): MiniPlayer.shared.flash(reason)
             }
         }
+    }
+
+    /// Insert again's typing, shared with `talkread insert-again`: hides Talk & Read if it is in front, then types the
+    /// entry into the app that is (or comes) forward. nil when no other app comes forward within a second.
+    func reinsertInOtherApp(_ id: UUID) async -> (app: NSRunningApplication, result: InsertResult)? {
+        if NSApp.isActive { NSApp.hide(nil) }
+        guard let app = await Self.otherFrontmostApp(within: 1) else { return nil }
+        return (app, await dictation.reinsert(id, targetPID: app.processIdentifier))
     }
 
     /// The frontmost app once it is not Talk & Read, waiting up to `seconds`; nil if none comes forward.
@@ -715,6 +726,25 @@ extension EngineKind {
     /// Home's "paste and listen": text typed into Talk & Read itself, kept in the history as read in Talk & Read.
     /// (Read again, the CLI's `speak` and library documents are not recorded: they would fill the history with repeats.)
     func recordOwnRead(_ text: String) { appendRead(text, app: nil, bundleID: nil) }
+
+    /// Home's play button and `talkread read-pasted`: keeps the text in the Library as pasted text (titled by its first
+    /// line unless `title` is given), reads it as the read reserved as `id`, and records it in the History.
+    @discardableResult func readPasted(_ text: String, title: String? = nil, id: UUID) -> (item: LibraryItem, session: ReadSession) {
+        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Pasted text"
+        let item = importText(text, title: title ?? String(firstLine.prefix(60)))
+        let s = startDocument(item, text: text, fromToken: nil, id: id)
+        recordOwnRead(text)
+        return (item, s)
+    }
+
+    /// Changes vocabulary.json or pronunciations.json in the format the Settings editors write, then has any open editor
+    /// reload (the control socket's word list commands).
+    func updateWordList(_ url: URL, _ change: (inout [String: String]) -> Void) throws {
+        var map = WordMapEditor.load(url)
+        change(&map)
+        try WordMapEditor.save(map, to: url)
+        wordListsRevision += 1
+    }
 
     /// The Home history's Delete.
     func deleteRead(_ id: UUID) {

@@ -44,7 +44,8 @@ try {
   check(init.result?.serverInfo?.name === 'talkread', 'initialize', `version ${init.result?.serverInfo?.version}`);
   const listed = await rpc('tools/list');
   const names = (listed.result?.tools ?? []).map(tool => tool.name);
-  check(names.length >= 21 && ['status', 'voices', 'speak', 'dictate_file', 'mic', 'update_check'].every(n => names.includes(n)), 'tools/list', `${names.length} tools`);
+  check(names.length >= 39 && ['status', 'voices', 'speak', 'dictate_file', 'mic', 'update_check', 'library', 'history_delete', 'vocabulary']
+    .every(n => names.includes(n)), 'tools/list', `${names.length} tools`);
   for (const name of ['status', 'voices']) {
     const called = await rpc('tools/call', { name, arguments: {} });
     const body = JSON.parse(called.result?.content?.[0]?.text ?? '{}');
