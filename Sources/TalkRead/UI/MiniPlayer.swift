@@ -178,7 +178,8 @@ import TalkReadCore
         let panel = MiniPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         // A drag anywhere off a control moves the card. isMovableByWindowBackground alone waits on the hosting view
         // agreeing to move the window, which SwiftUI does not promise (the pill would not move on the work Mac, 25 Oct).
-        let host = NSHostingView(rootView: MiniPlayerRoot(model: model, player: self).gesture(WindowDragGesture()))
+        // Activation events: the first drag works while Talk & Read is not the active app.
+        let host = NSHostingView(rootView: MiniPlayerRoot(model: model, player: self).gesture(WindowDragGesture()).allowsWindowActivationEvents())
         host.sizingOptions = []   // `resize` sizes the panel (bottom edge put); the content must not move the top or bottom itself
         panel.contentView = host
         panel.isFloatingPanel = true

@@ -1,12 +1,14 @@
 // Waking an app's accessibility tree for a read, and putting it back (E8). Chromium and Electron build their tree for
 // AXManualAccessibility, which is harmless elsewhere and stays set. AXEnhancedUserInterface can upset window managers
-// and animations, so it is set only for an app that still exposes no text after that, and reverted when the read ends.
+// and animations, so it is set only for an app that still exposes no word geometry after that, and reverted when the
+// read ends. Geometry, not text: OpenAI's ChatGPT app exposes its text for AXManualAccessibility but answers
+// AXBoundsForRange only once AXEnhancedUserInterface is on, so a text-only test left it without a highlight (work Mac, 25 Oct).
 import AppKit
 import ApplicationServices
 
 @MainActor enum AXWake {
     private static let enhanced = "AXEnhancedUserInterface" as CFString
-    private static let textRoles: Set<String> = ["AXWebArea", "AXStaticText", "AXTextArea", "AXTextField"]
+    private static let textRoles: Set<String> = ["AXStaticText", "AXTextArea", "AXTextField"]
     /// pids whose AXEnhancedUserInterface we turned on. The value to restore is always false: an app that already had it
     /// on is never touched, so it never enters the ledger.
     private static var ledger = Set<pid_t>()
@@ -27,7 +29,7 @@ import ApplicationServices
         AXUIElementSetMessagingTimeout(probe, 0.1)
         for attempt in 0..<6 {
             // Scoped short timeout for the whole walk: the window and children it reaches are other elements than `probe`.
-            if PointerCapture.bounded(0.25, { exposesText(probe, until: deadline) }) { return }
+            if PointerCapture.bounded(0.25, { exposesGeometry(probe, until: deadline) }) { return }
             guard attempt < 5, ContinuousClock.now < deadline else { break }
             try? await Task.sleep(for: .milliseconds(50))
         }
@@ -60,8 +62,9 @@ import ApplicationServices
         ledger = ledger.filter { NSRunningApplication(processIdentifier: $0).map { !$0.isTerminated } ?? false }
     }
 
-    /// An AXWebArea or a text element within the focused (else first) window; a bounded breadth-first look, by count and by time.
-    private static func exposesText(_ app: AXUIElement, until deadline: ContinuousClock.Instant) -> Bool {
+    /// A text element with text that answers AXBoundsForRange, within the focused (else first) window; a bounded
+    /// breadth-first look, by count and by time.
+    private static func exposesGeometry(_ app: AXUIElement, until deadline: ContinuousClock.Instant) -> Bool {
         guard let window = axElement(app, kAXFocusedWindowAttribute) ?? (axAttribute(app, kAXWindowsAttribute) as? [AXUIElement])?.first
         else { return false }
         // A titled window always has its title as an AXStaticText child; that is not the app's text.
@@ -71,7 +74,9 @@ import ApplicationServices
         while !queue.isEmpty, visited < 300, ContinuousClock.now < deadline {
             let node = queue.removeFirst()
             visited += 1
-            if let role = axAttribute(node, kAXRoleAttribute) as? String, textRoles.contains(role) { return true }
+            if let role = axAttribute(node, kAXRoleAttribute) as? String, textRoles.contains(role),
+               let value = axAttribute(node, kAXValueAttribute) as? String, !value.isEmpty,
+               let rect = axBounds(node, location: 0, length: 1), rect.width > 0, rect.height > 0 { return true }
             queue += (axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]) ?? []
         }
         return false

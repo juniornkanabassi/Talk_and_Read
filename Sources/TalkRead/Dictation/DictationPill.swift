@@ -87,7 +87,7 @@ import TalkReadCore
         // mouse-tracking monitor, add it if clicks on the pill body are ever missed underneath.
         // Dragged off its buttons, it moves for this dictation (Junior, 25 Oct); the next one shows at the bottom again.
         let host = NSHostingView(rootView: DictationPillView(dictation: dictation) { [weak self] in self?.resize(to: $0) }
-            .gesture(WindowDragGesture()))
+            .gesture(WindowDragGesture()).allowsWindowActivationEvents())
         host.sizingOptions = []   // the panel follows the content through `resize`, not the other way round
         panel.contentView = host
         self.panel = panel
