@@ -35,6 +35,7 @@ import TalkReadCore
     /// Apps hover mode asked to build their tree (AXManualAccessibility: harmless, and it stays set).
     private var asked = Set<pid_t>()
     private var settingsWatch: AnyCancellable?
+    private var spaceWatch: NSObjectProtocol?
     static let restDelay = 0.3
 
     final class Panel: NSPanel {
@@ -45,6 +46,10 @@ import TalkReadCore
     func attach(_ model: AppModel) {
         self.model = model
         settingsWatch = model.$settings.map(\.readHereHover).removeDuplicates().sink { [weak self] in self?.setHover($0) }
+        // Another Space shows other windows: a hover glyph would read a paragraph no longer on screen (the panel joins every Space).
+        spaceWatch = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.spaceChanged() }
+        }
     }
 
     // MARK: The reveal key
@@ -173,6 +178,12 @@ import TalkReadCore
     }
 
     // MARK: Hover mode
+
+    private func spaceChanged() {
+        guard timer == nil else { return }
+        hidePanel()
+        (block, rest) = (nil, nil)
+    }
 
     private func setHover(_ on: Bool) {
         hoverTimer?.invalidate()

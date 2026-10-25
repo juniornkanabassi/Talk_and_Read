@@ -115,6 +115,19 @@ enum PointerCapture {
         return best
     }
 
+    /// The last of `element`'s following siblings in its column: a sibling beside the column (a sidebar) ends it.
+    private static func lastInColumn(after element: AXUIElement, frame: CGRect, in area: AXUIElement) -> AXUIElement {
+        let siblings = (axAttribute(area, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+        guard let i = siblings.firstIndex(where: { CFEqual($0, element) }) else { return area }
+        var last = element
+        for sibling in siblings[(i + 1)...].prefix(2000) {
+            guard let f = axFrame(sibling), !f.isEmpty else { continue }
+            if f.maxX <= frame.minX + 1 || f.minX >= frame.maxX - 1 { break }
+            last = sibling
+        }
+        return last
+    }
+
     /// A child of `parent` beside `column` rather than above or below it (a sidebar, a second pane): the parent holds
     /// more than one column.
     private static func hasSideBySide(_ parent: AXUIElement, beside column: AXUIElement) -> Bool {
@@ -170,7 +183,9 @@ enum PointerCapture {
         guard end > start, !ns.substring(with: NSRange(location: start, length: end - start)).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let frame = axBounds(element, location: start, length: end - start), !frame.isEmpty,
               frame.contains(point) else { return nil }   // the nearest character to a margin or a gap is not under it
-        return Block(pid: pid, element: element, frame: frame, start: start, length: end - start)
+        // The scroll view showing the text, where the glyph stays when the paragraph's first line is scrolled away.
+        let scroll = axElement(element, kAXParentAttribute).flatMap { (axAttribute($0, kAXRoleAttribute) as? String) == "AXScrollArea" ? axFrame($0) : nil }
+        return Block(pid: pid, element: element, frame: frame, start: start, length: end - start, viewport: scroll)
     }
 
     private static func hasText(_ element: AXUIElement, area: AXUIElement) -> Bool {
@@ -196,9 +211,10 @@ enum PointerCapture {
             return Capture(text: tail, pid: block.pid, element: block.element, window: window, selectionStart: start, source: .pointer)
         }
         guard let area = TextCapture.webArea(of: block.element) else { return nil }
-        // A paragraph straight under the page (plain HTML) has no column of its own: the page is the column.
-        let parent = axElement(block.element, kAXParentAttribute)
-        let end = parent.map { CFEqual($0, area) } == true ? area : column(of: block.element, frame: block.frame, area: area)
+        // A paragraph straight under the page (plain HTML) has no column element: the read ends at the last block after it
+        // in its column. The text-node walk then covers the page, since that block is no ancestor to walk under.
+        let direct = axElement(block.element, kAXParentAttribute).map { CFEqual($0, area) } == true
+        let end = direct ? lastInColumn(after: block.element, frame: block.frame, in: area) : column(of: block.element, frame: block.frame, area: area)
         if let own = markerRange(of: block.element, in: area), let page = markerRange(of: end, in: area),
            let range = axParameterizedAttribute(area, "AXTextMarkerRangeForUnorderedTextMarkers",
                                                 parameter: [AXTextMarkerRangeCopyStartMarker(own), AXTextMarkerRangeCopyEndMarker(page)] as CFArray),
@@ -216,7 +232,7 @@ enum PointerCapture {
             return TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
         }
         // No text markers: the page's text nodes from the block on, in document order.
-        let nodes = textNodes(under: end, from: block.element, limit: 6000)
+        let nodes = textNodes(under: direct ? area : end, from: block.element, limit: 6000)
         let text = ReadHere.join(nodes.map { node in
             let f = axFrame(node.element)
             return (node.text, f.map { Double($0.minY) }, f.map { Double($0.maxY) }, f.map { Double($0.minX) }, f.map { Double($0.maxX) })
