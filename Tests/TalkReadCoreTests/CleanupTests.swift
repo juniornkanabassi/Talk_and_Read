@@ -84,7 +84,9 @@ final class CleanupTests: XCTestCase {
         XCTAssertEqual(fr("Vraiment point d'exclamation point d'interrogation"), "Vraiment!?")
         XCTAssertEqual(fr("Point d'interrogation Hakimi avant le Clasico."), "Point d'interrogation Hakimi avant le Clasico.")
         XCTAssertEqual(fr("Il arrive point d'interrogation. Oui"), "Il arrive? Oui", "the recogniser's own mark is replaced")
-        XCTAssertEqual(fr("Deux choses colon la vitesse"), "Deux choses: la vitesse", "English colon still works with French on")
+        XCTAssertEqual(fr("Il était colon en Algérie."), "Il était colon en Algérie.", "colon is a French word")
+        XCTAssertEqual(fr("Two things semicolon speed"), "Two things; speed", "semicolon still works with French on")
+        XCTAssertEqual(clean("Two things colon speed"), "Two things: speed")
         XCTAssertEqual(Cleanup.apply("Le colon réclame.", vocabulary: [:], removeFillers: true, languages: ["fr"]), "Le colon réclame.")
         // A filler between commas leaves one comma, which may be one the sentence needs.
         XCTAssertEqual(clean("We visited Paris, um, London and Rome."), "We visited Paris, London and Rome.")

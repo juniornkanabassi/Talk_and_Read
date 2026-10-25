@@ -93,11 +93,12 @@ public enum Cleanup {
         // paragraphe", "deux points") are ordinary French ("la virgule est mal placée", "un nouveau paragraphe au contrat",
         // "le ballon sort à la ligne") and Parakeet v3 punctuates French well by itself, so they are left as words; so is a
         // mark after a determiner or a common adjective ("votre point-virgule", "un grand point d'interrogation", "aucun
-        // point d'interrogation"). A spoken "?" or "!" also has to end the clause: end of text, a mark, a new line, a
-        // capital (the recogniser starts the next sentence with one) or another command, and not open the text or a line; "un point d'interrogation demeure
-        // sur sa participation" is prose. Quotes only as the imperative ("je viens d'ouvrir les guillemets" is prose).
-        // English "colon" is French for settler: "le colon réclame" stays. An adjective outside the list ("un immense
-        // point d'interrogation.") can still slip through; no word list closes that.
+        // point d'interrogation"). A spoken "?" or "!" also has to end the clause (end of text, a mark, a new line, a
+        // capital, which the recogniser starts the next sentence with, or another command) and not open the text or a
+        // line: "un point d'interrogation demeure sur sa participation" is prose. Quotes only as the imperative ("je viens
+        // d'ouvrir les guillemets" is prose). English "colon" is a French noun ("il était colon en Algérie"), so with
+        // French on it is a word, not ":". An adjective outside the list ("un immense point d'interrogation.") can still
+        // slip through; no word list closes that.
         let noDeterminer = "(?<!\\b(?:un|une|le|la|l['’]|du|au|aux|ce|cet|cette|les|des|mes|tes|ses|nos|vos|leurs|mon|ton|son|notre|votre|leur|aucun|chaque|quel|quelque|grand|gros|petit|vrai|seul|dernier|premier|énorme|immense|ancien|nouveau|autre|même|simple|sacré|véritable|beau|léger|unique|seconde?)[ \\t]{1,3})"
         let frenchCommand = "point d['’](?:interrogation|exclamation)|point[ -]virgule|(?:ouvrez|fermez) les guillemets"
         let englishCommand = english.map(\.0).joined(separator: "|")
@@ -106,7 +107,7 @@ public enum Cleanup {
         return [("\(noDeterminer)point[ -]virgule", ";"), ("\(notFirst)\(noDeterminer)point d['’]interrogation\(endsClause)", "?"),
                 ("\(notFirst)\(noDeterminer)point d['’]exclamation\(endsClause)", "!"),
                 ("(?<!\\bd['’]|\\bde[ \\t])ouvrez les guillemets", openQuote), ("(?<!\\bd['’]|\\bde[ \\t])fermez les guillemets", closeQuote)]
-            + english.map { $0.0 == "colon" ? ("\(noDeterminer)colon", $0.1) : $0 }
+            + english.filter { $0.0 != "colon" }
     }
 
     /// The placeholder a spoken command stands as until all are found (private use, stripped from the input).
