@@ -268,6 +268,15 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(cited("There was no consideration.12"), "There was no consideration.")
     }
 
+    func testLinkedMarksAndALongGapAfterAChunk() {
+        XCTAssertEqual(cited("It was Law.[12](#note) Then"), "It was Law. Then")
+        XCTAssertEqual(cited("Claim [citation needed](https://example.com) here."), "Claim here.")
+        XCTAssertEqual(cited("A [link](https://example.com) and [3](#n) stay."), "A link and 3 stay.")
+        // The look-ahead runs out in spaces: no crash, and too little evidence to drop the 12.
+        let s = "void.12" + String(repeating: " ", count: 100) + "Next"
+        XCTAssertEqual(Speakable.make(s, range: 0..<7, lexicon: [:], skipCitations: true).text, "void.12")
+    }
+
     func testMarksAfterQuestionAndExclamationMarks() {
         XCTAssertEqual(cited("Was it lawful?[12] Then"), "Was it lawful? Then")
         XCTAssertEqual(cited("What a goal!¹ Then"), "What a goal! Then")

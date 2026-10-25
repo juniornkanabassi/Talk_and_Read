@@ -250,7 +250,7 @@ private struct Maker {
         var r = q   // what follows in the source (past the chunk's end): the line's or text's end, or spaces then a capital
         while r < u.count, u[r] == 0x20 || u[r] == 0x09 || u[r] == 0xA0 { r += 1 }
         guard r == u.count && endsText || r < u.count && (u[r] == 0x0A || u[r] == 0x0D)
-                || r > q && Unicode.Scalar(UInt32(u[r])).map({ CharacterSet.uppercaseLetters.contains($0) }) == true else { return nil }
+                || r < u.count && r > q && Unicode.Scalar(UInt32(u[r])).map({ CharacterSet.uppercaseLetters.contains($0) }) == true else { return nil }
         var w = p - 1   // back over the punctuation to the word (a closer may follow an ender: "end.”12")
         while w > 0, closers.contains(u[w]) || enders.contains(u[w]) { w -= 1 }
         let name = word(endingAt: w + 1)
@@ -269,9 +269,16 @@ private struct Maker {
                 lineStart = false
             }
             if citations {
-                // "[citation needed]" is never a reference to read, spaced or not.
-                if c == 0x5B, match(Rx.link, p, to) == nil, let m = match(Rx.citation, p, to),
-                   glued(p) || (slice as NSString).substring(with: m.range).lowercased().contains("needed") { p += m.range.length; continue }
+                // "[citation needed]" is never a reference to read, spaced or not. A link whose label is a mark
+                // ("Law.[12](#note)") is a mark too: the whole link goes.
+                if c == 0x5B {
+                    let link = match(Rx.link, p, to), label = link?.range(at: 1)
+                    let mark = label.map { t in match(Rx.citation, p, t.location + t.length + 1).flatMap { $0.range.length == t.length + 2 ? $0 : nil } }
+                        ?? match(Rx.citation, p, to)
+                    if let mark, glued(p) || (slice as NSString).substring(with: mark.range).lowercased().contains("needed") {
+                        p += link?.range.length ?? mark.range.length; continue
+                    }
+                }
                 if let n = footnoteMark(p, to) { p += n; continue }
             }
             if p == from || !Maker.isWord(u[p - 1]) {
