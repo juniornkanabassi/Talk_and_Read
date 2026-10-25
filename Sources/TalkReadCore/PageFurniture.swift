@@ -51,7 +51,9 @@ public enum PageFurniture {
 
         var found: [Range<Int>] = []
         // The same line on many pages.
-        for group in Dictionary(grouping: lines, by: \.exact).values where Set(group.map(\.page)).count >= needed {
+        // A repeated sentence ("Explain your answer.") is an instruction, not a running head or footer.
+        let prose = Set(lines.filter { $0.exact.last.map { ".?!".contains($0) } ?? false }.map(\.exact))
+        for group in Dictionary(grouping: lines, by: \.exact).values where Set(group.map(\.page)).count >= needed && !prose.contains(group[0].exact) {
             found += group.map(\.range)
         }
         // A page number whose (first) number is the page's index plus a fixed offset ("Page 3 of 40" follows by its 3).

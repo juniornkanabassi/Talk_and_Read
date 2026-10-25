@@ -216,6 +216,8 @@ private struct Maker {
     func glued(_ p: Int) -> Bool {
         guard p > 0 else { return false }
         let before = u[p - 1]
+        // "paras [12],[13]": a comma straight after a bracket continues a list of references, which is read.
+        if before == 0x2C, p > 1, u[p - 2] == 0x5D { return false }
         return Maker.isWord(before) && !Maker.isDigit(before) || ".,;:)]\"'”’".utf16.contains(before)
     }
 
@@ -260,7 +262,9 @@ private struct Maker {
                 lineStart = false
             }
             if citations {
-                if c == 0x5B, glued(p), match(Rx.link, p, to) == nil, let m = match(Rx.citation, p, to) { p += m.range.length; continue }
+                // "[citation needed]" is never a reference to read, spaced or not.
+                if c == 0x5B, match(Rx.link, p, to) == nil, let m = match(Rx.citation, p, to),
+                   glued(p) || (slice as NSString).substring(with: m.range).lowercased().contains("needed") { p += m.range.length; continue }
                 if let n = footnoteMark(p, to) { p += n; continue }
             }
             if p == from || !Maker.isWord(u[p - 1]) {
