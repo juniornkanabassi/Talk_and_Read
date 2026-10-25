@@ -64,6 +64,9 @@ import TalkReadCore
 
     private let engines: Engines
     private let lexicon: [String: String]
+    /// Source ranges never spoken (a PDF's running headers and footers), and whether citation marks are dropped.
+    private let skip: [Range<Int>]
+    private let skipCitations: Bool
     private let startToken: Int
     private let fallback: Voice?
     private var producer: Task<Void, Never>?
@@ -85,7 +88,8 @@ import TalkReadCore
     private var fallbackWarming: Date?
 
     /// `fallback`: the Kokoro voice of the same language the read switches to if `voice`'s engine cannot keep up (V3).
-    init(text: String, capture: Capture?, voice: Voice, rate: Float, startToken: Int, engines: Engines, lexicon: [String: String], fallback: Voice? = nil) {
+    init(text: String, capture: Capture?, voice: Voice, rate: Float, startToken: Int, engines: Engines, lexicon: [String: String], fallback: Voice? = nil,
+         skip: [Range<Int>] = [], skipCitations: Bool = false) {
         self.text = text
         self.tokens = TextKit.tokenize(text)
         self.capture = capture
@@ -93,6 +97,8 @@ import TalkReadCore
         self.effectiveVoice = voice
         self.engines = engines
         self.lexicon = lexicon
+        self.skip = skip
+        self.skipCitations = skipCitations
         self.startToken = startToken
         self.fallback = fallback
         player.rate = rate
@@ -279,7 +285,9 @@ import TalkReadCore
         player.moreComing = false
     }
 
-    private func speakable(_ c: Chunk) -> Speakable { Speakable.make(text, range: c.range, lexicon: lexicon, language: voice.language) }
+    private func speakable(_ c: Chunk) -> Speakable {
+        Speakable.make(text, range: c.range, lexicon: lexicon, language: voice.language, skip: skip, skipCitations: skipCitations)
+    }
 
     /// The next slow chunk under the time budget (PLAN 0.3.0 Sol revision 2): the largest one (at most `slowChars`) whose
     /// measured cost leaves at least `spare` plus the fallback's per-character time for it buffered at the current rate.

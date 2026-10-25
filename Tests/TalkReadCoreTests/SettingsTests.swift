@@ -137,6 +137,10 @@ final class SettingsTests: XCTestCase {
         try s.set("dictationHoldKey", to: "off"); XCTAssertEqual(s.dictationHoldKey, .off)
         try s.set("highlightHex", to: "#abcdef"); XCTAssertEqual(s.highlightHex, "#ABCDEF")
         try s.set("historyLimit", to: "1e30"); XCTAssertEqual(s.historyLimit, 5000)
+        try s.set("tintHex", to: "#ff66aa"); XCTAssertEqual(s.tintHex, "#FF66AA")
+        try s.set("tintHex", to: "same"); XCTAssertNil(s.tintHex)
+        try s.set("skipCitations", to: "off"); XCTAssertFalse(s.skipCitations)
+        try s.set("skipHeadersAndFooters", to: "no"); XCTAssertFalse(s.skipHeadersAndFooters)
         func code(_ key: String, _ value: String) -> String? {
             var copy = Settings()
             do { try copy.set(key, to: value); return nil } catch { return (error as? ControlError)?.code }
@@ -147,6 +151,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(code("tintEnabled", "maybe"), "invalid_value")
         XCTAssertEqual(code("dictationHoldKey", "left"), "invalid_value")
         XCTAssertEqual(code("highlightHex", "red"), "invalid_value")
+        XCTAssertEqual(code("tintHex", "pink"), "invalid_value")
         for key in Settings.chords.map(\.key) + ["miniPlayerOrigin"] { XCTAssertEqual(code(key, "x"), "read_only_setting", key) }
         try s.set("dictationHoldKey", to: "rightCommand"); XCTAssertEqual(s.dictationHoldKey, .rightCommand)
         var untouched = Settings()
@@ -162,7 +167,10 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃A"))
         XCTAssertEqual(json["skipForwardShortcut"]?.objectValue, ["keyCode": .number(14), "modifiers": .number(524_288), "display": .string("⌥E")])
         XCTAssertNil(json["miniPlayerOrigin"])
-        XCTAssertEqual(Settings.keys.count, 34)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0)
+        XCTAssertEqual(Settings.keys.count, 37)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + tintHex, skipCitations, skipHeadersAndFooters
+        XCTAssertNil(json["tintHex"], "the tint follows the word colour until one is chosen")
+        XCTAssertEqual(json["skipCitations"], .bool(true))
+        XCTAssertEqual(json["skipHeadersAndFooters"], .bool(true))
         XCTAssertEqual(Set(Settings.chords.map(\.key)).count, 9)
         XCTAssertTrue(Settings.chords.allSatisfy { Settings.keys.contains($0.key) }, "every chord is a settings key")
         XCTAssertTrue(Settings.keys.contains("miniPlayerOrigin"))

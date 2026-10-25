@@ -136,6 +136,7 @@ private struct ReaderPage: View {
 
     private var live: Bool { state != nil }
     private var colour: NSColor { NSColor(hex: model.settings.highlightHex) ?? Theme.accentNS }
+    private var tintColour: NSColor { model.settings.tintHex.flatMap(NSColor.init(hex:)) ?? colour }
     private var savedPosition: Int { data.library.first { $0.id == item.id }?.position ?? item.position }
 
     private var word: NSRange? {
@@ -156,9 +157,9 @@ private struct ReaderPage: View {
         ZStack(alignment: .bottom) {
             if let pdf = doc.pdf {
                 PDFReader(document: pdf, pageStarts: doc.pageStarts, word: word, sentence: sentence, colour: colour,
-                          follow: state == .playing, onClick: start(at:))
+                          tintColour: tintColour, follow: state == .playing, onClick: start(at:))
             } else {
-                TextReader(text: doc.text, word: word, sentence: sentence, colour: colour, wider: wider, follow: state == .playing,
+                TextReader(text: doc.text, word: word, sentence: sentence, colour: colour, tintColour: tintColour, wider: wider, follow: state == .playing,
                            restore: live || savedPosition <= 0 || savedPosition >= doc.tokens.count ? nil : doc.tokens[savedPosition].range.lowerBound,
                            onClick: start(at:), onSpace: playPause)
             }
@@ -278,6 +279,7 @@ struct TextReader: NSViewRepresentable {
     let word: NSRange?
     let sentence: NSRange?
     let colour: NSColor
+    let tintColour: NSColor
     let wider: Bool
     let follow: Bool
     /// UTF-16 offset to scroll to once on open (the saved reading position).
@@ -326,6 +328,7 @@ struct TextReader: NSViewRepresentable {
         view.word = word
         view.sentence = sentence
         view.colour = colour
+        view.tintColour = tintColour
         view.needsDisplay = true
         if !c.restored, let r = restore {
             c.restored = true
@@ -341,6 +344,7 @@ final class ReaderTextView: NSTextView {
     var word: NSRange?
     var sentence: NSRange?
     var colour = Theme.accentNS
+    var tintColour = Theme.accentNS
     var onClick: ((Int) -> Void)?
     var onSpace: (() -> Void)?
 
@@ -398,7 +402,7 @@ final class ReaderTextView: NSTextView {
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
         if let s = sentence {
-            colour.withAlphaComponent(0.25).setFill()
+            tintColour.withAlphaComponent(0.25).setFill()
             for r in glyphRects(s) { NSBezierPath(roundedRect: r.insetBy(dx: -2, dy: -1), xRadius: 4, yRadius: 4).fill() }
         }
         if let w = word {
@@ -446,6 +450,7 @@ struct PDFReader: NSViewRepresentable {
     let word: NSRange?
     let sentence: NSRange?
     let colour: NSColor
+    let tintColour: NSColor
     let follow: Bool
     let onClick: (Int) -> Void
 
@@ -467,7 +472,7 @@ struct PDFReader: NSViewRepresentable {
         view.pageStarts = pageStarts
         view.onClick = onClick
         var marks: [PDFSelection] = []
-        if let s = sentence, let sel = view.selection(for: s) { sel.color = colour.withAlphaComponent(0.25); marks.append(sel) }
+        if let s = sentence, let sel = view.selection(for: s) { sel.color = tintColour.withAlphaComponent(0.25); marks.append(sel) }
         let wordSelection = word.flatMap(view.selection(for:))
         if let sel = wordSelection { sel.color = colour.withAlphaComponent(0.6); marks.append(sel) }
         view.highlightedSelections = marks.isEmpty ? nil : marks

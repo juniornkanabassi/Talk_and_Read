@@ -198,6 +198,43 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(sp.sourceRange(5..<8), 8..<10)          // " b"
         XCTAssertEqual(sp.sourceRange(0..<7), 0..<10)
     }
+
+    // MARK: Skipping (Speechify's "skip citations" and "skip headers and footers")
+
+    private func cited(_ source: String) -> String {
+        Speakable.make(source, range: 0..<(source as NSString).length, lexicon: [:], skipCitations: true).text
+    }
+
+    func testCitationMarksAreNotSpokenWhenSkipped() {
+        XCTAssertEqual(cited("The contract [12] was void."), "The contract was void.")
+        XCTAssertEqual(cited("See the cases [3, 5–7] and [9a]."), "See the cases and .")
+        XCTAssertEqual(cited("It was settled [citation needed] law."), "It was settled law.")
+        XCTAssertEqual(cited("There was no consideration.12 The court agreed."), "There was no consideration. The court agreed.")
+        XCTAssertEqual(cited("As Smith¹ said, it was argued.²³ Then"), "As Smith said, it was argued. Then")
+        XCTAssertEqual(cited("He called it “a nullity”.4 Then"), "He called it “a nullity”. Then")
+        // Kept: a judgment's paragraph number, section and paragraph references, decimals, thousands, maths, years.
+        XCTAssertEqual(cited("[23] The claimant appealed."), "[23] The claimant appealed.")
+        XCTAssertEqual(cited("Under s.12 The Act and para.4 apply."), "Under s.12 The Act and para.4 apply.")
+        XCTAssertEqual(cited("It cost 3.5 or 1,000 or 12:30."), "It cost 3.5 or 1,000 or 12:30.")
+        XCTAssertEqual(cited("The area is 4 m² and x³."), "The area is 4 m² and x³.")
+        XCTAssertEqual(cited("Reported at [1990] 1 AC 12."), "Reported at [1990] 1 AC 12.")
+        XCTAssertEqual(cited("He said:\"12 men\" came."), "He said:\"12 men\" came.")
+        XCTAssertEqual(cited("A [link](https://example.com) stays."), "A link stays.")
+        // Off: unchanged.
+        XCTAssertEqual(make("The contract [12] was void.").text, "The contract [12] was void.")
+    }
+
+    func testSkippedRangesAreNotSpokenAndNotCovered() {
+        let s = "Header\nBody text here.\nFooter"   // Header 0..<6, Body 7..<22, Footer 23..<29
+        let sp = Speakable.make(s, range: 0..<29, lexicon: [:], skip: [23..<29, 0..<6])
+        XCTAssertEqual(sp.text, "Body text here.")
+        XCTAssertFalse(sp.covers(0..<6))
+        XCTAssertFalse(sp.covers(23..<29))
+        XCTAssertTrue(sp.covers(7..<11))
+        XCTAssertEqual(origin(sp, "Body", s), "Body")
+        // A range that starts before the chunk is clipped to it.
+        XCTAssertEqual(Speakable.make(s, range: 7..<29, lexicon: [:], skip: [3..<12]).text, "text here. Footer")
+    }
 }
 
 private extension NSRange {
