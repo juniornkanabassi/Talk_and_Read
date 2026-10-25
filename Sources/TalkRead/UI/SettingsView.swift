@@ -95,6 +95,14 @@ struct SettingsContent: View {
                 }
                 Toggle("Show three lines of subtitles", isOn: $model.settings.subtitlesExpanded)
             }
+            Section {
+                Toggle("Skip citations and footnote marks", isOn: $model.settings.skipCitations)
+                Toggle("Skip page headers, footers and page numbers in PDFs", isOn: $model.settings.skipHeadersAndFooters)
+            } header: {
+                Text("Reading")
+            } footer: {
+                Text("Skipped text stays on screen; it is only not read aloud. Applies from the next read.").foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }
@@ -123,16 +131,34 @@ struct SettingsContent: View {
                 set: { model.settings.highlightHex = NSColor($0).hexString })
     }
 
+    /// The tint's own colour; nil in Settings while it follows the word.
+    private var tintColour: Binding<Color> {
+        Binding(get: { Color(nsColor: model.settings.tintHex.flatMap(NSColor.init(hex:)) ?? NSColor(hex: model.settings.highlightHex) ?? Theme.accentNS) },
+                set: { model.settings.tintHex = NSColor($0).hexString })
+    }
+
+    private var tintFollowsWord: Binding<Bool> {
+        Binding(get: { model.settings.tintHex == nil },
+                set: { model.settings.tintHex = $0 ? nil : model.settings.highlightHex })
+    }
+
     private var highlight: some View {
         Form {
             Section {
-                HighlightPreview(colour: NSColor(hex: model.settings.highlightHex) ?? Theme.accentNS, tint: model.settings.tintEnabled)
+                HighlightPreview(colour: NSColor(hex: model.settings.highlightHex) ?? Theme.accentNS,
+                                 tintColour: model.settings.tintHex.flatMap(NSColor.init(hex:)), tint: model.settings.tintEnabled)
                 ColorPicker("Word colour", selection: highlightColour, supportsOpacity: false)
                 Picker("Style", selection: $model.settings.highlightStyle) {
                     Text("Box").tag("box"); Text("Outline").tag("outline"); Text("Underline").tag("underline")
                 }
                 .pickerStyle(.segmented).frame(width: 300)
                 Toggle("Tint the sentence being read", isOn: $model.settings.tintEnabled)
+                if model.settings.tintEnabled {
+                    Toggle("Tint in the word colour", isOn: tintFollowsWord)
+                    if model.settings.tintHex != nil {
+                        ColorPicker("Tint colour", selection: tintColour, supportsOpacity: false)
+                    }
+                }
                 LabeledContent("Box opacity") {
                     Slider(value: $model.settings.opacity, in: 0.1...1).frame(width: 220).accessibilityValue("\(Int(model.settings.opacity * 100)) percent")
                 }
@@ -384,9 +410,11 @@ struct ShortcutsPage: View {
     }
 }
 
-/// A sample line showing the word box and sentence tint in the chosen colour.
+/// A sample line showing the word box and sentence tint in the chosen colours.
 private struct HighlightPreview: View {
     let colour: NSColor
+    /// nil: the tint is the word colour.
+    var tintColour: NSColor? = nil
     let tint: Bool
     var body: some View {
         HStack(spacing: 0) {
@@ -397,7 +425,7 @@ private struct HighlightPreview: View {
         }
         .font(.system(size: 17))
         .padding(.vertical, 4).padding(.horizontal, 6)
-        .background(tint ? Color(nsColor: colour).opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .background(tint ? Color(nsColor: tintColour ?? colour).opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .frame(maxWidth: .infinity)
         .padding(.vertical, 6)
         .accessibilityLabel("Highlight preview")

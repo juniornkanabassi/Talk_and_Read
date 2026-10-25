@@ -2,6 +2,7 @@
 import AppKit
 import Combine
 import Foundation
+import PDFKit
 import TalkReadCore
 
 struct LibraryItem: Codable, Identifiable, Hashable {
@@ -443,17 +444,31 @@ extension EngineKind {
     /// Starts at `fromToken`, else at the saved position.
     @discardableResult func startDocument(_ item: LibraryItem, text: String, fromToken: Int?, id: UUID) -> ReadSession {
         let saved = library.first { $0.id == item.id }?.position ?? item.position
-        return startSession(text, capture: nil, id: id, startToken: fromToken ?? saved, source: "document", item: item.id)
+        return startSession(text, capture: nil, id: id, startToken: fromToken ?? saved, source: "document", item: item.id,
+                            skip: furniture(item, text: text))
+    }
+
+    /// A PDF's running headers, footers and page numbers, when Settings skips them. The pages are joined exactly as the
+    /// importer joined them; a stored text that no longer matches its PDF skips nothing.
+    // ponytail: reopens the PDF on each document read (the reader does the same on open); cache per item if a large
+    // PDF makes Play feel slow.
+    private func furniture(_ item: LibraryItem, text: String) -> [Range<Int>] {
+        guard settings.skipHeadersAndFooters, item.kind == "pdf",
+              let pdf = PDFDocument(url: Paths.documents.appendingPathComponent(item.fileName)) else { return [] }
+        let joined = Importer.pdfText(pdf)
+        guard joined.text == text else { return [] }
+        return PageFurniture.ranges(text, pageStarts: joined.pageStarts)
     }
 
     @discardableResult
     func startSession(_ text: String, capture: Capture?, id: UUID, startToken: Int = 0, voice: Voice? = nil,
-                      rate: Float? = nil, source: String? = nil, item: UUID? = nil) -> ReadSession {
+                      rate: Float? = nil, source: String? = nil, item: UUID? = nil, skip: [Range<Int>] = []) -> ReadSession {
         // One language per read (PLAN 0.3.0 rev. 8): French text reads with the French voice; an explicit voice wins.
         let v = voice ?? (Language.detect(text) == "fr" ? self.voice(for: settings.frenchVoiceID, language: "fr") : self.voice(for: settings.voiceID))
         let r = rate ?? settings.speed
         let s = ReadSession(text: text, capture: capture, voice: v, rate: r, startToken: startToken, engines: engines,
-                            lexicon: Self.loadJSON(Paths.pronunciations) ?? [:], fallback: v.engine.isLarge ? kokoroFallback(v.language) : nil)
+                            lexicon: Self.loadJSON(Paths.pronunciations) ?? [:], fallback: v.engine.isLarge ? kokoroFallback(v.language) : nil,
+                            skip: skip, skipCitations: settings.skipCitations)
         session = s
         sessionInfo = (source ?? capture.map { "\($0.source)" } ?? "provided", r, item)
         modelsWarm = true
