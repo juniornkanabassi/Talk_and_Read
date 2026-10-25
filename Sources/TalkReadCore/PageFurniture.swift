@@ -44,12 +44,15 @@ public enum PageFurniture {
             for (i, r) in all.enumerated() where (i < n || i >= all.count - n) && r.count <= maxLength {
                 let slot = i < n ? i : i - all.count
                 let s = String(decoding: u[r], as: UTF16.self).lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
-                // An answer option or list item ("A. Yes", "(b) No", "3) Cost", "• None") is body, however often it repeats;
-                // "- 7 -" is a page number, not a bullet.
-                guard s.range(of: "^(?:\\(?([a-h]|[ivx]{1,4}|[0-9]{1,2})[.)] |[•◦▪*+] |[-–—] (?![0-9]))", options: .regularExpression) == nil else { continue }
+                let shape = s.replacingOccurrences(of: "[0-9]+", with: "#", options: .regularExpression)
+                // An answer option or list item ("A. Yes", "(b) No", "3) Cost", "• None", "- 3 points") is body, however
+                // often it repeats; only a whole page-number shape ("- 7 -") starting with a dash is not a bullet.
+                guard s.range(of: "^(?:\\(?([a-h]|[ivx]{1,4}|[0-9]{1,2})[.)] |[•◦▪*+] )", options: .regularExpression) == nil,
+                      s.range(of: "^[-–—] ", options: .regularExpression) == nil
+                        || pageNumber.firstMatch(in: shape, range: NSRange(shape.startIndex..., in: shape)) != nil else { continue }
                 let first = s.split(whereSeparator: { !$0.isASCII || !$0.isNumber }).first
                 lines.append(Line(page: page, slot: slot, range: r, exact: s,
-                                  shape: s.replacingOccurrences(of: "[0-9]+", with: "#", options: .regularExpression),
+                                  shape: shape,
                                   number: first.flatMap { $0.count <= 4 ? Int($0) : nil }))
             }
         }
