@@ -92,6 +92,8 @@ public struct Settings: Codable, Equatable, Sendable {
     /// Reads from the start of the paragraph under the pointer to the end of its page, with no selection (1.0).
     public var readHereShortcut = Shortcut(keyCode: 0, modifiers: Shortcut.control | Shortcut.shift, display: "⌃⇧A")
     public var readHereKey = RevealKey.leftOption
+    /// Opt in (Junior, 25 Oct): the play glyph shows with no key, beside a web page's paragraph the pointer rests on.
+    public var readHereHover = false
     /// CoreAudio UID of the microphone dictation records from; nil = the system default input (`Microphone`).
     public var dictationMicrophone: String?
     /// The English voice (and any text not detected as French). Ids carry the model: `af_heart` (Kokoro), `qwen.us_warm` (Qwen3).
@@ -153,7 +155,7 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.pasteLastShortcut, &pasteLastShortcut); get(.dictationHoldKey, &dictationHoldKey); get(.dictationMicrophone, &dictationMicrophone)
         get(.increaseSpeedShortcut, &increaseSpeedShortcut); get(.decreaseSpeedShortcut, &decreaseSpeedShortcut)
         get(.skipBackwardShortcut, &skipBackwardShortcut); get(.skipForwardShortcut, &skipForwardShortcut)
-        get(.readHereShortcut, &readHereShortcut); get(.readHereKey, &readHereKey)
+        get(.readHereShortcut, &readHereShortcut); get(.readHereKey, &readHereKey); get(.readHereHover, &readHereHover)
         get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.showHighlight, &showHighlight); get(.highlightHex, &highlightHex); get(.highlightStyle, &highlightStyle)
         get(.tintEnabled, &tintEnabled); get(.tintHex, &tintHex); get(.opacity, &opacity); get(.showMiniPlayer, &showMiniPlayer)
         get(.miniPlayerAutoHideSeconds, &miniPlayerAutoHideSeconds); get(.miniPlayerOrigin, &miniPlayerOrigin)
@@ -275,6 +277,7 @@ public struct Settings: Codable, Equatable, Sendable {
                 throw ControlError("invalid_value", "highlightStyle must be one of: box, outline, underline.")
             }
             highlightStyle = raw
+        case "readHereHover": readHereHover = try bool()
         case "showHighlight": showHighlight = try bool()
         case "tintEnabled": tintEnabled = try bool()
         case "tintHex":

@@ -3,8 +3,12 @@
 // moves to each paragraph the pointer reaches; it stays put while the pointer travels across the margin towards it.
 // A click reads from that paragraph to the end of its page. The panel never takes focus, so the app being read stays
 // frontmost and its cursor stays where it was. Nothing runs and no panel exists while the key is up.
+// Hover mode (opt in, off by default) is Speechify's way: with no key, the glyph shows beside a paragraph of a web page
+// (a browser, the Claude or Codex app) once the pointer has rested on it, and goes when the pointer leaves it. It only
+// reads the pointer's position until it rests, and asks the app only once per resting place.
 import AppKit
 import ApplicationServices
+import Combine
 import TalkReadCore
 
 @MainActor final class ReadHereGlyph {
@@ -21,13 +25,23 @@ import TalkReadCore
     private var looking = false
     /// Apps this reveal woke (E8); put back when the glyph hides, unless a read on them is running.
     private var woken = Set<pid_t>()
+    private var hoverTimer: Timer?
+    /// Where the pointer last stopped, since when, and whether that place was looked at.
+    private var rest: (point: CGPoint, since: Double, looked: Bool)?
+    /// Apps hover mode asked to build their tree (AXManualAccessibility: harmless, and it stays set).
+    private var asked = Set<pid_t>()
+    private var settingsWatch: AnyCancellable?
+    static let restDelay = 0.3
 
     final class Panel: NSPanel {
         override var canBecomeKey: Bool { false }
         override var canBecomeMain: Bool { false }
     }
 
-    func attach(_ model: AppModel) { self.model = model }
+    func attach(_ model: AppModel) {
+        self.model = model
+        settingsWatch = model.$settings.map(\.readHereHover).removeDuplicates().sink { [weak self] in self?.setHover($0) }
+    }
 
     // MARK: The reveal key
 
@@ -114,6 +128,43 @@ import TalkReadCore
             guard timer != nil else { return }   // the key went up meanwhile
             if let found { show(found) } else if block.map({ !Self.band($0).contains(point) }) ?? true { hidePanel(); block = nil }
         }
+    }
+
+    // MARK: Hover mode
+
+    private func setHover(_ on: Bool) {
+        hoverTimer?.invalidate()
+        hoverTimer = nil
+        rest = nil
+        if !on {
+            if timer == nil { hidePanel(); block = nil }
+            return
+        }
+        let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.hoverTick() } }
+        t.tolerance = 0.05
+        RunLoop.main.add(t, forMode: .common)
+        hoverTimer = t
+    }
+
+    private func hoverTick() {
+        guard timer == nil, !looking else { return }   // the held key has the glyph
+        let point = Self.pointer(), now = ProcessInfo.processInfo.systemUptime
+        if let block, !Self.band(block).contains(point) { hidePanel(); self.block = nil }   // left the paragraph
+        guard let r = rest, hypot(r.point.x - point.x, r.point.y - point.y) < 3 else {
+            rest = (point, now, false)
+            return
+        }
+        guard !r.looked, now - r.since >= Self.restDelay else { return }
+        rest?.looked = true
+        if let block, Self.band(block).contains(point) { return }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid(), let hit = PointerCapture.hit(point) else { return }
+        if !asked.contains(hit.pid) {
+            asked.insert(hit.pid)
+            _ = AXUIElementSetAttributeValue(AXUIElementCreateApplication(hit.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        }
+        // Web pages only: in native text views the glyph would follow every click and caret.
+        guard let found = PointerCapture.block(from: hit.element, pid: hit.pid, point: point), found.start == nil else { return }
+        show(found)
     }
 
     /// Where the pointer may be and keep this glyph: the paragraph and the margin out to the glyph, in AX coordinates.

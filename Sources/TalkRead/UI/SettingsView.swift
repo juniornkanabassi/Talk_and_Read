@@ -397,6 +397,10 @@ struct ShortcutsPage: View {
                         }
                         .labelsHidden().pickerStyle(.menu).fixedSize()
                     }
+                    Divider()
+                    row("Play button on hover", "No key: shows ▶ when the pointer rests on a web page's paragraph") {
+                        Toggle("Play button on hover", isOn: $model.settings.readHereHover).labelsHidden().toggleStyle(.switch)
+                    }
                     ForEach(Self.readingKeys, id: \.self) { key in
                         Divider()
                         recorderRow(key)

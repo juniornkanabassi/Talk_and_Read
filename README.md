@@ -12,7 +12,7 @@ Talk & Read 1.0 is the first public release. I use it every day, but it is built
 
 ## What it does
 
-Select text in almost any app and press ⌃A. Talk & Read reads it aloud and highlights each word in place as it is spoken, following the page when it scrolls. With nothing selected, hold left Option and click the small play button beside any paragraph, or point at it and press ⌃⇧A, to read from there to the end of the page: this works in web pages, the Claude and Codex apps and most text views. Where an app hides its text from the rest of the system, the words show in the player instead. The reader also opens PDFs, Word documents, EPUBs, Markdown, RTF and web pages, and remembers where you stopped.
+Select text in almost any app and press ⌃A. Talk & Read reads it aloud and highlights each word in place as it is spoken, following the page when it scrolls. With nothing selected, hold left Option and click the small play button beside any paragraph, or point at it and press ⌃⇧A, to read from there to the end of the page: this works in web pages, the Claude and Codex apps and most text views. Settings ▸ Shortcuts can also show the play button with no key, when the pointer rests on a web page's paragraph (off unless you turn it on). Where an app hides its text from the rest of the system, the words show in the player instead. The reader also opens PDFs, Word documents, EPUBs, Markdown, RTF and web pages, and remembers where you stopped.
 
 The default voices are Kokoro, with American and British accents. You can also download the Qwen3-TTS and Breeze voices. Once you download the French voice files (about 100 MB), French text is detected and read by a French voice. Speed runs from 0.5× to 3× and keeps each voice's natural pitch.
 
