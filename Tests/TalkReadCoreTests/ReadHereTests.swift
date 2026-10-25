@@ -93,4 +93,9 @@ final class ReadHereTests: XCTestCase {
         XCTAssertEqual(old.readHereKey, .leftOption, "a file from before 1.0 gets the default")
         XCTAssertEqual(old.action(keyCode: 0, modifiers: Settings.Shortcut.control | Settings.Shortcut.shift), .readHere)
     }
+
+    func testAnOlderFileWithNoClashGetsTheDefault() throws {
+        let old = try JSONDecoder().decode(Settings.self, from: Data(#"{"readShortcut":{"keyCode":0,"modifiers":262144,"display":"⌃A"}}"#.utf8))
+        XCTAssertEqual(old.readHereShortcut, Settings().readHereShortcut)
+    }
 }

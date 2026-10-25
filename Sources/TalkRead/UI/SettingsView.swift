@@ -380,6 +380,9 @@ struct ShortcutsPage: View {
                             Text("Off").tag(TalkReadCore.Settings.HoldKey.off)
                         }
                         .labelsHidden().pickerStyle(.menu).fixedSize()
+                        .onChange(of: model.settings.dictationHoldKey) {   // dictation takes Fn from the play button (as validated() does)
+                            if model.settings.dictationHoldKey == .fn, model.settings.readHereKey == .fn { model.settings.readHereKey = .leftOption }
+                        }
                     }
                     ForEach(Self.dictationKeys, id: \.self) { key in
                         Divider()
@@ -392,7 +395,7 @@ struct ShortcutsPage: View {
                     row("Play button", "Hold the key on its own, then click ▶ beside a paragraph") {
                         Picker("Show the play button", selection: $model.settings.readHereKey) {
                             Text("Hold left Option").tag(TalkReadCore.Settings.RevealKey.leftOption)
-                            Text("Hold Fn").tag(TalkReadCore.Settings.RevealKey.fn)
+                            if model.settings.dictationHoldKey != .fn { Text("Hold Fn").tag(TalkReadCore.Settings.RevealKey.fn) }
                             Text("Off").tag(TalkReadCore.Settings.RevealKey.off)
                         }
                         .labelsHidden().pickerStyle(.menu).fixedSize()
