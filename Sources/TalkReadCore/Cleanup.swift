@@ -21,7 +21,13 @@ public enum Cleanup {
         text = webForms(text)
         text = replaceAll(urlPattern, in: text) { hold(lowerHost($0[0])) }
 
-        if removeFillers { text = text.replacingOccurrences(of: fillerPattern(languages), with: "", options: .regularExpression) }
+        if removeFillers {
+            // "que, euh, c'est" is "que c'est": a filler between two commas takes the first one with it (the pattern less
+            // its "(?i)" and with its comma required).
+            let filler = fillerPattern(languages)
+            text = text.replacingOccurrences(of: ",(?=\(filler.dropFirst(4).dropLast(1)))", with: "", options: [.regularExpression, .caseInsensitive])
+            text = text.replacingOccurrences(of: filler, with: "", options: .regularExpression)
+        }
 
         // A spoken mark replaces one the recogniser already wrote ("John, comma" is "John,", not "John,,"; Parakeet v3
         // punctuates by itself). Line breaks, quotes and dashes keep what comes before them. Commands become placeholders
@@ -78,8 +84,7 @@ public enum Cleanup {
         return "(?i)[ \\t]*\\b(?:\(drop.filter { seen.insert($0).inserted }.joined(separator: "|")))\\b,?"
     }
 
-    /// Whole spoken phrases and what they become; French ones too when French is a dictation language ("point" alone is
-    /// too common a word, so a full stop is "point final").
+    /// Whole spoken phrases and what they become; the unambiguous French ones too when French is a dictation language.
     private static func spoken(_ languages: [String]) -> [(String, String)] {
         let english: [(String, String)] = [
             ("new paragraph", "\n\n"), ("new line", "\n"),
@@ -88,18 +93,13 @@ public enum Cleanup {
             ("open quote", openQuote), ("close quote", closeQuote), ("dash", " – ")
         ]
         guard languages.contains("fr") else { return english }
-        // "point final" and "à la ligne" are also ordinary French ("mettre un point final à", "à la ligne de touche"), so
-        // they count only at a clause end (the recogniser's own mark, another command, the end, or a capital after them),
-        // "point final" never after an article and "à la ligne" never before a lone capital or a number ("la ligne B");
-        // "deux points" (a score) is not a command at all; "virgule" next to a number is a decimal comma ("deux virgule
-        // cinq buts attendus", "onze virgule 4").
-        let clauseEnd = "(?=[.,!?;:]?[ \\t]*(?:$|\\n|[\\x{E020}-\\x{E03F}])|[.,!?;:]?[ \\t]+(?-i:\\p{Lu}))"
-        let number = "(?:\\d{1,9}|zéro|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingt|trente|quarante|cinquante|soixante|cent|mille)"
-        return [("nouveau paragraphe", "\n\n"),
-                ("à la ligne(?![ \\t]+(?:(?-i:\\p{Lu})\\b|\\d))\(clauseEnd)", "\n"),
-                ("(?<!\\b(?:un|le|du|au)[ \\t]{1,3})point final\(clauseEnd)", "."),
-                ("point[ -]virgule", ";"), ("point d['’]interrogation", "?"), ("point d['’]exclamation", "!"),
-                ("(?<!\\b\(number)[ \\t]{1,3})virgule(?![ \\t]+\(number)\\b)", ","),
+        // Only phrases that are hard to mean as prose. The bare ones ("virgule", "point final", "à la ligne", "nouveau
+        // paragraphe", "deux points") are ordinary French ("la virgule est mal placée", "un nouveau paragraphe au contrat",
+        // "le ballon sort à la ligne") and Parakeet v3 punctuates French well by itself, so they are left as words; so is a
+        // mark named after an article ("un point d'interrogation plane sur le match").
+        let noArticle = "(?<!\\b(?:un|le|du|au|ce|les|des|son|leur)[ \\t]{1,3})"
+        return [("\(noArticle)point[ -]virgule", ";"), ("\(noArticle)point d['’]interrogation", "?"),
+                ("\(noArticle)point d['’]exclamation", "!"),
                 ("ouvrez les guillemets|ouvrir les guillemets", openQuote), ("fermez les guillemets|fermer les guillemets", closeQuote)]
             + english
     }

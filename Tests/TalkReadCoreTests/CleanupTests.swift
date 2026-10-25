@@ -57,21 +57,23 @@ final class CleanupTests: XCTestCase {
         XCTAssertEqual(clean("Is it ready in five seconds? question mark"), "Is it ready in five seconds?")
         XCTAssertEqual(clean("It's done. Question mark"), "It's done?")
         XCTAssertEqual(clean("Really question mark exclamation mark"), "Really?!", "a mark a command made is kept")
-        // French commands with French on; English ones still work, and "point" alone is a word.
+        // The unambiguous French commands with French on; English ones still work.
         let fr = { (s: String) in Cleanup.apply(s, vocabulary: [:], removeFillers: true, languages: ["en", "fr"]) }
-        XCTAssertEqual(fr("Bonjour virgule comment allez-vous point d'interrogation"), "Bonjour, comment allez-vous?")
-        XCTAssertEqual(fr("C'est le point important point final à la ligne Ensuite on continue"), "C'est le point important.\nEnsuite on continue")
-        // ... but not in ordinary French.
-        XCTAssertEqual(fr("Il court à la ligne de touche."), "Il court à la ligne de touche.")
-        XCTAssertEqual(fr("Nous avons deux points de retard."), "Nous avons deux points de retard.")
-        XCTAssertEqual(fr("Il faut mettre un point final à ce débat."), "Il faut mettre un point final à ce débat.")
-        XCTAssertEqual(fr("Deux virgule cinq buts attendus, 1 virgule 4 xG."), "Deux virgule cinq buts attendus, 1 virgule 4 xG.")
-        XCTAssertEqual(fr("Onze virgule cinq, et deux  virgule trois."), "Onze virgule cinq, et deux  virgule trois.".replacingOccurrences(of: "  ", with: " "))
-        XCTAssertEqual(fr("Revenons à la ligne B du tableau."), "Revenons à la ligne B du tableau.")
-        XCTAssertEqual(fr("Il faut enfin mettre un point final"), "Il faut enfin mettre un point final")
-        // The recogniser's own mark after a command, and commands one after another.
-        XCTAssertEqual(fr("C'est fini point final."), "C'est fini.")
-        XCTAssertEqual(fr("Première partie à la ligne."), "Première partie")
+        XCTAssertEqual(fr("Tu viens ce soir point d'interrogation"), "Tu viens ce soir?")
+        XCTAssertEqual(fr("Quel match point d'exclamation ouvrez les guillemets incroyable fermez les guillemets"), "Quel match! \"incroyable\"")
+        XCTAssertEqual(fr("Hello comma world full stop"), "Hello, world.")
+        XCTAssertEqual(clean("Tu viens point d'interrogation"), "Tu viens point d'interrogation", "French commands only with French on")
+        // Ordinary French that sounds like a command stays as it is (the review's probe sentences).
+        for prose in ["Il court à la ligne de touche.", "Nous avons deux points de retard.", "Il faut mettre un point final à ce débat.",
+                      "Deux virgule cinq buts attendus, 1 virgule 4 xG.", "Revenons à la ligne B du tableau.",
+                      "J'ai ajouté un nouveau paragraphe au contrat.", "Je veux mettre un vrai point final.",
+                      "Le ballon sort à la ligne. Corner pour Paris.", "Le point-virgule est souvent mal utilisé.",
+                      "La virgule est mal placée dans cette phrase.", "Un point d'interrogation plane sur le match.",
+                      "Bonjour Paul virgule une petite question?"] {
+            XCTAssertEqual(fr(prose), prose)
+        }
+        XCTAssertEqual(fr("Je pense que, euh, c'est une bonne idée."), "Je pense que c'est une bonne idée.")
+        XCTAssertEqual(clean("I think, um, we should go."), "I think we should go.")
         XCTAssertEqual(fr("Ah, the tricky part is the timing."), "The tricky part is the timing.", "an English ah is still a filler")
         XCTAssertEqual(fr("Hello comma world full stop"), "Hello, world.")
         XCTAssertEqual(clean("Bonjour virgule"), "Bonjour virgule", "French commands only with French on")
