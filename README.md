@@ -12,7 +12,7 @@ Talk & Read 1.0 is the first public release. I use it every day, but it is built
 
 ## What it does
 
-Select text in almost any app and press ⌃A. Talk & Read reads it aloud and highlights each word in place as it is spoken, following the page when it scrolls. Where an app hides its text from the rest of the system, the words show in the player instead. The reader also opens PDFs, Word documents, EPUBs, Markdown, RTF and web pages, and remembers where you stopped.
+Select text in almost any app and press ⌃A. Talk & Read reads it aloud and highlights each word in place as it is spoken, following the page when it scrolls. With nothing selected, hold left Option and click the small play button beside any paragraph, or point at it and press ⌃⇧A, to read from there to the end of the page: this works in web pages, the Claude and Codex apps and most text views. Where an app hides its text from the rest of the system, the words show in the player instead. The reader also opens PDFs, Word documents, EPUBs, Markdown, RTF and web pages, and remembers where you stopped.
 
 The default voices are Kokoro, with American and British accents. You can also download the Qwen3-TTS and Breeze voices. Once you download the French voice files (about 100 MB), French text is detected and read by a French voice. Speed runs from 0.5× to 3× and keeps each voice's natural pitch.
 
@@ -34,7 +34,7 @@ Home keeps a history of what you read and dictated, with the app each one happen
 3. The setup asks for Accessibility, so it can read your selection, draw the highlight and type for you, and for the Microphone, so you can dictate. Screen Recording is optional and lets the highlight work in apps that hide their text.
 4. It then offers to download the voice (about 90 MB) and the dictation model (about 580 MB) from Hugging Face.
 
-Select some text and press ⌃A to hear it. Hold right Option and speak to dictate.
+Select some text and press ⌃A to hear it, or hold left Option and click the play button beside a paragraph. Hold right Option and speak to dictate.
 
 ## Updates
 
@@ -86,7 +86,7 @@ Any other MCP host that runs a local command works the same way. The tool list c
 
 Nearly everything you can do in the windows and the menu has a command:
 
-- Reading: `speak`, `read-selection`, `read-file`, `read-pasted`, `read-again`, `pause`, `resume`, `stop`, `skip`, `speed`, `voice`, `voices`.
+- Reading: `speak`, `read-selection`, `read-here` (the paragraph under the pointer, no selection needed), `read-file`, `read-pasted`, `read-again`, `pause`, `resume`, `stop`, `skip`, `speed`, `voice`, `voices`.
 - Library: `open`, `open-url`, `library`, `library-open`, `library-remove`.
 - Dictation: `dictate-start`, `dictate-stop`, `dictate-cancel`, `dictate-file`, `dictation-last`, `insert-again`, `mic`, `vocabulary`, `vocabulary-set`, `vocabulary-remove`, `vocabulary-suggestion`.
 - History: `history`, `history-delete`.

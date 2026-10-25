@@ -211,7 +211,7 @@ actor ReplayCache {
 public final class ControlServer: @unchecked Sendable {
     /// Commands that change state; only these are replay-protected.
     public static let mutatingCommands: Set<String> = [
-        "speak", "read-selection", "read-file", "pause", "resume", "stop", "skip", "speed", "voice",
+        "speak", "read-selection", "read-here", "read-file", "pause", "resume", "stop", "skip", "speed", "voice",
         "dictate-start", "dictate-stop", "dictate-file", "open", "settings-set", "models", "mic", "update-check",
         "dictate-cancel", "insert-again", "open-url", "read-pasted", "read-again", "library-open", "library-remove", "history-delete",
         "vocabulary-set", "vocabulary-remove", "vocabulary-suggestion", "pronunciation-set", "pronunciation-remove", "shortcuts-reset"

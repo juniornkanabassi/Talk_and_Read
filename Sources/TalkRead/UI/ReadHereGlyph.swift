@@ -1,0 +1,219 @@
+// Read from here (1.0): the small play glyph beside the paragraph under the pointer, shown only while the reveal key
+// (left Option by default) is held on its own. While shown it looks under the pointer at most ten times a second and
+// moves to each paragraph the pointer reaches; it stays put while the pointer travels across the margin towards it.
+// A click reads from that paragraph to the end of its page. The panel never takes focus, so the app being read stays
+// frontmost and its cursor stays where it was. Nothing runs and no panel exists while the key is up.
+import AppKit
+import ApplicationServices
+import TalkReadCore
+
+@MainActor final class ReadHereGlyph {
+    static let shared = ReadHereGlyph()
+    static let size: CGFloat = 22
+    static let gap: CGFloat = 6
+
+    private weak var model: AppModel?
+    private var state = RevealState()
+    private var timer: Timer?
+    private var panel: Panel?
+    private(set) var block: PointerCapture.Block?
+    private var lastPoint: CGPoint?
+    private var looking = false
+    /// Apps this reveal woke (E8); put back when the glyph hides, unless a read on them is running.
+    private var woken = Set<pid_t>()
+
+    final class Panel: NSPanel {
+        override var canBecomeKey: Bool { false }
+        override var canBecomeMain: Bool { false }
+    }
+
+    func attach(_ model: AppModel) { self.model = model }
+
+    // MARK: The reveal key
+
+    /// Raw key data from the hotkey tap (main thread), with the shortcuts in force.
+    func key(_ type: CGEventType, keyCode: UInt16, flags: UInt64, at time: Double, settings: Settings) {
+        guard let event = Self.revealEvent(type, keyCode: keyCode, flags: flags, settings: settings) else { return }
+        apply(state.handle(event, at: time))
+        if event == .keyDown {
+            DispatchQueue.main.asyncAfter(deadline: .now() + RevealState.delay) { [weak self] in
+                guard let self else { return }
+                apply(state.tick(at: ProcessInfo.processInfo.systemUptime))
+            }
+        }
+    }
+
+    func reset() { apply(state.reset()) }
+
+    /// Raw key data -> reveal event (pure; checked by the dictation self-test). Fn only when dictation does not hold it.
+    nonisolated static func revealEvent(_ type: CGEventType, keyCode: UInt16, flags: UInt64, settings: Settings) -> RevealEvent? {
+        let key: (keyCode: UInt16, down: UInt64, others: UInt64)? = switch settings.readHereKey {
+        case .leftOption: (58, Hotkeys.leftOptionDeviceBit,
+                           Hotkeys.command | Hotkeys.control | Hotkeys.shift | Hotkeys.rightOptionDeviceBit | Hotkeys.secondaryFn)
+        case .fn where settings.dictationHoldKey != .fn: (Hotkeys.fnKeyCode, Hotkeys.secondaryFn,
+                                                          Hotkeys.command | Hotkeys.control | Hotkeys.shift | Hotkeys.option)
+        default: nil
+        }
+        guard let key else { return nil }
+        switch type {
+        case .flagsChanged where keyCode == key.keyCode:
+            guard flags & key.down != 0 else { return .keyUp }
+            return flags & key.others == 0 ? .keyDown : .otherKey
+        case .flagsChanged, .keyDown: return .otherKey
+        default: return nil
+        }
+    }
+
+    private func apply(_ actions: [RevealAction]) {
+        for action in actions {
+            switch action {
+            case .show: start()
+            case .hide: stop()
+            }
+        }
+    }
+
+    // MARK: Looking under the pointer
+
+    private func start() {
+        guard timer == nil else { return }
+        let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.look() } }
+        t.tolerance = 0.02
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+        look()
+    }
+
+    private func stop() {
+        timer?.invalidate()
+        timer = nil
+        hidePanel()
+        (block, lastPoint) = (nil, nil)
+        let reading = model?.liveSession?.capture?.pid
+        for pid in woken where pid != reading { AXWake.restore(pid) }
+        woken = []
+    }
+
+    private func look() {
+        let point = Self.pointer()
+        guard point != lastPoint, !looking else { return }
+        lastPoint = point
+        if let block, Self.band(block).contains(point) { return }   // on its way to the glyph, or still on the paragraph
+        looking = true
+        Task { @MainActor in
+            defer { looking = false }
+            guard let hit = PointerCapture.hit(point) else { return }   // over the glyph itself, or nothing
+            var found = PointerCapture.block(from: hit.element, pid: hit.pid, point: point)
+            if found == nil, !woken.contains(hit.pid) {
+                woken.insert(hit.pid)
+                await AXWake.wake(AXUIElementCreateApplication(hit.pid), pid: hit.pid)
+                if let again = PointerCapture.hit(point), again.pid == hit.pid {
+                    found = PointerCapture.block(from: again.element, pid: again.pid, point: point)
+                }
+            }
+            guard timer != nil else { return }   // the key went up meanwhile
+            if let found { show(found) } else if block.map({ !Self.band($0).contains(point) }) ?? true { hidePanel(); block = nil }
+        }
+    }
+
+    /// Where the pointer may be and keep this glyph: the paragraph and the margin out to the glyph, in AX coordinates.
+    static func band(_ block: PointerCapture.Block) -> CGRect {
+        let left = glyphFrame(block).minX - 8
+        return CGRect(x: left, y: block.frame.minY - 4, width: block.frame.maxX - left, height: block.frame.height + 8)
+    }
+
+    /// The glyph's frame in AX (top-left) coordinates: left of the paragraph, centred on its first line, kept on screen.
+    static func glyphFrame(_ block: PointerCapture.Block) -> CGRect {
+        let line = min(block.frame.height, 26)
+        var x = block.frame.minX - size - gap
+        let screen = NSScreen.screens.map { Locator.convert(topLeftScreenRect: $0.frame) }.first { $0.contains(block.frame.origin) }
+        if let screen { x = max(screen.minX + 2, x) }
+        return CGRect(x: x, y: block.frame.minY + (line - size) / 2, width: size, height: size)
+    }
+
+    /// The pointer in AX (top-left) coordinates.
+    static func pointer() -> CGPoint {
+        let p = NSEvent.mouseLocation
+        return CGPoint(x: p.x, y: (NSScreen.screens.first?.frame.height ?? 0) - p.y)
+    }
+
+    // MARK: The panel
+
+    private func show(_ found: PointerCapture.Block) {
+        block = found
+        let frame = Locator.convert(topLeftScreenRect: Self.glyphFrame(found))
+        if let panel {
+            panel.setFrame(frame, display: true)
+            return
+        }
+        let p = Panel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.level = .floating
+        p.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle, .fullScreenAuxiliary]
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = false
+        p.hidesOnDeactivate = false
+        p.isReleasedWhenClosed = false
+        p.becomesKeyOnlyIfNeeded = true
+        let view = GlyphView(frame: NSRect(origin: .zero, size: frame.size))
+        view.colour = NSColor(hex: model?.settings.highlightHex ?? Theme.accentHex) ?? Theme.accentNS
+        view.onPress = { [weak self] in self?.play() }
+        p.contentView = view
+        p.alphaValue = 0
+        p.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.12; p.animator().alphaValue = 1 }
+        panel = p
+    }
+
+    private func hidePanel() {
+        panel?.orderOut(nil)
+        panel?.close()
+        panel = nil
+    }
+
+    private func play() {
+        guard let block else { return }
+        woken.remove(block.pid)   // the read's Highlighter puts the app back when it ends (E8)
+        hidePanel()
+        model?.readHere(block: block)
+    }
+
+    /// A play triangle in a soft disc of the highlight colour; brighter under the pointer. Takes the first click, so
+    /// the app underneath never sees it and Talk & Read never becomes active.
+    final class GlyphView: NSView {
+        var colour = Theme.accentNS
+        var onPress: (() -> Void)?
+        private var hovered = false { didSet { needsDisplay = true } }
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+            setAccessibilityElement(true)
+            setAccessibilityRole(.button)
+            setAccessibilityLabel("Read from here")
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseEntered(with event: NSEvent) { hovered = true }
+        override func mouseExited(with event: NSEvent) { hovered = false }
+        override func mouseDown(with event: NSEvent) { onPress?() }
+        override func accessibilityPerformPress() -> Bool { onPress?(); return true }
+
+        override func draw(_ dirtyRect: NSRect) {
+            let disc = NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1))
+            colour.withAlphaComponent(hovered ? 1 : 0.8).setFill()
+            disc.fill()
+            NSColor.black.withAlphaComponent(0.15).setStroke()
+            disc.lineWidth = 0.5
+            disc.stroke()
+            let s = bounds.width, t = NSBezierPath()
+            t.move(to: NSPoint(x: s * 0.40, y: s * 0.30))
+            t.line(to: NSPoint(x: s * 0.40, y: s * 0.70))
+            t.line(to: NSPoint(x: s * 0.72, y: s * 0.50))
+            t.close()
+            NSColor(white: 0.12, alpha: 0.9).setFill()
+            t.fill()
+        }
+    }
+}

@@ -283,7 +283,7 @@ enum DictationError: LocalizedError, Equatable {
             if owner == Self.user, case .recording = state { try? stop(insert: true, caller: Self.user) }
             else { try? start(caller: Self.user) }
         case .pasteLast: pasteLast()
-        case .read, .pause, .screenshot, .increaseSpeed, .decreaseSpeed, .skipBackward, .skipForward: break
+        case .read, .readHere, .pause, .screenshot, .increaseSpeed, .decreaseSpeed, .skipBackward, .skipForward: break
         }
     }
 

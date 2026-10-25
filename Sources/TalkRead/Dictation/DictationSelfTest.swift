@@ -73,8 +73,8 @@ import WebKit
             ("opt+S", Hotkeys.keyEvent(.keyDown, keyCode: 1, flags: opt, settings: s), .chord(.decreaseSpeed)),
             ("opt+W", Hotkeys.keyEvent(.keyDown, keyCode: 13, flags: opt, settings: s), .chord(.skipBackward)),
             ("opt+E", Hotkeys.keyEvent(.keyDown, keyCode: 14, flags: opt, settings: s), .chord(.skipForward)),
-            ("ctrl+shift+A is not ctrl+A", Hotkeys.keyEvent(.keyDown, keyCode: 0, flags: ctrl | Hotkeys.shift, settings: s),
-             .otherKeyDown(keyCode: 0, modifiers: ctrl | Hotkeys.shift)),
+            ("ctrl+shift+A is Read from here, not ctrl+A", Hotkeys.keyEvent(.keyDown, keyCode: 0, flags: ctrl | Hotkeys.shift, settings: s),
+             .chord(.readHere)),
             ("old ctrl+opt+R is just a key", Hotkeys.keyEvent(.keyDown, keyCode: 15, flags: ctrl | opt, settings: s),
              .otherKeyDown(keyCode: 15, modifiers: ctrl | opt)),
             ("opt+V is just a key", Hotkeys.keyEvent(.keyDown, keyCode: 9, flags: opt, settings: s),
@@ -98,6 +98,27 @@ import WebKit
             print("hotkeys: FAIL \(name): got \(String(describing: got)), want \(String(describing: want))")
             ok = false
         }
+        // Read from here: the reveal key (left Option by default, never right Option, which dictates).
+        let lopt: UInt64 = opt | Hotkeys.leftOptionDeviceBit
+        var revealFn = Settings()
+        revealFn.readHereKey = .fn
+        var revealOff = Settings()
+        revealOff.readHereKey = .off
+        let reveals: [(String, RevealEvent?, RevealEvent?)] = [
+            ("left option down", ReadHereGlyph.revealEvent(.flagsChanged, keyCode: 58, flags: lopt, settings: s), .keyDown),
+            ("left option up", ReadHereGlyph.revealEvent(.flagsChanged, keyCode: 58, flags: 0, settings: s), .keyUp),
+            ("left option with shift held", ReadHereGlyph.revealEvent(.flagsChanged, keyCode: 58, flags: lopt | Hotkeys.shift, settings: s), .otherKey),
+            ("left option while right option dictates", ReadHereGlyph.revealEvent(.flagsChanged, keyCode: 58, flags: ropt | 0x20, settings: s), .otherKey),
+            ("right option is not the reveal key", ReadHereGlyph.revealEvent(.flagsChanged, keyCode: 61, flags: ropt, settings: s), .otherKey),
+            ("opt+D cancels the reveal", ReadHereGlyph.revealEvent(.keyDown, keyCode: 2, flags: lopt, settings: s), .otherKey),
+            ("fn down (fn reveal)", ReadHereGlyph.revealEvent(.flagsChanged, keyCode: 63, flags: Hotkeys.secondaryFn, settings: revealFn), .keyDown),
+            ("left option ignored (fn reveal)", ReadHereGlyph.revealEvent(.flagsChanged, keyCode: 58, flags: lopt, settings: revealFn), .otherKey),
+            ("off", ReadHereGlyph.revealEvent(.flagsChanged, keyCode: 58, flags: lopt, settings: revealOff), nil),
+        ]
+        for (name, got, want) in reveals where got != want {
+            print("hotkeys: FAIL reveal \(name): got \(String(describing: got)), want \(String(describing: want))")
+            ok = false
+        }
         // The tap itself: created as an active (event-swallowing) tap, then removed. Paused while it exists, so it
         // passes every key through and nothing of Junior's typing is swallowed; nothing is injected.
         let hotkeys = Hotkeys(settings: s)
@@ -105,7 +126,7 @@ import WebKit
         let running = hotkeys.start()
         let active = Hotkeys.ownTapIsActive()
         hotkeys.stop()
-        print("hotkeys: \(cases.count) mappings \(ok ? "ok" : "FAILED"); event tap \(running ? "created" : "NOT created (Accessibility?)"), "
+        print("hotkeys: \(cases.count + reveals.count) mappings \(ok ? "ok" : "FAILED"); event tap \(running ? "created" : "NOT created (Accessibility?)"), "
               + (active ? "active (swallows matched shortcuts)" : "NOT an active tap"))
         return ok && running && active
     }

@@ -2,7 +2,7 @@
 import Foundation
 
 public enum HotkeyAction: Equatable, Sendable {
-    case startRecording, stopAndInsert, cancelRecording, toggleRecording, pasteLast, read, pause, screenshot
+    case startRecording, stopAndInsert, cancelRecording, toggleRecording, pasteLast, read, readHere, pause, screenshot
     case increaseSpeed, decreaseSpeed, skipBackward, skipForward
 
     /// Only means something during a read, so its key is taken only while one is playing or paused (S3).

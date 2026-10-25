@@ -9,6 +9,10 @@ import TalkReadCore
 final class Hotkeys {
     /// Every action, on the main thread.
     var onAction: ((HotkeyAction) -> Void)?
+    /// Every key-down and modifier change while not paused, with the shortcuts in force, on the main thread: the Read
+    /// from here glyph watches its reveal key here. `onReset` when the hold is forgotten (paused, reloaded).
+    var onKey: ((CGEventType, UInt16, UInt64, Double, Settings) -> Void)?
+    var onReset: (() -> Void)?
     /// The tap exists and is enabled (for the permissions UI). Main thread.
     private(set) var isRunning = false
     /// No actions fire and nothing is swallowed while true (the settings shortcut recorder is listening). Main thread.
@@ -86,6 +90,7 @@ final class Hotkeys {
     /// Forgets the hold key; a recording it started is cancelled first (nothing typed), even while paused (Sol #19).
     private func resetHold() {
         for action in state.reset() { onAction?(action) }
+        onReset?()
     }
 
     // MARK: Tap thread
@@ -155,7 +160,9 @@ final class Hotkeys {
 
     /// Internal, not private: the dictation self-test feeds raw key data here (nothing is posted to the system).
     func process(_ type: CGEventType, keyCode: UInt16, flags: UInt64, at time: Double) {
-        guard !paused, let event = Self.keyEvent(type, keyCode: keyCode, flags: flags, settings: settings) else { return }
+        guard !paused else { return }
+        onKey?(type, keyCode, flags, time, settings)
+        guard let event = Self.keyEvent(type, keyCode: keyCode, flags: flags, settings: settings) else { return }
         emit(state.handle(event, at: time))
         if event == .holdKeyDown {
             DispatchQueue.main.asyncAfter(deadline: .now() + HotkeyState.holdDelay) { [weak self] in

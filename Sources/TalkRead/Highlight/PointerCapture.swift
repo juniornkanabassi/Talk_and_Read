@@ -1,0 +1,193 @@
+// Read from here (1.0): what to read when there is no selection, only a pointer. The system-wide hit test finds the
+// element under it; the nearest paragraph-sized element above that (a paragraph, heading, list item or table cell) is
+// where the read starts and where the play glyph sits. A web area (Chromium, Electron, WebKit) hands over the text from
+// that paragraph to the end of the page as one text-marker range, which also lets the hidden-text cut place Claude's
+// screen reader headings; without markers its text nodes are joined in order. A native text view gives its value from
+// the paragraph's first character. The capture then goes to the same Locator and Highlighter as a selection.
+import AppKit
+import ApplicationServices
+import TalkReadCore
+
+enum PointerCapture {
+    /// The paragraph under a point, as the glyph and the read need it.
+    struct Block {
+        let pid: pid_t
+        /// The paragraph-sized element (web), or the text view itself (native).
+        let element: AXUIElement
+        /// The paragraph's frame in AX (top-left) coordinates: the glyph sits beside its first line.
+        let frame: CGRect
+        /// Native text: the paragraph's first character within the element's value.
+        let start: Int?
+    }
+
+    private static let maxText = 200_000
+    /// Roles that are only part of a line: the climb goes past them to the paragraph that holds them.
+    private static let inline: Set<String> = ["AXStaticText", "AXLink", "AXImage", "AXButton", "AXMark", "AXTextMarker"]
+    private static let nativeText: Set<String> = ["AXTextArea", "AXTextField"]
+
+    /// The element under `point` (AX top-left coordinates) and its app; nil over our own windows or nothing.
+    @MainActor static func hit(_ point: CGPoint) -> (element: AXUIElement, pid: pid_t)? {
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.1)   // a hung app costs one tenth of a second, not six
+        var found: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &found) == .success, let found else { return nil }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(found, &pid) == .success, pid != getpid() else { return nil }
+        return (found, pid)
+    }
+
+    /// The paragraph under `point`. `wake` first wakes the app's tree (Chromium and Electron build it on request), so a
+    /// first hit on a sleeping Claude window that finds only the window finds the text on the second try.
+    @MainActor static func block(at point: CGPoint, wake: Bool) async -> Block? {
+        guard let first = hit(point) else { return nil }
+        if let b = block(from: first.element, pid: first.pid, point: point) { return b }
+        guard wake else { return nil }
+        await AXWake.wake(AXUIElementCreateApplication(first.pid), pid: first.pid)
+        if let again = hit(point), again.pid == first.pid, let b = block(from: again.element, pid: again.pid, point: point) { return b }
+        AXWake.restore(first.pid)   // nothing to read there: no Highlighter will put the app back
+        return nil
+    }
+
+    @MainActor static func block(from element: AXUIElement, pid: pid_t, point: CGPoint) -> Block? {
+        let role = axAttribute(element, kAXRoleAttribute) as? String ?? ""
+        if nativeText.contains(role), !TextCapture.isSecure(element), !TextCapture.isXterm(element) {
+            return nativeBlock(element, pid: pid, point: point)
+        }
+        guard let area = TextCapture.webArea(of: element), (axAttribute(area, kAXRoleAttribute) as? String) == "AXWebArea",
+              let areaFrame = axFrame(area) else { return nil }
+        // Climb past the inline parts to the first element that is a block of its own, stopping below the web area.
+        var current = element, steps = 0
+        while steps < 12, !CFEqual(current, area), inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? "") {
+            guard let parent = axElement(current, kAXParentAttribute) else { break }
+            current = parent
+            steps += 1
+        }
+        // The page itself, or a container most of a screen tall, is no paragraph: the pointer is in a margin or a gap.
+        guard !CFEqual(current, area), let frame = axFrame(current), !frame.isEmpty,
+              frame.height < max(240, areaFrame.height * 0.6), frame.insetBy(dx: -4, dy: -4).contains(point),
+              !isContainer(current, frame: frame), hasText(current, area: area) else { return nil }
+        return Block(pid: pid, element: current, frame: frame, start: nil)
+    }
+
+    /// A message or a section rather than a paragraph: two of its children are wide blocks stacked one above the other
+    /// (the pointer is in a gap between paragraphs). Inline code and links are narrow, so a paragraph holding them is not.
+    private static func isContainer(_ element: AXUIElement, frame: CGRect) -> Bool {
+        let children = (axAttribute(element, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+        var blocks: [CGRect] = []
+        for child in children.prefix(40) where !inline.contains(axAttribute(child, kAXRoleAttribute) as? String ?? "") {
+            guard let f = axFrame(child), f.height >= 1, f.width >= frame.width * 0.5 else { continue }
+            if blocks.contains(where: { f.minY >= $0.maxY - 1 || $0.minY >= f.maxY - 1 }) { return true }
+            blocks.append(f)
+        }
+        return false
+    }
+
+    /// A native text view: the paragraph holding the character under the point.
+    private static func nativeBlock(_ element: AXUIElement, pid: pid_t, point: CGPoint) -> Block? {
+        var p = point
+        guard let parameter = AXValueCreate(.cgPoint, &p),
+              let value = axParameterizedAttribute(element, "AXRangeForPosition", parameter: parameter), CFGetTypeID(value) == AXValueGetTypeID(),
+              let text = axAttribute(element, kAXValueAttribute) as? String else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range), range.location != kCFNotFound, range.location < (text as NSString).length else { return nil }
+        let start = ReadHere.paragraphStart(text, at: range.location)
+        let ns = text as NSString
+        var end = ns.rangeOfCharacter(from: .newlines, range: NSRange(location: start, length: ns.length - start)).location
+        if end == NSNotFound { end = ns.length }
+        guard end > start, !ns.substring(with: NSRange(location: start, length: end - start)).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let frame = axBounds(element, location: start, length: end - start), !frame.isEmpty else { return nil }
+        return Block(pid: pid, element: element, frame: frame, start: start)
+    }
+
+    private static func hasText(_ element: AXUIElement, area: AXUIElement) -> Bool {
+        if let range = markerRange(of: element, in: area),
+           let s = axParameterizedAttribute(area, "AXStringForTextMarkerRange", parameter: range) as? String {
+            return !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return !textNodes(under: element, limit: 50).isEmpty
+    }
+
+    // MARK: - The read
+
+    /// The text from the block to the end of its page or document, ready for `AppModel.startSession`.
+    @MainActor static func capture(_ block: Block) -> Capture? {
+        let window = window(of: block.element)
+        if let start = block.start {   // native text: the direct path boxes each word from the paragraph's offset
+            guard let text = axAttribute(block.element, kAXValueAttribute) as? String else { return nil }
+            let ns = text as NSString
+            guard start < ns.length else { return nil }
+            let wanted = NSRange(location: start, length: min(ns.length - start, maxText))
+            let tail = ns.substring(with: ns.rangeOfComposedCharacterSequences(for: wanted))
+            guard !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return Capture(text: tail, pid: block.pid, element: block.element, window: window, selectionStart: start, source: .pointer)
+        }
+        guard let area = TextCapture.webArea(of: block.element) else { return nil }
+        if let own = markerRange(of: block.element, in: area), let page = markerRange(of: area, in: area),
+           let range = axParameterizedAttribute(area, "AXTextMarkerRangeForUnorderedTextMarkers",
+                                                parameter: [AXTextMarkerRangeCopyStartMarker(own), AXTextMarkerRangeCopyEndMarker(page)] as CFArray),
+           CFGetTypeID(range) == AXTextMarkerRangeGetTypeID(),
+           let text = axParameterizedAttribute(area, "AXStringForTextMarkerRange", parameter: range) as? String,
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // The element is the paragraph, so the node map prefers its own words for the start of the read.
+            let c = Capture(text: text, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer)
+            if text.utf16.count > maxText {   // too long to check for hidden text in one walk: read the first part as it is
+                let ns = text as NSString
+                let head = ns.substring(with: ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: maxText)))
+                return Capture(text: head, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer)
+            }
+            return TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
+        }
+        // No text markers: the page's text nodes from the block on, in document order.
+        let nodes = textNodes(under: area, from: block.element, limit: 8000)
+        let text = ReadHere.join(nodes.map { node in
+            let f = axFrame(node.element)
+            return (node.text, f.map { Double($0.minY) }, f.map { Double($0.maxY) })
+        })
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let ns = text as NSString
+        let clipped = ns.length > maxText ? ns.substring(with: ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: maxText))) : text
+        return Capture(text: clipped, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer)
+    }
+
+    /// The element's own text-marker range in its web area, when the app answers with one.
+    private static func markerRange(of element: AXUIElement, in area: AXUIElement) -> AXTextMarkerRange? {
+        guard let range = axParameterizedAttribute(area, "AXTextMarkerRangeForUIElement", parameter: element),
+              CFGetTypeID(range) == AXTextMarkerRangeGetTypeID() else { return nil }
+        return (range as! AXTextMarkerRange)
+    }
+
+    /// AXStaticText values below `root` in document order; with `from`, only those at or after that element (itself and
+    /// what it holds included). Text under a chrome role (a toolbar, a menu) never counts.
+    private static func textNodes(under root: AXUIElement, from: AXUIElement? = nil, limit: Int) -> [(element: AXUIElement, text: String)] {
+        var out: [(AXUIElement, String)] = []
+        var started = from == nil
+        var stack: [(element: AXUIElement, chrome: Bool)] = [(root, false)]
+        var visited = 0
+        while let (node, parentChrome) = stack.popLast(), visited < limit {
+            visited += 1
+            if !started, let from, CFEqual(node, from) { started = true }
+            let role = axAttribute(node, kAXRoleAttribute) as? String
+            let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome)
+            if started, !chrome, role == "AXStaticText", let value = axAttribute(node, kAXValueAttribute) as? String, !value.isEmpty {
+                out.append((node, value))
+                continue   // a text node is a leaf whatever Chromium hangs below it (inline text boxes)
+            }
+            if let children = axAttribute(node, kAXChildrenAttribute) as? [AXUIElement] {
+                stack.append(contentsOf: children.reversed().map { ($0, chrome) })
+            }
+        }
+        return out
+    }
+
+    /// The window holding `element`: its AXWindow, else the nearest ancestor with the window role.
+    private static func window(of element: AXUIElement) -> AXUIElement? {
+        if let w = axElement(element, kAXWindowAttribute) { return w }
+        var current: AXUIElement? = element
+        for _ in 0..<60 {
+            guard let e = current else { break }
+            if (axAttribute(e, kAXRoleAttribute) as? String) == kAXWindowRole { return e }
+            current = axElement(e, kAXParentAttribute)
+        }
+        return nil
+    }
+}

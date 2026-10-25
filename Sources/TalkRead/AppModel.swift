@@ -417,6 +417,39 @@ extension EngineKind {
         return s
     }
 
+    /// Read from here (1.0): the paragraph under the pointer (or the one the glyph showed) to the end of its page, with
+    /// no selection. Unlike Read selection it never toggles: pressing it during a read starts again from the pointer.
+    func readHere(block: PointerCapture.Block? = nil) {
+        let id = reserve("user")
+        let point = ReadHereGlyph.pointer()
+        Task { await captureHereAndRead(id: id, point: point, block: block) }
+    }
+
+    /// Finds the paragraph at `point` (AX top-left coordinates) unless `block` is given, and starts the read reserved
+    /// as `id`; nil when there is no text there or another read took over.
+    @discardableResult func captureHereAndRead(id: UUID, point: CGPoint, block: PointerCapture.Block?) async -> ReadSession? {
+        var found = block
+        if found == nil { found = await PointerCapture.block(at: point, wake: true) }
+        let capture = found.flatMap(PointerCapture.capture)
+        let pid = capture?.pid ?? found?.pid
+        guard owner?.sessionID == id else {
+            if let pid { AXWake.restore(pid) }   // no Highlighter will end this read (E8)
+            return nil
+        }
+        guard let capture else {
+            if let pid { AXWake.restore(pid) }
+            owner = nil
+            MiniPlayer.shared.flash("No text under the pointer")
+            return nil
+        }
+        Log.write("read here: \(capture.text.utf16.count) characters" + (capture.selectionStart != nil ? " from native text" : " from a web area")
+                  + (capture.hiddenRemoved > 0 ? ", hidden text cut \(capture.hiddenRemoved)" : ""))
+        let s = startSession(capture.text, capture: capture, id: id)
+        let app = NSRunningApplication(processIdentifier: capture.pid)
+        appendRead(capture.text, app: app?.localizedName, bundleID: app?.bundleIdentifier)
+        return s
+    }
+
     func readScreenshot() {
         let id = reserve("user")
         let app = NSWorkspace.shared.frontmostApplication   // the app the picture is of, as for a selection

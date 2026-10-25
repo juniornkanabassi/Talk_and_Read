@@ -10,12 +10,13 @@ final class ShortcutTests: XCTestCase {
     func testDefaultsAreJuniorsSpeechifySet() {
         let s = Settings()
         let got = Settings.chords.map { s[keyPath: $0.path] }
-        XCTAssertEqual(got.map(\.display), ["⌃`", "⌃⌘V", "⌃A", "⌃⌥Q", "⌃⌥⌘X", "⌥D", "⌥S", "⌥W", "⌥E"])
-        XCTAssertEqual(got.map(\.keyCode), [50, 9, 0, 12, 7, 2, 1, 13, 14])
-        XCTAssertEqual(got.map(\.modifiers), [ctrl, ctrl | cmd, ctrl, ctrl | opt, ctrl | opt | cmd, opt, opt, opt, opt])
-        XCTAssertEqual(Settings.chords.map(\.action), [.toggleRecording, .pasteLast, .read, .pause, .screenshot,
+        XCTAssertEqual(got.map(\.display), ["⌃`", "⌃⌘V", "⌃A", "⌃⇧A", "⌃⌥Q", "⌃⌥⌘X", "⌥D", "⌥S", "⌥W", "⌥E"])
+        XCTAssertEqual(got.map(\.keyCode), [50, 9, 0, 0, 12, 7, 2, 1, 13, 14])
+        XCTAssertEqual(got.map(\.modifiers), [ctrl, ctrl | cmd, ctrl, ctrl | shift, ctrl | opt, ctrl | opt | cmd, opt, opt, opt, opt])
+        XCTAssertEqual(Settings.chords.map(\.action), [.toggleRecording, .pasteLast, .read, .readHere, .pause, .screenshot,
                                                       .increaseSpeed, .decreaseSpeed, .skipBackward, .skipForward])
         XCTAssertEqual(s.dictationHoldKey, .rightOption)
+        XCTAssertEqual(s.readHereKey, .leftOption)
         XCTAssertEqual(s.speed, 2.5)
         for c in Settings.chords { XCTAssertNil(s.refusal(s[keyPath: c.path], for: c.key), "default \(c.key) passes its own rules") }
     }

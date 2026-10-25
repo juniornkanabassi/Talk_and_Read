@@ -74,6 +74,9 @@ public struct Settings: Codable, Equatable, Sendable {
     }
     /// Left Option is not offered: it types characters (∂, ß…) in every app.
     public enum HoldKey: String, Codable, Sendable, CaseIterable { case rightOption, fn, rightCommand, off }
+    /// The key held on its own to show the play glyph beside the paragraph under the pointer (Read from here, 1.0).
+    /// Left Option, since right Option is the dictation key; held alone it types nothing.
+    public enum RevealKey: String, Codable, Sendable, CaseIterable { case leftOption, fn, off }
 
     // Junior's Speechify set (S1, 23 Oct).
     public var readShortcut = Shortcut(keyCode: 0, modifiers: Shortcut.control, display: "⌃A")
@@ -86,6 +89,9 @@ public struct Settings: Codable, Equatable, Sendable {
     public var skipBackwardShortcut = Shortcut(keyCode: 13, modifiers: Shortcut.option, display: "⌥W")
     public var skipForwardShortcut = Shortcut(keyCode: 14, modifiers: Shortcut.option, display: "⌥E")
     public var dictationHoldKey = HoldKey.rightOption
+    /// Reads from the start of the paragraph under the pointer to the end of its page, with no selection (1.0).
+    public var readHereShortcut = Shortcut(keyCode: 0, modifiers: Shortcut.control | Shortcut.shift, display: "⌃⇧A")
+    public var readHereKey = RevealKey.leftOption
     /// CoreAudio UID of the microphone dictation records from; nil = the system default input (`Microphone`).
     public var dictationMicrophone: String?
     /// The English voice (and any text not detected as French). Ids carry the model: `af_heart` (Kokoro), `qwen.us_warm` (Qwen3).
@@ -147,6 +153,7 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.pasteLastShortcut, &pasteLastShortcut); get(.dictationHoldKey, &dictationHoldKey); get(.dictationMicrophone, &dictationMicrophone)
         get(.increaseSpeedShortcut, &increaseSpeedShortcut); get(.decreaseSpeedShortcut, &decreaseSpeedShortcut)
         get(.skipBackwardShortcut, &skipBackwardShortcut); get(.skipForwardShortcut, &skipForwardShortcut)
+        get(.readHereShortcut, &readHereShortcut); get(.readHereKey, &readHereKey)
         get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.showHighlight, &showHighlight); get(.highlightHex, &highlightHex); get(.highlightStyle, &highlightStyle)
         get(.tintEnabled, &tintEnabled); get(.tintHex, &tintHex); get(.opacity, &opacity); get(.showMiniPlayer, &showMiniPlayer)
         get(.miniPlayerAutoHideSeconds, &miniPlayerAutoHideSeconds); get(.miniPlayerOrigin, &miniPlayerOrigin)
@@ -178,6 +185,7 @@ public struct Settings: Codable, Equatable, Sendable {
         if !["parakeet", "apple"].contains(dictationEngine) { s.dictationEngine = "parakeet" }
         s.dictationLanguages = Self.cleanLanguages(dictationLanguages)
         if dictationMicrophone?.isEmpty == true { s.dictationMicrophone = nil }
+        if readHereKey == .fn, dictationHoldKey == .fn { s.readHereKey = .leftOption }   // one key cannot do both: dictation keeps Fn
         return s
     }
 
@@ -246,6 +254,12 @@ public struct Settings: Codable, Equatable, Sendable {
                 throw ControlError("invalid_value", "dictationHoldKey must be one of: \(HoldKey.allCases.map(\.rawValue).joined(separator: ", ")).")
             }
             dictationHoldKey = v
+        case "readHereKey":
+            guard let v = RevealKey(rawValue: raw) else {
+                throw ControlError("invalid_value", "readHereKey must be one of: \(RevealKey.allCases.map(\.rawValue).joined(separator: ", ")).")
+            }
+            if v == .fn, dictationHoldKey == .fn { throw ControlError("invalid_value", "Fn is the dictation hold key; choose leftOption or off.") }
+            readHereKey = v
         case "dictationMicrophone": throw ControlError("read_only_setting", "dictationMicrophone is changed with `talkread mic`.")
         case "voiceID": voiceID = raw
         case "frenchVoiceID": frenchVoiceID = raw
@@ -324,7 +338,7 @@ public struct Settings: Codable, Equatable, Sendable {
     /// tap, the page and settings-set all use this list.
     public static var chords: [(key: String, path: WritableKeyPath<Settings, Shortcut>, action: HotkeyAction)] {
         [("dictationToggleShortcut", \.dictationToggleShortcut, .toggleRecording), ("pasteLastShortcut", \.pasteLastShortcut, .pasteLast),
-         ("readShortcut", \.readShortcut, .read), ("pauseShortcut", \.pauseShortcut, .pause),
+         ("readShortcut", \.readShortcut, .read), ("readHereShortcut", \.readHereShortcut, .readHere), ("pauseShortcut", \.pauseShortcut, .pause),
          ("screenshotShortcut", \.screenshotShortcut, .screenshot), ("increaseSpeedShortcut", \.increaseSpeedShortcut, .increaseSpeed),
          ("decreaseSpeedShortcut", \.decreaseSpeedShortcut, .decreaseSpeed), ("skipBackwardShortcut", \.skipBackwardShortcut, .skipBackward),
          ("skipForwardShortcut", \.skipForwardShortcut, .skipForward)]
@@ -369,10 +383,11 @@ public struct Settings: Codable, Equatable, Sendable {
         return nil
     }
 
-    /// Every shortcut and the hold key back to the defaults.
+    /// Every shortcut, the hold key and the reveal key back to the defaults.
     public mutating func resetShortcuts() {
         let d = Settings()
         for c in Self.chords { self[keyPath: c.path] = d[keyPath: c.path] }
         dictationHoldKey = d.dictationHoldKey
+        readHereKey = d.readHereKey
     }
 }
