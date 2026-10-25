@@ -178,7 +178,15 @@ enum SelfTest {
             // chunk's media start (inside the pause between sentences) and each piece is transcribed on its own, so the
             // recogniser's 15 s window seams cannot drop words from 2.5x speech. Kokoro above `Settings.stretchLimit`
             // speaks the whole rate itself and the Player plays it at 1x, as ReadSession does.
-            func playedWER(native: Float, stretch: Float? = nil, wav: String?) async throws -> (wer: Double, seconds: Double) {
+            // Seconds from the first to the last sample above -45 dBFS: how long the speech itself lasts.
+            func speechSpan(_ x: [Float]) -> Double {
+                guard let a = x.firstIndex(where: { abs($0) > 0.0056 }), let b = x.lastIndex(where: { abs($0) > 0.0056 }) else { return 0 }
+                return Double(b - a) / Player.sampleRate
+            }
+            let span1x = speechSpan(audio)
+            /// `heard`: the speed measured from the output itself (1x speech span over the rendered one), rendered with a
+            /// quarter extra so a stretcher slower than set still ends inside the window.
+            func playedWER(native: Float, stretch: Float? = nil, wav: String?) async throws -> (wer: Double, seconds: Double, heard: Double) {
                 var chunks = synths
                 if native != 1 { chunks = []; for t in speakables { chunks.append(try await engine.synthesize(t, voice: voice, speed: native)) } }
                 let player = Player(manualRendering: true)
@@ -186,14 +194,15 @@ enum SelfTest {
                 let starts = chunks.map { player.enqueue($0) }
                 player.play()
                 let media = Double(chunks.reduce(0) { $0 + $1.samples.count }) / Player.sampleRate
-                let (rendered, readings) = try renderWithClock(player, seconds: media / Double(player.rate) + 0.5)
+                let (rendered, readings) = try renderWithClock(player, seconds: media / Double(player.rate) * 1.25 + 0.5)
                 if let wav { try writeWAV(rendered, to: outDir.appendingPathComponent(wav)) }
                 let cuts = starts.map { s in readings.first { $0.clock >= s }?.index ?? rendered.count } + [rendered.count]
                 var hypothesis: [String] = []
                 for k in chunks.indices where cuts[k + 1] > cuts[k] {
                     hypothesis.append((try? await asr.transcribe(Array(rendered[cuts[k] ..< cuts[k + 1]]), language: language).text) ?? "")
                 }
-                return (wer(reference: reference, hypothesis: hypothesis.joined(separator: " "), language: language), Double(rendered.count) / Player.sampleRate)
+                return (wer(reference: reference, hypothesis: hypothesis.joined(separator: " "), language: language),
+                        Double(rendered.count) / Player.sampleRate, span1x / max(speechSpan(rendered), 0.001))
             }
             if engine.speaksFaster, ProcessInfo.processInfo.environment["TALKREAD_SPEED_GRID"] == "1" {
                 // Speed grid (25 Oct): Kokoro's `speed` is nominal (asked 4x, it plays about 2.3x), so first how fast it
@@ -217,7 +226,7 @@ enum SelfTest {
                     for stretch: Float in [1.5, 1.75, 2, 2.25, 2.5, 3, 3.5, 4] where stretch <= target {
                         guard let n = nominal(forReal: Double(target / stretch)) else { continue }
                         let r = try await playedWER(native: n, stretch: stretch, wav: String(format: "grid-%gx-stretch%g.wav", target, stretch))
-                        let actual = audioSeconds / (r.seconds - 0.5)
+                        let actual = r.heard
                         print(String(format: "grid %gx: Kokoro asked %.3fx, stretched %gx: real %.2fx, WER ", target, n, stretch, actual) + pct(r.wer))
                     }
                 }
@@ -226,8 +235,7 @@ enum SelfTest {
             // As ReadSession plays it: Kokoro asked for the setting that really gives `pace`, the Player stretching the rest.
             let pace = engine.speaksFaster ? TalkReadCore.Settings.nativeSpeed(for: rate) : 1
             let setting = pace == 1 ? 1 : TalkReadCore.Settings.kokoroSetting(forPace: pace)
-            let (werR, seconds) = try await playedWER(native: setting, stretch: rate / pace, wav: "tts-\(rate)x.wav")
-            let heardSpeed = audioSeconds / (seconds - 0.5)
+            let (werR, seconds, heardSpeed) = try await playedWER(native: setting, stretch: rate / pace, wav: "tts-\(rate)x.wav")
             let how = pace == 1 ? "" : String(format: " (Kokoro asked %.3gx for %.3gx, stretched %.3gx)", setting, pace, rate / pace)
             print("WER at \(rate)x through the Player graph\(how): \(pct(werR)) (\(fmt(seconds)) s rendered, heard at \(String(format: "%.2f", heardSpeed))x)")
             var werOK = werR <= 0.08, rule = "WER <= 8 %"
@@ -237,7 +245,7 @@ enum SelfTest {
                 let stretched = try await playedWER(native: 1, stretch: rate, wav: nil)
                 print("stretched 1x audio alone at \(rate)x: WER \(pct(stretched.wer))")
                 werOK = werR <= stretched.wer + 0.03 && abs(heardSpeed / Double(rate) - 1) <= 0.08
-                rule = "WER \(pct(werR)) within 3 points of stretching alone \(pct(stretched.wer)), heard at \(String(format: "%.2f", heardSpeed))x within 8 %"
+                rule = "WER \(pct(werR)) no more than 3 points above stretching alone \(pct(stretched.wer)), heard at \(String(format: "%.2f", heardSpeed))x within 8 %"
             }   // ponytail: a system voice above 2x keeps the 8 % bar
             let ok = clockOK && werOK
             print("R3: \(ok ? "PASS" : "FAIL") (clock within 20 ms at 0.5-4x; \(rule))")
