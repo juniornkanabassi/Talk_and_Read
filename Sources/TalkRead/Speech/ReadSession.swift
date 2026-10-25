@@ -97,7 +97,7 @@ import TalkReadCore
         self.effectiveVoice = voice
         self.engines = engines
         self.lexicon = lexicon
-        self.skip = skip
+        self.skip = skip.sorted { $0.lowerBound < $1.lowerBound }
         self.skipCitations = skipCitations
         self.startToken = startToken
         self.fallback = fallback
@@ -154,10 +154,20 @@ import TalkReadCore
     }
 
     func skip(sentences: Int) {
-        guard let last = tokens.last else { return }
+        guard !tokens.isEmpty else { return }
         let current = currentSentence ?? tokens[min(max(startToken, 0), tokens.count - 1)].sentence
+        // Sentences that are all skipped furniture (a running head, a page number) are stepped over, so Previous reaches
+        // the last sentence actually read. Tokens and skip ranges are both sorted: one pass.
+        var spoken: [Int] = [], k = 0
+        for t in tokens {
+            while k < skip.count, skip[k].upperBound <= t.range.lowerBound { k += 1 }
+            let hidden = k < skip.count && skip[k].lowerBound <= t.range.lowerBound && t.range.upperBound <= skip[k].upperBound
+            if !hidden, spoken.last != t.sentence { spoken.append(t.sentence) }
+        }
+        guard !spoken.isEmpty else { return }
+        let at = spoken.lastIndex { $0 <= current } ?? 0
         // Clamped before the addition: any Int arrives from the CLI or socket and must not overflow.
-        let target = min(max(current + min(max(sentences, -last.sentence - 1), last.sentence + 1), 0), last.sentence)
+        let target = spoken[min(max(at + min(max(sentences, -spoken.count), spoken.count), 0), spoken.count - 1)]
         if let first = tokens.firstIndex(where: { $0.sentence >= target }) { restart(from: first) }
     }
 

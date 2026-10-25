@@ -259,6 +259,21 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(cited("The claim is disputed. [citation needed] Then"), "The claim is disputed. Then")
     }
 
+    func testAChunkEndIsNotALineEnd() {
+        // The chunk ends after "scored;12 "; the real next word is lowercase, so 12 is a number, not a footnote.
+        let s = "They scored;12 points tonight."
+        let cut = (s as NSString).range(of: "points").location
+        XCTAssertEqual(Speakable.make(s, range: 0..<cut, lexicon: [:], skipCitations: true).text, "They scored;12")
+        XCTAssertEqual(Speakable.make(s, range: 0..<(s as NSString).length, lexicon: [:], skipCitations: true).text, s)
+        XCTAssertEqual(cited("There was no consideration.12"), "There was no consideration.")
+    }
+
+    func testMarksAfterQuestionAndExclamationMarks() {
+        XCTAssertEqual(cited("Was it lawful?[12] Then"), "Was it lawful? Then")
+        XCTAssertEqual(cited("What a goal!¹ Then"), "What a goal! Then")
+        XCTAssertEqual(cited("Was it lawful? [12] Then"), "Was it lawful? [12] Then")
+    }
+
     func testMarksAtAChunkStartAreJudgedInContext() {
         // The chunker splits at "consideration." so "12 The…" opens the next chunk; the mark is still a footnote.
         let s = "There was no consideration.12 The court agreed. It was void[3] then."

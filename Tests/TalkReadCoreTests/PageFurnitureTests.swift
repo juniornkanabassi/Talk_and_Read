@@ -75,6 +75,14 @@ final class PageFurnitureTests: XCTestCase {
         XCTAssertEqual(PageFurniture.ranges(text, pageStarts: starts), [])
     }
 
+    func testRepeatedBulletedAnswersAreRead() {
+        let pages = (0..<3).map { "Question \($0 + 1)\nThe \(words[$0]) fact.\n• None of the above" }
+        let (text, starts) = join(pages)
+        XCTAssertEqual(PageFurniture.ranges(text, pageStarts: starts), [])
+        let dashed = join((0..<3).map { "The \(words[$0]) fact.\n- \($0 + 1) -" })
+        XCTAssertEqual(PageFurniture.ranges(dashed.text, pageStarts: dashed.starts).count, 3, "a dashed page number is still furniture")
+    }
+
     func testShortDocumentsAndLongLinesAreLeftAlone() {
         let two = join(["Journal of Law\nBody one.\n1", "Journal of Law\nBody two.\n2"])
         XCTAssertEqual(PageFurniture.ranges(two.text, pageStarts: two.starts), [])
