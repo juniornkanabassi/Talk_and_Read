@@ -156,20 +156,31 @@ import TalkReadCore
     }
 
     func skip(sentences: Int) {
-        guard !tokens.isEmpty else { return }
+        guard let last = tokens.last else { return }
         let current = currentSentence ?? tokens[min(max(startToken, 0), tokens.count - 1)].sentence
-        // Sentences that are all skipped furniture (a running head, a page number) are stepped over, so Previous reaches
-        // the last sentence actually read. Tokens and skip ranges are both sorted: one pass.
-        var spoken: [Int] = [], k = 0
-        for t in tokens {
-            while k < skip.count, skip[k].upperBound <= t.range.lowerBound { k += 1 }
-            let hidden = k < skip.count && skip[k].lowerBound <= t.range.lowerBound && t.range.upperBound <= skip[k].upperBound
-            if !hidden, spoken.last != t.sentence { spoken.append(t.sentence) }
+        // Clamped first: any Int arrives from the CLI or socket and must not overflow.
+        let n = min(max(sentences, -last.sentence - 1), last.sentence + 1), step = n < 0 ? -1 : 1
+        // Sentences with nothing to say (skipped furniture, a lone "[citation needed]") are stepped over, judged as
+        // playback judges them, so Previous reaches the last sentence actually read. Only the sentences passed are checked.
+        func audible(_ s: Int) -> Bool {
+            func firstToken(from s: Int) -> Int {   // tokens are in sentence order
+                var l = 0, h = tokens.count
+                while l < h { let m = (l + h) / 2; if tokens[m].sentence >= s { h = m } else { l = m + 1 } }
+                return l
+            }
+            let a = firstToken(from: s), b = firstToken(from: s + 1)
+            guard a < b else { return false }
+            return Speakable.make(text, range: tokens[a].range.lowerBound..<tokens[b - 1].range.upperBound, lexicon: lexicon,
+                                  language: voice.language, skip: skip, skipCitations: skipCitations).text
+                .contains { $0.isLetter || $0.isNumber }
         }
-        guard !spoken.isEmpty else { return }
-        let at = spoken.lastIndex { $0 <= current } ?? 0
-        // Clamped before the addition: any Int arrives from the CLI or socket and must not overflow.
-        let target = spoken[min(max(at + min(max(sentences, -spoken.count), spoken.count), 0), spoken.count - 1)]
+        var target = current
+        for _ in 0..<abs(n) {
+            var c = target + step
+            while c >= 0, c <= last.sentence, !audible(c) { c += step }
+            guard c >= 0, c <= last.sentence else { break }
+            target = c
+        }
         if let first = tokens.firstIndex(where: { $0.sentence >= target }) { restart(from: first) }
     }
 
@@ -302,7 +313,7 @@ import TalkReadCore
             if k == 0 { firstAudio() }
             k += 1
         }
-        if k == 0 { heardAudio = true; firstAudio() }   // nothing audible at all: start the (empty) player so the read finishes
+        if k == 0 { return finish() }   // nothing audible from here on: the read is over, without opening the output
         doneEnqueueing = true
         player.moreComing = false
     }

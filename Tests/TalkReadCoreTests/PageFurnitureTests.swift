@@ -100,6 +100,12 @@ final class PageFurnitureTests: XCTestCase {
         XCTAssertFalse(lines(text, PageFurniture.ranges(text, pageStarts: starts)).contains("Offer and acceptance"))
     }
 
+    func testRepeatedDashedAnswersAreRead() {
+        let pages = (0..<3).map { "Question \($0 + 1)\nThe \(words[$0]) league.\n- 3 points for a win" }
+        let (text, starts) = join(pages)
+        XCTAssertEqual(PageFurniture.ranges(text, pageStarts: starts), [])
+    }
+
     func testShortDocumentsAndLongLinesAreLeftAlone() {
         let two = join(["Journal of Law\nBody one.\n1", "Journal of Law\nBody two.\n2"])
         XCTAssertEqual(PageFurniture.ranges(two.text, pageStarts: two.starts), [])
