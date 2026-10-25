@@ -60,7 +60,7 @@ final class CleanupTests: XCTestCase {
         // The unambiguous French commands with French on; English ones still work.
         let fr = { (s: String) in Cleanup.apply(s, vocabulary: [:], removeFillers: true, languages: ["en", "fr"]) }
         XCTAssertEqual(fr("Tu viens ce soir point d'interrogation"), "Tu viens ce soir?")
-        XCTAssertEqual(fr("Quel match point d'exclamation ouvrez les guillemets incroyable fermez les guillemets"), "Quel match! \"incroyable\"")
+        XCTAssertEqual(fr("Quel match point d'exclamation ouvrez les guillemets incroyable fermez les guillemets"), "Quel match! \"Incroyable\"")
         XCTAssertEqual(fr("Hello comma world full stop"), "Hello, world.")
         XCTAssertEqual(clean("Tu viens point d'interrogation"), "Tu viens point d'interrogation", "French commands only with French on")
         // Ordinary French that sounds like a command stays as it is (the review's probe sentences).
@@ -69,11 +69,20 @@ final class CleanupTests: XCTestCase {
                       "J'ai ajouté un nouveau paragraphe au contrat.", "Je veux mettre un vrai point final.",
                       "Le ballon sort à la ligne. Corner pour Paris.", "Le point-virgule est souvent mal utilisé.",
                       "La virgule est mal placée dans cette phrase.", "Un point d'interrogation plane sur le match.",
-                      "Bonjour Paul virgule une petite question?"] {
+                      "Bonjour Paul virgule une petite question?",
+                      "Un grand point d'interrogation demeure sur sa participation au match.",
+                      "C'est votre point d'interrogation.", "Le colon réclame une indemnisation.",
+                      "Un point d'exclamation suffit ici."] {
             XCTAssertEqual(fr(prose), prose)
         }
-        XCTAssertEqual(fr("Je pense que, euh, c'est une bonne idée."), "Je pense que c'est une bonne idée.")
-        XCTAssertEqual(clean("I think, um, we should go."), "I think we should go.")
+        XCTAssertEqual(fr("Il arrive point d'interrogation"), "Il arrive?")
+        XCTAssertEqual(fr("Il arrive point d'interrogation. Oui"), "Il arrive? Oui", "the recogniser's own mark is replaced")
+        XCTAssertEqual(fr("Deux choses colon la vitesse"), "Deux choses: la vitesse", "English colon still works with French on")
+        XCTAssertEqual(Cleanup.apply("Le colon réclame.", vocabulary: [:], removeFillers: true, languages: ["fr"]), "Le colon réclame.")
+        // A filler between commas leaves one comma, which may be one the sentence needs.
+        XCTAssertEqual(clean("We visited Paris, um, London and Rome."), "We visited Paris, London and Rome.")
+        XCTAssertEqual(fr("Je pense que, euh, c'est une bonne idée."), "Je pense que, c'est une bonne idée.")
+        XCTAssertEqual(clean("Okay, um, I think so."), "Okay, I think so.")
         XCTAssertEqual(fr("Ah, the tricky part is the timing."), "The tricky part is the timing.", "an English ah is still a filler")
         XCTAssertEqual(fr("Hello comma world full stop"), "Hello, world.")
         XCTAssertEqual(clean("Bonjour virgule"), "Bonjour virgule", "French commands only with French on")

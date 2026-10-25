@@ -21,13 +21,9 @@ public enum Cleanup {
         text = webForms(text)
         text = replaceAll(urlPattern, in: text) { hold(lowerHost($0[0])) }
 
-        if removeFillers {
-            // "que, euh, c'est" is "que c'est": a filler between two commas takes the first one with it (the pattern less
-            // its "(?i)" and with its comma required).
-            let filler = fillerPattern(languages)
-            text = text.replacingOccurrences(of: ",(?=\(filler.dropFirst(4).dropLast(1)))", with: "", options: [.regularExpression, .caseInsensitive])
-            text = text.replacingOccurrences(of: filler, with: "", options: .regularExpression)
-        }
+        // A filler between two commas leaves the first ("Paris, um, London" is "Paris, London"): that comma may be one
+        // the sentence needs, and nothing tells a list comma from a pause.
+        if removeFillers { text = text.replacingOccurrences(of: fillerPattern(languages), with: "", options: .regularExpression) }
 
         // A spoken mark replaces one the recogniser already wrote ("John, comma" is "John,", not "John,,"; Parakeet v3
         // punctuates by itself). Line breaks, quotes and dashes keep what comes before them. Commands become placeholders
@@ -96,12 +92,15 @@ public enum Cleanup {
         // Only phrases that are hard to mean as prose. The bare ones ("virgule", "point final", "à la ligne", "nouveau
         // paragraphe", "deux points") are ordinary French ("la virgule est mal placée", "un nouveau paragraphe au contrat",
         // "le ballon sort à la ligne") and Parakeet v3 punctuates French well by itself, so they are left as words; so is a
-        // mark named after an article ("un point d'interrogation plane sur le match").
-        let noArticle = "(?<!\\b(?:un|le|du|au|ce|les|des|son|leur)[ \\t]{1,3})"
-        return [("\(noArticle)point[ -]virgule", ";"), ("\(noArticle)point d['’]interrogation", "?"),
-                ("\(noArticle)point d['’]exclamation", "!"),
+        // mark after a determiner or adjective ("votre point-virgule", "un grand point d'interrogation"). A spoken "?" or
+        // "!" also has to end the clause (end of text, a mark, a new line or a quote command): "un point d'interrogation
+        // demeure sur sa participation" is prose. English "colon" is French for settler: "le colon réclame" stays.
+        let noDeterminer = "(?<!\\b(?:un|une|le|la|l['’]|du|au|aux|ce|cet|les|des|mes|tes|ses|nos|vos|leurs|mon|ton|son|notre|votre|leur|grand|gros|petit|vrai|seul|dernier|premier|énorme)[ \\t]{1,3})"
+        let endsClause = "(?=[ \\t]*(?:$|[.,!?;:\\n]|(?:ouvrez|ouvrir|fermez|fermer) les guillemets\\b))"
+        return [("\(noDeterminer)point[ -]virgule", ";"), ("\(noDeterminer)point d['’]interrogation\(endsClause)", "?"),
+                ("\(noDeterminer)point d['’]exclamation\(endsClause)", "!"),
                 ("ouvrez les guillemets|ouvrir les guillemets", openQuote), ("fermez les guillemets|fermer les guillemets", closeQuote)]
-            + english
+            + english.map { $0.0 == "colon" ? ("\(noDeterminer)colon", $0.1) : $0 }
     }
 
     /// The placeholder a spoken command stands as until all are found (private use, stripped from the input).
