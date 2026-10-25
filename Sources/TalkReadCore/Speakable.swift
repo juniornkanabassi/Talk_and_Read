@@ -28,13 +28,26 @@ public struct Speakable: Sendable {
     /// `language`: "en" or "fr". French text also gets French spoken forms: numbers ("4,2 millions", years), dates
     /// ("14 novembre", "1er", "14/11/2027"), times ("11h20"), `%` ("pour cent"), `°C` ("degrés Celsius"), `€ $ £`, `&` ("et"),
     /// "point" and "arobase" in addresses. English is unchanged (the engine's own normaliser reads English digits).
-    public static func make(_ source: String, range: Range<Int>, lexicon: [String: String], language: String = "en") -> Speakable {
+    /// `skip`: source ranges never spoken (a PDF's running headers, footers and page numbers).
+    /// `skipCitations`: reference marks are dropped: "[12]", "[3, 5–7]", "[citation needed]" anywhere but the start of a
+    /// line (a judgment's paragraph number stays), superscript digits after punctuation or a word, and 1 to 3 plain
+    /// digits glued to the punctuation that ends a word of four letters or more ("consideration.12 The"), which is how a
+    /// PDF's footnote marks come out; "s.12", "para.4", "3.5" and "1,000" are kept.
+    public static func make(_ source: String, range: Range<Int>, lexicon: [String: String], language: String = "en",
+                            skip: [Range<Int>] = [], skipCitations: Bool = false) -> Speakable {
         let ns = source as NSString
         let lo = min(max(range.lowerBound, 0), ns.length)
         let hi = min(max(range.upperBound, lo), ns.length)
         // ponytail: scanned as a slice so regex cost is per chunk, not per document; callers pass chunk-sized ranges.
         let slice = ns.substring(with: NSRange(location: lo, length: hi - lo))
         var maker = Maker(slice, lexicon: lexicon, french: language == "fr")
+        maker.citations = skipCitations
+        for r in skip.sorted(by: { $0.lowerBound < $1.lowerBound }) {   // into slice coordinates, overlaps merged
+            let a = max(r.lowerBound, lo) - lo, b = min(r.upperBound, hi) - lo
+            guard a < b else { continue }
+            if let last = maker.skip.last, a <= last.upperBound { maker.skip[maker.skip.count - 1] = last.lowerBound..<max(b, last.upperBound) }
+            else { maker.skip.append(a..<b) }
+        }
         maker.scan(0, maker.u.count, lineStart: true)
         return maker.finish(base: lo)
     }
@@ -70,6 +83,7 @@ private enum Rx {
     static let link = make("\\[([^\\]]*)\\]\\([^)\\s]*(?:\\s+\"[^\"]*\")?\\)")
     static let email = make("[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+")
     static let url = make("https?://[^\\s<>\"]+", .caseInsensitive)
+    static let citation = make("\\[\\s*(?:[0-9]{1,3}[a-z]?(?:\\s*[,–—-]\\s*[0-9]{1,3}[a-z]?)*|(?:citation|clarification) needed)\\s*\\]", .caseInsensitive)
     static let www = make("www\\.[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+(?:[/?#][^\\s<>\"]*)?", .caseInsensitive)
     // French. Digit groups: "12 345" (space, no-break or narrow no-break), "1.000.000" (two or more dot groups); "," or "." then digits is a decimal.
     // ponytail: a plain space groups too, so a list "100 200 300" reads as one number; French text writes thousands that way.
@@ -87,6 +101,9 @@ private struct Maker {
     let french: Bool
     let lexicon: [(NSRegularExpression, String)]
     var units: [UInt16] = [], lows: [Int] = [], highs: [Int] = []
+    /// Slice ranges never spoken, sorted by start.
+    var skip: [Range<Int>] = []
+    var citations = false
 
     init(_ slice: String, lexicon: [String: String], french: Bool) {
         self.slice = slice
@@ -156,16 +173,64 @@ private struct Maker {
         return end - p
     }
 
+    /// The end of the skip range holding p, or nil.
+    func skipEnd(_ p: Int) -> Int? {
+        var l = 0, h = skip.count   // first range ending after p
+        while l < h { let m = (l + h) / 2; if skip[m].upperBound > p { h = m } else { l = m + 1 } }
+        return l < skip.count && skip[l].lowerBound <= p ? skip[l].upperBound : nil
+    }
+
+    static let shortForms: Set<String> = ["para", "paras", "sect", "sched", "chap", "page", "pages", "note", "notes", "fig", "figs", "vol", "vols"]
+
+    /// The run of letters ending at `end` (exclusive), lower-cased.
+    func word(endingAt end: Int) -> String {
+        var a = end
+        while a > 0, let s = Unicode.Scalar(UInt32(u[a - 1])), CharacterSet.letters.contains(s) { a -= 1 }
+        return String(decoding: u[a..<end], as: UTF16.self).lowercased()
+    }
+
+    /// How much source a footnote mark at p uses: superscript digits, or 1 to 3 plain digits glued to the punctuation
+    /// after a long word and followed by a space or the line's end. nil when p starts no mark.
+    func footnoteMark(_ p: Int, _ to: Int) -> Int? {
+        guard p > 0 else { return nil }
+        let superscripts: Set<UInt16> = [0x00B9, 0x00B2, 0x00B3, 0x2070, 0x2074, 0x2075, 0x2076, 0x2077, 0x2078, 0x2079]
+        let closers = "\"'”’)]".utf16, enders = ".,;:".utf16
+        let before = u[p - 1]
+        if superscripts.contains(u[p]) {
+            var q = p
+            while q < to, superscripts.contains(u[q]) || u[q] == 0x2C { q += 1 }   // ¹,² as one mark
+            // After punctuation, or after a word of four letters or more ("m²" and "x³" are maths and stay).
+            return closers.contains(before) || enders.contains(before) || word(endingAt: p).count >= 4 ? q - p : nil
+        }
+        // Plain digits: straight quotes are left out, since they also open a quotation ('said:"12 men"').
+        let curly = "”’)]".utf16
+        guard Maker.isDigit(u[p]), curly.contains(before) || enders.contains(before) else { return nil }
+        var q = p
+        while q < to, Maker.isDigit(u[q]) { q += 1 }
+        guard q - p <= 3, q == to || [0x20, 0x09, 0x0A, 0x0D, 0xA0].contains(u[q]) else { return nil }
+        var w = p - 1   // back over the punctuation to the word (a closer may follow an ender: "end.”12")
+        while w > 0, curly.contains(u[w]) || enders.contains(u[w]) { w -= 1 }
+        let name = word(endingAt: w + 1)
+        return name.count >= 4 && !Maker.shortForms.contains(name) ? q - p : nil
+    }
+
     mutating func scan(_ from: Int, _ to: Int, lineStart start: Bool) {
         var p = from
         var lineStart = start
         loop: while p < to {
+            if let end = skipEnd(p) { p = min(end, to); continue }
             let c = u[p]
             if c == 0x0A || c == 0x0D { copy(p, p + 1); p += 1; lineStart = true; continue }
+            var firstOnLine = false
             if lineStart {
                 if c == 0x20 || c == 0x09 { copy(p, p + 1); p += 1; continue }
                 if let m = match(Rx.marker, p, to) { p += m.range.length; continue }   // heading, quote, bullet: dropped
                 lineStart = false
+                firstOnLine = true
+            }
+            if citations, !firstOnLine {
+                if c == 0x5B, match(Rx.link, p, to) == nil, let m = match(Rx.citation, p, to) { p += m.range.length; continue }
+                if let n = footnoteMark(p, to) { p += n; continue }
             }
             if p == from || !Maker.isWord(u[p - 1]) {
                 for (re, value) in lexicon {
