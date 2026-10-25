@@ -35,7 +35,7 @@ final class ReadHereTests: XCTestCase {
         _ = r.handle(.keyDown, at: 3)
         _ = r.tick(at: 4)
         XCTAssertEqual(r.handle(.keyDown, at: 5), [.hide], "a second key-down means the key-up was missed")
-        XCTAssertEqual(r.tick(at: 5 + RevealState.delay), [.show])
+        XCTAssertEqual(r.tick(at: 6), [.show])   // not 5 + delay: 5.35 - 5 is just under 0.35 in Double
         XCTAssertEqual(r.reset(), [.hide])
         XCTAssertEqual(r.reset(), [])
     }

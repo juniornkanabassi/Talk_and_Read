@@ -84,7 +84,8 @@ final class ShortcutTests: XCTestCase {
         let s = Settings()
         XCTAssertEqual(s.action(keyCode: 0, modifiers: ctrl), .read)
         XCTAssertEqual(s.action(keyCode: 0, modifiers: ctrl | 0x10000 | 0x800000 | 0x1), .read, "caps lock, fn and device bits are ignored")
-        XCTAssertNil(s.action(keyCode: 0, modifiers: ctrl | shift))
+        XCTAssertEqual(s.action(keyCode: 0, modifiers: ctrl | shift), .readHere)
+        XCTAssertNil(s.action(keyCode: 0, modifiers: ctrl | opt))
         XCTAssertNil(s.action(keyCode: 0, modifiers: 0))
         var off = s
         off.readShortcut = .off
@@ -124,7 +125,7 @@ final class ShortcutTests: XCTestCase {
 
     func testUnmatchedKeysPass() {
         var k = KeyConsumer()
-        XCTAssertFalse(k.swallow(.down, keyCode: 0, modifiers: ctrl | shift, ours: false, in: reading), "⌃⇧A")
+        XCTAssertFalse(k.swallow(.down, keyCode: 0, modifiers: ctrl | opt, ours: false, in: reading), "⌃⌥A")
         XCTAssertFalse(k.swallow(.down, keyCode: 15, modifiers: ctrl | opt, ours: false, in: reading), "old ⌃⌥R")
         XCTAssertFalse(k.swallow(.down, keyCode: 8, modifiers: cmd, ours: false, in: reading), "⌘C")
         XCTAssertTrue(k.swallowing.isEmpty)
