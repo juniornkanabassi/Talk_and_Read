@@ -178,11 +178,11 @@ enum SelfTest {
             // chunk's media start (inside the pause between sentences) and each piece is transcribed on its own, so the
             // recogniser's 15 s window seams cannot drop words from 2.5x speech. Kokoro above `Settings.stretchLimit`
             // speaks the whole rate itself and the Player plays it at 1x, as ReadSession does.
-            func playedWER(native: Float, wav: String?) async throws -> (wer: Double, seconds: Double) {
+            func playedWER(native: Float, stretch: Float? = nil, wav: String?) async throws -> (wer: Double, seconds: Double) {
                 var chunks = synths
                 if native != 1 { chunks = []; for t in speakables { chunks.append(try await engine.synthesize(t, voice: voice, speed: native)) } }
                 let player = Player(manualRendering: true)
-                player.rate = rate / native
+                player.rate = stretch ?? rate / native
                 let starts = chunks.map { player.enqueue($0) }
                 player.play()
                 let media = Double(chunks.reduce(0) { $0 + $1.samples.count }) / Player.sampleRate
@@ -194,6 +194,34 @@ enum SelfTest {
                     hypothesis.append((try? await asr.transcribe(Array(rendered[cuts[k] ..< cuts[k + 1]]), language: language).text) ?? "")
                 }
                 return (wer(reference: reference, hypothesis: hypothesis.joined(separator: " "), language: language), Double(rendered.count) / Player.sampleRate)
+            }
+            if engine.speaksFaster, ProcessInfo.processInfo.environment["TALKREAD_SPEED_GRID"] == "1" {
+                // Speed grid (25 Oct): Kokoro's `speed` is nominal (asked 4x, it plays about 2.3x), so first how fast it
+                // really speaks per setting, by audio length against 1x; then, per target speed, each stretch with Kokoro
+                // asked for whatever real pace makes up the rest. Real speed = 1x length / rendered length.
+                var real: [(nominal: Float, real: Double)] = [(1, 1)]
+                for nominal: Float in [1.25, 1.5, 1.75, 2, 2.25, 2.5, 3, 4] {
+                    var samples = 0
+                    for t in speakables { samples += try await engine.synthesize(t, voice: voice, speed: nominal).samples.count }
+                    let r = audioSeconds / (Double(samples) / Player.sampleRate)
+                    real.append((nominal, r))
+                    print(String(format: "grid calibration: Kokoro asked %gx speaks %.3fx", nominal, r))
+                }
+                func nominal(forReal want: Double) -> Float? {   // linear between measured points; nil past the fastest
+                    for (a, b) in zip(real, real.dropFirst()) where want >= a.real && want <= b.real {
+                        return a.nominal + Float((want - a.real) / (b.real - a.real)) * (b.nominal - a.nominal)
+                    }
+                    return nil
+                }
+                for target: Float in [2.5, 2.75, 3, 3.25, 3.5, 3.75, 4] {
+                    for stretch: Float in [1.5, 1.75, 2, 2.25, 2.5, 3, 3.5, 4] where stretch <= target {
+                        guard let n = nominal(forReal: Double(target / stretch)) else { continue }
+                        let r = try await playedWER(native: n, stretch: stretch, wav: String(format: "grid-%gx-stretch%g.wav", target, stretch))
+                        let actual = audioSeconds / (r.seconds - 0.5)
+                        print(String(format: "grid %gx: Kokoro asked %.3fx, stretched %gx: real %.2fx, WER ", target, n, stretch, actual) + pct(r.wer))
+                    }
+                }
+                return 0
             }
             let native = engine.speaksFaster ? TalkReadCore.Settings.nativeSpeed(for: rate) : 1
             let (werR, seconds) = try await playedWER(native: native, wav: "tts-\(rate)x.wav")
