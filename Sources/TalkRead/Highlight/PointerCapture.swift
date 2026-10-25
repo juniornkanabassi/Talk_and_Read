@@ -88,10 +88,16 @@ enum PointerCapture {
         // a block of its own, stopping below the web area.
         var current = deepest(element, at: point), steps = 0
         // The descent stopped on a block of blocks with none of them under the point: its padding or a gap, no paragraph.
-        if !inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? ""), !onlyText(current),
-           !((axAttribute(current, kAXChildrenAttribute) as? [AXUIElement]) ?? []).isEmpty { return nil }
+        let kids = (axAttribute(current, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+        if !inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? ""), !kids.isEmpty {
+            guard onlyText(current) else { return nil }
+            // A paragraph's own padding: the point must be on (or within 4 pt of) the lines of its text.
+            let lines = kids.prefix(200).compactMap { axFrame($0) }.filter { !$0.isEmpty }.reduce(CGRect.null) { $0.union($1) }
+            if !lines.isNull, !lines.insetBy(dx: -4, dy: -4).contains(point) { return nil }
+        }
         while steps < 12, !CFEqual(current, area), let parent = axElement(current, kAXParentAttribute),
-              inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? "") || sharesLine(current, in: parent) {
+              inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? "")
+                || (axAttribute(current, kAXRoleAttribute) as? String) == "AXGroup" && sharesLine(current, in: parent) {   // a heading or list item is a block of its own
             current = parent
             steps += 1
         }
