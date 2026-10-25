@@ -102,7 +102,9 @@ struct ReaderView: View {
             var starts: [Int] = []
             if item.kind == "pdf", let p = PDFDocument(url: Paths.documents.appendingPathComponent(item.fileName)) {
                 pdf = p
-                starts = Importer.pdfText(p).pageStarts   // same joining as the importer, so offsets match the read text
+                let joined = Importer.pdfText(p)   // same joining as the importer, so offsets match the read text
+                starts = joined.pageStarts
+                model.rememberFurniture(item, text: text, joined: joined.text, pageStarts: starts)
             }
             doc = ReaderDocument(text: text, tokens: tokens, sentences: ReadingText.sentenceRanges(tokens), pdf: pdf, pageStarts: starts)
         } catch {

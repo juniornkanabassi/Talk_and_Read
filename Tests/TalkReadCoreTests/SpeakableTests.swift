@@ -206,22 +206,32 @@ final class SpeakableTests: XCTestCase {
     }
 
     func testCitationMarksAreNotSpokenWhenSkipped() {
-        XCTAssertEqual(cited("The contract [12] was void."), "The contract was void.")
-        XCTAssertEqual(cited("See the cases [3, 5–7] and [9a]."), "See the cases and .")
-        XCTAssertEqual(cited("It was settled [citation needed] law."), "It was settled law.")
+        XCTAssertEqual(cited("The contract was void[12] from the start."), "The contract was void from the start.")
+        XCTAssertEqual(cited("See the cases.[3, 5–7][9a] Then"), "See the cases. Then")
+        XCTAssertEqual(cited("It was settled law.[citation needed]"), "It was settled law.")
         XCTAssertEqual(cited("There was no consideration.12 The court agreed."), "There was no consideration. The court agreed.")
-        XCTAssertEqual(cited("As Smith¹ said, it was argued.²³ Then"), "As Smith said, it was argued. Then")
+        XCTAssertEqual(cited("As Smith¹, Jones² said, it was argued.²³ Then"), "As Smith, Jones said, it was argued. Then")
         XCTAssertEqual(cited("He called it “a nullity”.4 Then"), "He called it “a nullity”. Then")
-        // Kept: a judgment's paragraph number, section and paragraph references, decimals, thousands, maths, years.
+        XCTAssertEqual(cited("The point was made.7\nNext line"), "The point was made. Next line")
+        // Kept: paragraph references, pinpoints, section and article numbers, stats, decimals, thousands, maths, years.
         XCTAssertEqual(cited("[23] The claimant appealed."), "[23] The claimant appealed.")
-        XCTAssertEqual(cited("Under s.12 The Act and para.4 apply."), "Under s.12 The Act and para.4 apply.")
+        XCTAssertEqual(cited("Per Lord Reed at [45] and paras [12]–[15]."), "Per Lord Reed at [45] and paras [12]–[15].")
+        XCTAssertEqual(cited("See [2024] EWCA Civ 12 at [23]."), "See [2024] EWCA Civ 12 at [23].")
+        XCTAssertEqual(cited("Under s.12 The Act, para.4 Then arts.8 And regs.4 Apply."), "Under s.12 The Act, para.4 Then arts.8 And regs.4 Apply.")
+        XCTAssertEqual(cited("Goals:12 Shots:14 and the result.3 points"), "Goals:12 Shots:14 and the result.3 points")
         XCTAssertEqual(cited("It cost 3.5 or 1,000 or 12:30."), "It cost 3.5 or 1,000 or 12:30.")
         XCTAssertEqual(cited("The area is 4 m² and x³."), "The area is 4 m² and x³.")
-        XCTAssertEqual(cited("Reported at [1990] 1 AC 12."), "Reported at [1990] 1 AC 12.")
         XCTAssertEqual(cited("He said:\"12 men\" came."), "He said:\"12 men\" came.")
         XCTAssertEqual(cited("A [link](https://example.com) stays."), "A link stays.")
         // Off: unchanged.
-        XCTAssertEqual(make("The contract [12] was void.").text, "The contract [12] was void.")
+        XCTAssertEqual(make("The contract was void[12].").text, "The contract was void[12].")
+    }
+
+    func testAPageBreakWithItsFurnitureSkippedJoinsTheSentence() {
+        let s = "the claimant was\n12\n\nJournal of Law\nentitled to it."   // "12" 17..<19, "Journal of Law" 21..<35
+        let sp = Speakable.make(s, range: 0..<(s as NSString).length, lexicon: [:], skip: [17..<19, 21..<35])
+        XCTAssertEqual(sp.text, "the claimant was entitled to it.")
+        XCTAssertEqual(make("the claimant was\nentitled").text, "the claimant was. entitled", "an ordinary line break still pauses")
     }
 
     func testSkippedRangesAreNotSpokenAndNotCovered() {

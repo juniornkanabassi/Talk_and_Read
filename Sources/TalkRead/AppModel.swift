@@ -435,6 +435,8 @@ extension EngineKind {
     }
     /// The read `preview` started; any later read replaces `session`, so it is a preview only while it is that one.
     private weak var previewSession: ReadSession?
+    /// Furniture ranges per PDF document, found once (`furniture`).
+    private var furnitureCache: [UUID: [Range<Int>]] = [:]
 
     func read(_ item: LibraryItem, fromToken: Int?) {
         guard let text = try? documentText(item) else { MiniPlayer.shared.flash("Could not open “\(item.title)”"); return }
@@ -449,15 +451,20 @@ extension EngineKind {
     }
 
     /// A PDF's running headers, footers and page numbers, when Settings skips them. The pages are joined exactly as the
-    /// importer joined them; a stored text that no longer matches its PDF skips nothing.
-    // ponytail: reopens the PDF on each document read (the reader does the same on open); cache per item if a large
-    // PDF makes Play feel slow.
+    /// importer joined them; a stored text that no longer matches its PDF unit for unit skips nothing. Found once per
+    /// document (the reader fills it in when it opens the PDF), since extracting a long PDF's text takes a while.
     private func furniture(_ item: LibraryItem, text: String) -> [Range<Int>] {
-        guard settings.skipHeadersAndFooters, item.kind == "pdf",
-              let pdf = PDFDocument(url: Paths.documents.appendingPathComponent(item.fileName)) else { return [] }
+        guard settings.skipHeadersAndFooters, item.kind == "pdf" else { return [] }
+        if let known = furnitureCache[item.id] { return known }
+        guard let pdf = PDFDocument(url: Paths.documents.appendingPathComponent(item.fileName)) else { return [] }
         let joined = Importer.pdfText(pdf)
-        guard joined.text == text else { return [] }
-        return PageFurniture.ranges(text, pageStarts: joined.pageStarts)
+        rememberFurniture(item, text: text, joined: joined.text, pageStarts: joined.pageStarts)
+        return furnitureCache[item.id] ?? []
+    }
+
+    /// `joined`: the PDF's text as `Importer.pdfText` joins it; `text`: the stored document text a read speaks.
+    func rememberFurniture(_ item: LibraryItem, text: String, joined: String, pageStarts: [Int]) {
+        furnitureCache[item.id] = joined.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: pageStarts) : []
     }
 
     @discardableResult
@@ -474,7 +481,7 @@ extension EngineKind {
         modelsWarm = true
         sessionWatch = s.$state.sink { [weak self] state in self?.sessionStateChanged(state, id: id) }
         s.start()
-        if capture?.hasGeometry == true {   // clipboard and provided text have no place on screen
+        if capture?.hasGeometry == true, settings.showHighlight {   // clipboard and provided text have no place on screen
             let h = Highlighter(session: s, style: Overlay.Style(settings))
             h.useOCRFallback = settings.useOCRFallback
             h.start()

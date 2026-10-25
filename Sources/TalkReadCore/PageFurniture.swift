@@ -4,17 +4,19 @@ import Foundation
 
 public enum PageFurniture {
     /// Lines looked at on each page, from the top and from the bottom.
-    static let edgeLines = 3
+    static let edgeLines = 2
+    /// What a page number looks like once its numbers are "#": "#", "page #", "p. #", "- # -", "# of #", "#/#".
+    static let pageNumber = try! NSRegularExpression(pattern: "^(?:page |p\\. ?)?[-–—]? ?# ?[-–—]?(?: ?(?:of|/) ?#)?$")
     /// A line longer than this is body text, never furniture.
     static let maxLength = 100
 
     /// The ranges (UTF-16, in `text`) of every furniture line. `pageStarts`: where each page begins in `text`, as the
     /// importer joined them (pages separated by "\n\n").
     ///
-    /// Two kinds count, both only in the first or last three lines of a page and only with three pages or more:
-    /// the same line on at least three pages and a fifth of them (a journal title, a running head), and a line whose
-    /// one number moves in step with the page (a page number, "12 Contract Law", "Page 3 of 40"). A heading such as
-    /// "Question 2" that starts some pages is kept, because its number does not follow the page.
+    /// Two kinds count, both only in the first or last two lines of a page and only with three pages or more:
+    /// the same line on at least three pages and a fifth of them (a journal title, a running head), and a page number
+    /// ("7", "Page 3 of 40", "- 7 -") that moves in step with the page. A numbered line with other words ("Question 2",
+    /// "Matchday 3", even a running head like "12 Contract Law") is read: one question per page also counts with the page.
     public static func ranges(_ text: String, pageStarts: [Int]) -> [Range<Int>] {
         let u = Array(text.utf16)
         guard pageStarts.count >= 3 else { return [] }
@@ -47,9 +49,11 @@ public enum PageFurniture {
         for group in Dictionary(grouping: lines, by: \.exact).values where Set(group.map(\.page)).count >= needed {
             found += group.map(\.range)
         }
-        // The same shape of line whose first number is the page's index plus a fixed offset ("Page 3 of 40" follows
-        // the page by its 3).
-        for group in Dictionary(grouping: lines.filter { $0.number != nil }, by: \.shape).values {
+        // A page number whose (first) number is the page's index plus a fixed offset ("Page 3 of 40" follows by its 3).
+        let numbers = lines.filter { l in
+            l.number != nil && pageNumber.firstMatch(in: l.shape, range: NSRange(l.shape.startIndex..., in: l.shape)) != nil
+        }
+        for group in Dictionary(grouping: numbers, by: \.shape).values {
             for same in Dictionary(grouping: group, by: { $0.number! - $0.page }).values where Set(same.map(\.page)).count >= needed {
                 found += same.map(\.range)
             }
