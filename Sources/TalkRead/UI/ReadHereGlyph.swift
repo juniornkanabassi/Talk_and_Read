@@ -161,7 +161,9 @@ import TalkReadCore
 
     /// The paragraph's frame moved on screen (a scroll, a reflow): the glyph no longer sits beside it.
     private func moved(_ block: PointerCapture.Block) -> Bool {
-        let now: CGRect? = if let start = block.start { axBounds(block.element, location: start, length: block.length) } else { axFrame(block.element) }
+        let now: CGRect? = PointerCapture.bounded {   // every tick: a hung app must not freeze it
+            if let start = block.start { axBounds(block.element, location: start, length: block.length) } else { axFrame(block.element) }
+        }
         guard let now else { return true }   // gone from the page
         return abs(now.minX - block.frame.minX) > 1 || abs(now.minY - block.frame.minY) > 1
     }

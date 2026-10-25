@@ -58,7 +58,21 @@ enum PointerCapture {
         return nil
     }
 
+    /// Runs `body` with every AX call answering within a quarter of a second: the glyph and hover look on the main
+    /// thread, unasked, so a hung app must not freeze Talk & Read. The system-wide timeout is every element's, so it
+    /// goes back to the default afterwards.
+    @MainActor static func bounded<T>(_ body: () -> T) -> T {
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.25)
+        defer { AXUIElementSetMessagingTimeout(system, 0) }
+        return body()
+    }
+
     @MainActor static func block(from element: AXUIElement, pid: pid_t, point: CGPoint) -> Block? {
+        bounded { lookup(from: element, pid: pid, point: point) }
+    }
+
+    @MainActor private static func lookup(from element: AXUIElement, pid: pid_t, point: CGPoint) -> Block? {
         let role = axAttribute(element, kAXRoleAttribute) as? String ?? ""
         if TextCapture.isSecure(element) { return nil }   // never read a password field, natively or as part of a page
         // A text view, or a web page's editable text when it answers like one; a contenteditable that does not falls
