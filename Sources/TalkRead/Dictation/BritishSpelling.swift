@@ -13,14 +13,17 @@ enum BritishSpelling {
     ]
 
     /// Only the sentences confidently English in a dictation in several languages (a French "favorite" is not respelt,
-    /// even in a sentence too short to place).
+    /// even in a sentence too short to place), and in them no word another chosen language's dictionary accepts ("ma
+    /// favorite" inside an English sentence; the price is an English "favorite" left as it is while French is on).
     @MainActor static func apply(_ text: String, languages: [String]) -> String {
         guard languages.contains("en") else { return text }
         guard languages.count > 1 else { return apply(text) }
-        return Language.runs(text, among: languages, inherit: false).map { $0.language == "en" ? apply(String($0.text)) : String($0.text) }.joined()
+        let others = DictationController.dictionaries(for: languages.filter { $0 != "en" })
+        return Language.runs(text, among: languages, inherit: false)
+            .map { $0.language == "en" ? apply(String($0.text), keepingWordsOf: others) : String($0.text) }.joined()
     }
 
-    @MainActor static func apply(_ text: String) -> String {
+    @MainActor static func apply(_ text: String, keepingWordsOf others: [String] = []) -> String {
         let checker = NSSpellChecker.shared
         func accepted(_ word: String, _ language: String) -> Bool {
             checker.checkSpelling(of: word, startingAt: 0, language: language, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
@@ -29,7 +32,7 @@ enum BritishSpelling {
         let out = NSMutableString(string: text)
         for m in regex.matches(in: text, range: NSRange(location: 0, length: out.length)).reversed() {
             let word = out.substring(with: m.range)
-            guard !accepted(word, "en_GB"), accepted(word, "en_US") else { continue }
+            guard !accepted(word, "en_GB"), accepted(word, "en_US"), !others.contains(where: { accepted(word, $0) }) else { continue }
             for (pattern, template) in patterns {
                 let british = word.replacingOccurrences(of: pattern, with: template, options: [.regularExpression, .caseInsensitive])
                 if british != word, accepted(british, "en_GB") { out.replaceCharacters(in: m.range, with: british); break }

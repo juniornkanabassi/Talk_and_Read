@@ -50,9 +50,11 @@ enum DictationError: LocalizedError, Equatable {
     private(set) var lastPartial = ""
     /// Settings.dictationMicrophone: the input for the next recording (nil = system default).
     var microphoneUID: String?
-    /// Set while recording when the saved microphone is not connected and the default is used instead, or when other
-    /// languages are chosen but their model is not downloaded yet (the pill shows it until words arrive).
+    /// Set while recording when the saved microphone is not connected and the default is used instead (the pill shows it).
     @Published private(set) var micNotice: String?
+    /// Set while recording when other languages are chosen but their model is not downloaded yet, so this one is English.
+    @Published private(set) var languageNotice: String?
+    static let languageFallback = "English only until the multilingual model is downloaded (Settings ▸ Dictation)"
 
     static let user = "user"
     /// The one admission slot for live dictation and file transcription: one owner at a time; other control callers
@@ -125,7 +127,7 @@ enum DictationError: LocalizedError, Equatable {
             return multilingual
         }
         // Until the multilingual model is downloaded (Settings ▸ Dictation offers it), dictation stays English and the pill
-        // says so (`micNotice`).
+        // says so (`languageNotice`); a file transcription is refused instead.
         guard asr is Transcriber, appleInstalled else { return asr }
         let parakeetReady = asr.isLoaded || asr.isLoading || Transcriber.isDownloaded
         guard preferApple || !parakeetReady else { return asr }
@@ -148,6 +150,7 @@ enum DictationError: LocalizedError, Equatable {
         offering = nil
         pillToken += 1                                            // the last result's hide no longer applies
         micNotice = nil
+        languageNotice = nil
         insertOnStop = true
         levels = levels.map { _ in 0 }
         lastPartial = ""
@@ -155,7 +158,7 @@ enum DictationError: LocalizedError, Equatable {
         showPill()
         let asr = recogniser()
         if languages != ["en"], asr !== multilingual {
-            micNotice = "English only until the multilingual model is downloaded (Settings ▸ Dictation)"
+            languageNotice = Self.languageFallback
         }
         if !asr.isLoaded { Task { try? await asr.load(progress: nil) } }   // load alongside any drain ("Preparing…")
         let (stream, feed) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
@@ -181,6 +184,7 @@ enum DictationError: LocalizedError, Equatable {
         feed = nil
         _ = audio.stop()
         micNotice = nil
+        languageNotice = nil
         state = .transcribing
         play("Pop")
     }
@@ -228,8 +232,11 @@ enum DictationError: LocalizedError, Equatable {
     /// cancels it, and it then throws `busy` with the new owner.
     func transcribe(file: URL, caller: String) async throws -> String {
         if let busy = owner { throw DictationError.busy(owner: busy) }
-        owner = caller                                            // admitted before the first await
         let asr = recogniser(), decode = decode
+        if languages != ["en"], asr !== multilingual {
+            throw AppError(code: "model_missing", message: "Dictation languages are \(languages.joined(separator: ", ")), but the multilingual model is not downloaded yet: download it in Settings ▸ Dictation, or set dictationLanguages to en.")
+        }
+        owner = caller                                            // admitted before the first await
         let job = Task {
             // ponytail: the decode reads the whole file and cannot be interrupted; a takeover waits for it (the drain),
             // a few ms for a dictation clip. Make it chunked and cancellable if hour-long files ever matter.
@@ -295,7 +302,7 @@ enum DictationError: LocalizedError, Equatable {
         guard case .recording = state else { return released() }
         play("Tink")                                              // the microphone starts now, after any drain
         let mic = Microphone.resolve(microphoneUID, in: Microphone.inputs())   // decided per recording, never mid-recording
-        micNotice = mic.notice ?? micNotice                       // a microphone notice outranks the language one
+        micNotice = mic.notice
         (audio as? Recorder)?.microphoneUID = mic.device?.uid
         do {
             try await audio.start()
@@ -429,6 +436,7 @@ enum DictationError: LocalizedError, Equatable {
     private func discard() {
         generation += 1
         micNotice = nil
+        languageNotice = nil
         work?.cancel()
         _ = audio.stop()
         feed?.finish()

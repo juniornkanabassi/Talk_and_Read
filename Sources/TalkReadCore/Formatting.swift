@@ -68,13 +68,14 @@ extension Cleanup {
         text = text.replacingOccurrences(of: "\\b(1[0-2]|[1-9])([0-5]\\d)(\\s?[aApP]\\.?\\s?[mM]\\b)", with: "$1:$2$3", options: .regularExpression)
         // "at 3 30pm" (Parakeet v3 spaces the minutes) → "at 3:30pm"; only after a word that introduces a time, so "book 2
         // 10pm slots" keeps its count.
-        text = text.replacingOccurrences(of: "(?i)\\b(at|by|from|until|till|before|after|around|about|since|to) (1[0-2]|[1-9]) ([0-5]\\d)(\\s?[aApP]\\.?\\s?[mM]\\b)",
+        text = text.replacingOccurrences(of: "(?i)\\b(at|by|from|until|till|before|after|since) (1[0-2]|[1-9]) ([0-5]\\d)(\\s?[aApP]\\.?\\s?[mM]\\b)",
                                          with: "$1 $2:$3$4", options: .regularExpression)
         text = replaceAll("\\b(\\d{1,2}(?::\\d{2})?)\\s?([aApP])\\.?\\s?[mM]\\b(?:\\.(?!\\s*$|\\s+[A-Z]|\\s*\\n))?", in: text) {
             $0[1] + $0[2].lowercased() + "m"
         }
-        // A day said as a word ("the fourteenth of March", Parakeet v3) becomes its number first.
-        text = replaceAll("\\b[Tt]he ((?:[Tt]wenty|[Tt]hirty)[ -])?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|thirtieth)(?: of)? (\(months))\\b", in: text) { m in
+        // A day said as a word ("the fourteenth of March", Parakeet v3) becomes its number first; only with "of", so "the
+        // second May bank holiday" and "the first March I lived here" stay.
+        text = replaceAll("\\b[Tt]he ((?:[Tt]wenty|[Tt]hirty)[ -])?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|thirtieth) of (\(months))\\b", in: text) { m in
             let tens = m[1].lowercased().hasPrefix("twenty") ? 20 : m[1].lowercased().hasPrefix("thirty") ? 30 : 0
             let day = tens + (dayOrdinals[m[2].lowercased()] ?? 0)
             return (1...31).contains(day) && (tens == 0 || day % 10 != 0) ? "\(m[0].prefix(3)) \(day) \(m[3])" : m[0]

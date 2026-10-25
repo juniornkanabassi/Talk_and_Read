@@ -16,19 +16,22 @@ public enum Cleanup {
             protected.append(text)
             return "\(open)\(protected.count - 1)\(close)"
         }
-        var text = raw.replacingOccurrences(of: "[\u{E000}-\u{E011}]", with: "", options: .regularExpression)
+        var text = raw.replacingOccurrences(of: "[\u{E000}-\u{E03F}]", with: "", options: .regularExpression)
 
         text = webForms(text)
         text = replaceAll(urlPattern, in: text) { hold(lowerHost($0[0])) }
 
         if removeFillers { text = text.replacingOccurrences(of: fillerPattern(languages), with: "", options: .regularExpression) }
 
-        for (pattern, replacement) in spoken {
-            // A spoken mark replaces one the recogniser already wrote ("John, comma" is "John,", not "John,,"; Parakeet v3
-            // punctuates by itself). Line breaks, quotes and dashes keep what comes before them.
+        // A spoken mark replaces one the recogniser already wrote ("John, comma" is "John,", not "John,,"; Parakeet v3
+        // punctuates by itself). Line breaks, quotes and dashes keep what comes before them. Commands become placeholders
+        // first, so a mark one command made is never taken for the recogniser's ("question mark exclamation mark" is "?!").
+        let commands = spoken(languages)
+        for (i, (pattern, replacement)) in commands.enumerated() {
             let before = ".,?!;:".contains(replacement) ? "(?:[.,!?;:][ \\t]*)?" : ""
-            text = text.replacingOccurrences(of: "(?i)\(before)\\b(?:\(pattern))\\b[.,!?;:]?", with: replacement, options: .regularExpression)
+            text = text.replacingOccurrences(of: "(?i)\(before)\\b(?:\(pattern))\\b[.,!?;:]?", with: Self.command(i), options: .regularExpression)
         }
+        for (i, (_, replacement)) in commands.enumerated() { text = text.replacingOccurrences(of: Self.command(i), with: replacement) }
         text = text.replacingOccurrences(of: "[ \\t]+([.,?!:;])", with: "$1", options: .regularExpression)
         text = text.replacingOccurrences(of: "[ \\t]*\\n[ \\t]*", with: "\n", options: .regularExpression)
         text = text.replacingOccurrences(of: "[ \\t]*\(closeQuote)", with: "\"", options: .regularExpression)
@@ -67,19 +70,30 @@ public enum Cleanup {
     static func fillerPattern(_ languages: [String]) -> String {
         let fillers: [String: [String]] = ["en": ["umm", "um", "uh", "erm", "er", "ah", "hmm"], "fr": ["euh", "heu"],
                                            "de": ["äh", "ähm"], "it": ["ehm", "uhm"]]
-        let words: [String: Set<String>] = ["de": ["er"], "pt": ["um"]]
+        let words: [String: Set<String>] = ["de": ["er", "um"], "pt": ["um"], "fr": ["ah"]]   // "uns um acht", "ah bon"
         let drop = (fillers["en"]! + languages.flatMap { fillers[$0] ?? [] }).filter { f in !languages.contains { words[$0]?.contains(f) == true } }
         var seen = Set<String>()
         return "(?i)[ \\t]*\\b(?:\(drop.filter { seen.insert($0).inserted }.joined(separator: "|")))\\b,?"
     }
 
-    /// Whole spoken phrases and what they become.
-    private static let spoken: [(String, String)] = [
-        ("new paragraph", "\n\n"), ("new line", "\n"),
-        ("full stop|period", "."), ("comma", ","), ("question mark", "?"),
-        ("exclamation mark|exclamation point", "!"), ("semicolon", ";"), ("colon", ":"),
-        ("open quote", openQuote), ("close quote", closeQuote), ("dash", " – ")
-    ]
+    /// Whole spoken phrases and what they become; French ones too when French is a dictation language ("point" alone is
+    /// too common a word, so a full stop is "point final").
+    private static func spoken(_ languages: [String]) -> [(String, String)] {
+        let english: [(String, String)] = [
+            ("new paragraph", "\n\n"), ("new line", "\n"),
+            ("full stop|period", "."), ("comma", ","), ("question mark", "?"),
+            ("exclamation mark|exclamation point", "!"), ("semicolon", ";"), ("colon", ":"),
+            ("open quote", openQuote), ("close quote", closeQuote), ("dash", " – ")
+        ]
+        guard languages.contains("fr") else { return english }
+        return [("nouveau paragraphe", "\n\n"), ("à la ligne", "\n"), ("point final", "."), ("point[ -]virgule", ";"),
+                ("point d['’]interrogation", "?"), ("point d['’]exclamation", "!"), ("deux[ -]points", ":"), ("virgule", ","),
+                ("ouvrez les guillemets|ouvrir les guillemets", openQuote), ("fermez les guillemets|fermer les guillemets", closeQuote)]
+            + english
+    }
+
+    /// The placeholder a spoken command stands as until all are found (private use, stripped from the input).
+    private static func command(_ i: Int) -> String { String(Character(UnicodeScalar(0xE020 + i)!)) }
 
     /// Replaces every match with `transform(groups)`: index 0 is the whole match, an unmatched group is "".
     static func replaceAll(_ pattern: String, in text: String, _ transform: ([String]) -> String) -> String {

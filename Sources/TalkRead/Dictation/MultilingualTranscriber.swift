@@ -74,7 +74,7 @@ import TalkReadCore
             let preview = Preview()
             // Every way out of the loop (a cancel included) ends the preview first: it decodes on the same manager, so it
             // must be over before this utterance gives up the queue or an idle unload frees the model.
-            func endPreview() async {
+            @MainActor func endPreview() async {
                 preview.stopped = true
                 preview.task?.cancel()
                 await preview.task?.value

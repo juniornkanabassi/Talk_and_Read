@@ -30,6 +30,8 @@ final class CleanupTests: XCTestCase {
         XCTAssertEqual(Cleanup.apply("Alors euh je pense que oui.", vocabulary: [:], removeFillers: true, languages: ["en", "fr"]), "Alors je pense que oui.")
         XCTAssertEqual(Cleanup.apply("Er kommt äh morgen.", vocabulary: [:], removeFillers: true, languages: ["en", "de"]), "Er kommt morgen.")
         XCTAssertEqual(Cleanup.apply("Quero um café.", vocabulary: [:], removeFillers: true, languages: ["pt"]), "Quero um café.")
+        XCTAssertEqual(Cleanup.apply("Wir treffen uns um acht.", vocabulary: [:], removeFillers: true, languages: ["en", "de"]), "Wir treffen uns um acht.")
+        XCTAssertEqual(Cleanup.apply("Ah bon, d'accord.", vocabulary: [:], removeFillers: true, languages: ["en", "fr"]), "Ah bon, d'accord.")
     }
 
     func testFillerRemovalKeepsLineBreaks() {
@@ -54,6 +56,13 @@ final class CleanupTests: XCTestCase {
         XCTAssertEqual(clean("Hi John, comma how are you?"), "Hi John, how are you?")
         XCTAssertEqual(clean("Is it ready in five seconds? question mark"), "Is it ready in five seconds?")
         XCTAssertEqual(clean("It's done. Question mark"), "It's done?")
+        XCTAssertEqual(clean("Really question mark exclamation mark"), "Really?!", "a mark a command made is kept")
+        // French commands with French on; English ones still work, and "point" alone is a word.
+        let fr = { (s: String) in Cleanup.apply(s, vocabulary: [:], removeFillers: true, languages: ["en", "fr"]) }
+        XCTAssertEqual(fr("Bonjour virgule comment allez-vous point d'interrogation"), "Bonjour, comment allez-vous?")
+        XCTAssertEqual(fr("C'est le point important point final à la ligne Ensuite deux-points rien"), "C'est le point important.\nEnsuite: rien")
+        XCTAssertEqual(fr("Hello comma world full stop"), "Hello, world.")
+        XCTAssertEqual(clean("Bonjour virgule"), "Bonjour virgule", "French commands only with French on")
         XCTAssertEqual(clean("The end. New paragraph Next part"), "The end.\n\nNext part", "a line break keeps the full stop")
     }
 

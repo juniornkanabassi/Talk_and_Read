@@ -60,7 +60,7 @@ import TalkReadCore
                              100 * Double(e) / Double(max(1, ref.count)), ms, got.count, wanted.count, text == reference ? "yes" : "no",
                              text.replacingOccurrences(of: "\n", with: "⏎"), missed.isEmpty ? "" : "  [missed: \(missed.joined(separator: "; "))]"))
             }
-            let e2e = await releaseToPaste(asr, clips: clips)
+            let e2e = await releaseToPaste(asr, clips: clips, languages: languages)
             let sorted = latencies.sorted()
             let line = String(format: "%@: WER %.1f%%, key terms %d/%d, exact %d/%d, after last sample median %.0f ms (max %.0f), release to paste median %.0f ms (max %.0f) over %d of %d insertions, app memory +%.0f MB loaded, peak %.0f MB",
                               name, 100 * Double(errors) / Double(max(1, words)), hits, termTotal, exact, clips.count,
@@ -96,14 +96,16 @@ import TalkReadCore
 
     /// Release (the clip's last buffer, then `stop`) to the moment the controller hands the text to the inserter, for
     /// clips of 4–7 s, through the production DictationController (clean-up, settings and vocabulary reads included).
-    static func releaseToPaste(_ asr: DictationASR, clips: [URL]) async -> (median: Double, max: Double, count: Int, tried: Int) {
+    static func releaseToPaste(_ asr: DictationASR, clips: [URL], languages: [String] = ["en"]) async -> (median: Double, max: Double, count: Int, tried: Int) {
         var times: [Double] = [], tried = 0
         for clip in clips {
             guard let samples = try? Transcriber.samples(of: clip), (4 * 16_000...7 * 16_000).contains(samples.count) else { continue }
             tried += 1
             let audio = ClipAudio(samples: samples)
             var pasted: Date?
-            let controller = DictationController(audio: audio, asr: asr, insert: { _, _, _, _ in pasted = Date(); return .inserted(confirmed: true) })
+            // The engine under test serves both roles, so the languages pick its clean-up and nothing else.
+            let controller = DictationController(audio: audio, asr: asr, multilingual: asr, insert: { _, _, _, _ in pasted = Date(); return .inserted(confirmed: true) })
+            controller.languages = languages
             controller.quiet = true
             let fed = AsyncStream<Void>.makeStream()
             audio.done = { fed.continuation.finish() }

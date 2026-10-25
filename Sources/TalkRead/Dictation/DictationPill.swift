@@ -127,10 +127,16 @@ struct DictationPillView: View {
         }
     }
 
+    /// The microphone and language notices, both when both apply.
+    private var notice: String? {
+        let both = [dictation.micNotice, dictation.languageNotice].compactMap { $0 }
+        return both.isEmpty ? nil : both.joined(separator: ". ")
+    }
+
     private var message: String {
         switch dictation.state {
         case .idle: ""
-        case .recording(_, let partial): dictation.preparing && partial.isEmpty ? "Preparing…" : partial.isEmpty ? dictation.micNotice ?? "Listening" : partial
+        case .recording(_, let partial): dictation.preparing && partial.isEmpty ? "Preparing…" : partial.isEmpty ? notice ?? "Listening" : partial
         case .transcribing: dictation.lastPartial.isEmpty ? "Transcribing…" : dictation.lastPartial
         case .done(let text): text
         case .failed(let reason): reason
