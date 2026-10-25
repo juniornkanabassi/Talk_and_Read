@@ -21,22 +21,26 @@ import TalkReadCore
     private var wanted = false
     /// Showing inside the mini player rather than in `panel`.
     private(set) var docked = false
+    /// Placed at an explicit origin (the self-test): never docks.
+    private var pinned = false
     private var playerWatch: AnyCancellable?
 
     init(dictation: DictationController) {
         self.dictation = dictation
         // The player came or went while the pill is up: move into it, or back out to a panel of its own.
         playerWatch = MiniPlayer.shared.$isShowing.removeDuplicates().sink { [weak self] showing in
-            guard let self, self.wanted else { return }
+            guard let self, self.wanted, !self.pinned else { return }
             if showing, MiniPlayer.shared.canDock { self.dock() } else if !showing, self.docked { self.undock(); self.show() }
         }
     }
 
-    private func dock() {
+    /// false: another dictation already has the player, so this one keeps its own panel.
+    @discardableResult private func dock() -> Bool {
+        guard MiniPlayer.shared.dock(dictation) else { return false }
         panel?.close()
         panel = nil
         docked = true
-        MiniPlayer.shared.dock(dictation)
+        return true
     }
 
     private func undock() {
@@ -63,8 +67,9 @@ import TalkReadCore
     func show(at origin: NSPoint? = nil) {
         wanted = true
         if docked { return }
-        if origin == nil, MiniPlayer.shared.canDock { return dock() }
-        if let panel, panel.isVisible { return panel.orderFrontRegardless() }
+        if let panel, panel.isVisible { return panel.orderFrontRegardless() }   // the player watch docks a showing pill
+        pinned = origin != nil
+        if !pinned, MiniPlayer.shared.canDock, dock() { return }
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
         let area = screen?.visibleFrame ?? .zero
@@ -89,6 +94,7 @@ import TalkReadCore
 
     func hide() {
         wanted = false
+        pinned = false
         undock()
         panel?.close()
         panel = nil
