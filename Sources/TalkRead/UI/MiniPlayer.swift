@@ -479,8 +479,9 @@ struct SpeedControl: NSViewRepresentable {
         private var scrolled: CGFloat = 0
         /// The one open panel (one mini player).
         private static weak var shown: NSPopover?
-        /// The player is usually not in the active app, so `.transient` misses clicks in other apps: this closes on them.
-        private var outsideClicks: Any?
+        /// `.transient` misses clicks in other apps (the player is usually not in the active app) and in the player itself
+        /// (AppKit exempts a `becomesKeyOnlyIfNeeded` panel): these two monitors close the panel on both.
+        private var outsideClicks: [Any] = []
         private lazy var popover: NSPopover = {
             let p = NSPopover()
             p.behavior = .transient
@@ -508,14 +509,28 @@ struct SpeedControl: NSViewRepresentable {
             if popover.isShown { return popover.performClose(nil) }
             popover.show(relativeTo: bounds, of: self, preferredEdge: .maxY)
             Self.shown = popover
-            outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-                MainActor.assumeIsolated { self?.popover.performClose(nil) }
-            }
+            let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
+            outsideClicks = [
+                NSEvent.addGlobalMonitorForEvents(matching: clicks) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.popover.performClose(nil) }
+                },
+                NSEvent.addLocalMonitorForEvents(matching: clicks) { [weak self] event in
+                    MainActor.assumeIsolated { self?.closeUnlessInside(event) }
+                    return event
+                },
+            ].compactMap { $0 }
+        }
+
+        /// A click in the panel stays; one on this button is left to its toggle; anywhere else closes the panel.
+        private func closeUnlessInside(_ event: NSEvent) {
+            guard popover.isShown, event.window !== popover.contentViewController?.view.window else { return }
+            if event.window === window, bounds.contains(convert(event.locationInWindow, from: nil)) { return }
+            popover.performClose(nil)
         }
 
         func popoverDidClose(_ notification: Notification) {
-            if let outsideClicks { NSEvent.removeMonitor(outsideClicks) }
-            outsideClicks = nil
+            outsideClicks.forEach(NSEvent.removeMonitor)
+            outsideClicks = []
         }
 
         override func scrollWheel(with event: NSEvent) {
