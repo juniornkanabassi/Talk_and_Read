@@ -63,6 +63,12 @@ final class PageFurnitureTests: XCTestCase {
         XCTAssertEqual(PageFurniture.ranges(text, pageStarts: starts), [], "a heading that counts with the page, and a speaker label inside the page, are content")
     }
 
+    func testRepeatedAnswerOptionsOnShortPagesAreRead() {
+        let pages = (0..<3).map { "Question \($0 + 1)\nIs the \(words[$0]) term implied?\nA. Yes\nB. No" }
+        let (text, starts) = join(pages)
+        XCTAssertEqual(PageFurniture.ranges(text, pageStarts: starts), [])
+    }
+
     func testShortDocumentsAndLongLinesAreLeftAlone() {
         let two = join(["Journal of Law\nBody one.\n1", "Journal of Law\nBody two.\n2"])
         XCTAssertEqual(PageFurniture.ranges(two.text, pageStarts: two.starts), [])
