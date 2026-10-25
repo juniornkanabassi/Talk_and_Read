@@ -93,6 +93,174 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(make("[**big** news](u)").text, "big news")
     }
 
+    func testLinkTargetsWithSpacesOrAngleBracketsAreDropped() {
+        let spaced = "See [MEMORY.md](/Users/junior/Documents/JuniorOS/01 About Me/MEMORY.md) now."
+        let sp = make(spaced)
+        XCTAssertEqual(sp.text, "See MEMORY.md now.")
+        XCTAssertEqual(origin(sp, "MEMORY.md", spaced), "MEMORY.md")
+        XCTAssertFalse(sp.covers((spaced as NSString).range(of: "About Me").toRange()))
+        XCTAssertEqual(make("Read [the guide](<02 Projects/Talk & Read/guide.md>) first.").text, "Read the guide first.")
+        XCTAssertEqual(make("[plan](/Users/j/01%20About%20Me/plan.md)").text, "plan")
+        XCTAssertEqual(make("[Law](https://en.wikipedia.org/wiki/Law_(UK)) here").text, "Law here")
+        XCTAssertEqual(make("[a](x \"title\") b").text, "a b")
+        // ordinary brackets are prose: no "](" join, or the target would cross a line
+        XCTAssertEqual(make("He [sic] (again) said").text, "He [sic] (again) said")
+        XCTAssertEqual(make("[note](see\nbelow)").text, "[note](see. below)")
+        // the first ")" ends the target, so prose after a link survives
+        XCTAssertEqual(make("[x](a/b c.md) and (c) d").text, "x and (c) d")
+        // spaces only in a path- or address-like target: bracketed prose before parentheses stays
+        XCTAssertEqual(make("options [A](which is best) or [B]").text, "options [A](which is best) or [B]")
+        XCTAssertEqual(make("options [A](which is best.) or [B]").text, "options [A](which is best.) or [B]")
+        XCTAssertEqual(make("[x](and/or something) y").text, "[x](and/or something) y")
+        XCTAssertEqual(make("[notes](../02 Projects/notes) y").text, "notes y")
+        XCTAssertEqual(make("[part](Talk & Read guide.md#setup) y").text, "part y")
+        XCTAssertEqual(make("[A](x) or [B](y)").text, "A or B")
+    }
+
+    func testFilePathsAreSpokenAsTheirFileName() {
+        let s = "Saved to /Users/junior/Documents/notes/plan.md, then ~/Documents/JuniorOS/AGENTS.md."
+        let sp = make(s)
+        XCTAssertEqual(sp.text, "Saved to plan.md, then AGENTS.md.")
+        // the name stands for the whole path, so the highlight covers what is on screen
+        XCTAssertEqual(origin(sp, "plan.md", s), "/Users/junior/Documents/notes/plan.md")
+        XCTAssertEqual(origin(sp, "AGENTS.md", s), "~/Documents/JuniorOS/AGENTS.md")
+        XCTAssertEqual(make("Open file:///Users/j/01%20About%20Me/Talk%20%26%20Read.md now").text, "Open Talk & Read.md now")
+        XCTAssertEqual(make("In /mnt/project-files/brief.pdf").text, "In brief.pdf")
+        XCTAssertEqual(make("The folder /Users/j/Talk/ is new").text, "The folder Talk is new")   // no stray "/"
+        XCTAssertEqual(make("See /Users/j/Law_(UK) now").text, "See Law_(UK) now")
+        XCTAssertEqual(make("In /Users/j/O'Brien/report.md now").text, "In report.md now")   // Codex round 7
+        XCTAssertEqual(make("('/Users/j/a/b.md')").text, "('b.md')")
+        XCTAssertEqual(make("(see /Users/j/a/b.md), then").text, "(see b.md), then")
+        XCTAssertEqual(make("Kept in /a/b/report.final.pdf.").text, "Kept in report.final.pdf.")
+        XCTAssertEqual(make("Open ~/notes.md and file:///notes.md").text, "Open notes.md and notes.md")
+        XCTAssertEqual(make("The `/a/b/report.pdf` file").text, "The report.pdf file")   // bare and backticked agree
+        XCTAssertEqual(make("A /notes.md file").text, "A /notes.md file")   // one component and no root: not sure
+        // not file paths: no known root and no file name, or a command line in backticks
+        for kept in ["/r/soccer", "/api/v1/users", "/dev/null", "cd /usr/local/bin", "his/her", "/a/b/c"] {
+            XCTAssertEqual(make(kept).text, kept)
+        }
+        XCTAssertEqual(make("Run `/bin/ls -la /tmp/x` now").text, "Run /bin/ls -la /tmp/x now")
+        XCTAssertEqual(make("Run `/usr/bin/env python3 a.py`").text, "Run /usr/bin/env python3 a.py")
+        XCTAssertEqual(make("Run `/Users/j/venv/bin/python scripts/train.py` now.").text, "Run /Users/j/venv/bin/python scripts/train.py now.")
+        XCTAssertEqual(make("Run `~/tools/node app/server.js` now.").text, "Run ~/tools/node app/server.js now.")
+        XCTAssertEqual(make("See /Users/j/Source/App.swift:42 for it").text, "See App.swift for it")
+        XCTAssertEqual(make("The file `/Users/j/02 Projects/Talk & Read/guide.md` is new").text, "The file guide.md is new")
+        XCTAssertEqual(make("([/Users/j/a/notes.md](/Users/j/a/notes.md))").text, "(notes.md)")
+        // not paths: no leading "/" or "~/" at a word's start, or a single component
+        for kept in ["and/or", "km/h", "24/7", "14/11/2027", "1/2 cup", "w/o sugar", "a /s joke", "http://x.io/a/b"] {
+            XCTAssertFalse(make(kept).text.isEmpty, kept)
+            if !kept.hasPrefix("http") { XCTAssertEqual(make(kept).text, kept) }
+        }
+        XCTAssertEqual(make("src/app/main.swift stays").text, "src/app/main.swift stays")
+    }
+
+    /// TR-006: a read speaks chunk by chunk, and the chunker cuts a long sentence at spaces, so a link or path it cuts
+    /// through must be read whole by the chunk it starts in and skipped by the next.
+    func testLinksAndPathsAcrossChunks() {
+        func read(_ s: String) -> String {
+            TextKit.chunks(s, tokens: TextKit.tokenize(s)).map { Speakable.make(s, range: $0.range, lexicon: [:]).text }
+                .filter { !$0.isEmpty }.joined(separator: " ")
+        }
+        XCTAssertEqual(read("See [guide](/Users/j/01 About Me/guide.md) now and then more words here."),
+                       "See guide now and then more words here.")
+        XCTAssertEqual(read("Saved to /Users/junior/Documents/notes/plan.md, then done."), "Saved to plan.md, then done.")
+        let long = "Hello there. " + String(repeating: "word ", count: 50)
+            + "[the long link label](/Users/junior.nkanabassi/Documents/JuniorOS/02 Projects/Development/Talk & Read/Outputs/guide.md) end."
+        XCTAssertEqual(read(long), "Hello there. " + String(repeating: "word ", count: 50) + "the long link label end.")
+        let code = String(repeating: "word ", count: 30) + "the file `/Users/j/02 Projects/Talk & Read/a long folder name/guide.md` is new."
+        XCTAssertEqual(read(code), String(repeating: "word ", count: 30) + "the file guide.md is new.")
+        // a sentence end inside a link label, and a long bare path, start no chunk (Codex round 3)
+        XCTAssertEqual(read("See [First sentence. Second sentence](https://example.com) now."), "See First sentence. Second sentence now.")
+        let path = "/Users/" + String(repeating: "project/", count: 20) + "notes.md"
+        XCTAssertEqual(read("Saved at " + path + " today."), "Saved at notes.md today.")
+        // a path longer than any chunk, alone, is one chunk and one name (Codex round 4)
+        let alone = "/Users/" + String(repeating: "project/", count: 50) + "notes.md"
+        XCTAssertEqual(read(alone), "notes.md")
+        // a link whose target holds balanced brackets is kept whole too (Codex round 5)
+        let bracketed = "[guide](/Users/j/Folder_(old)/" + String(repeating: "folder ", count: 50) + "guide.md) end."
+        XCTAssertEqual(read(bracketed), "guide end.")
+        // a long code span is still cut to chunk size, every word read once (Codex round 5)
+        let bigSpan = "`" + String(repeating: "make all ", count: 400) + "`"
+        let chunks = TextKit.chunks(bigSpan, tokens: TextKit.tokenize(bigSpan))
+        XCTAssertGreaterThan(chunks.count, 5)
+        XCTAssertTrue(chunks.allSatisfy { $0.range.count <= 320 })
+        XCTAssertEqual(read(bigSpan).split(separator: " ").count, 800)
+        // an ordinary code span the opening chunk's limit falls in is read once (Codex round 2)
+        let span = "Run " + "`" + String(repeating: "make all ", count: 25) + "`" + " then stop."
+        XCTAssertEqual(read(span), "Run " + String(repeating: "make all ", count: 25) + "then stop.")
+    }
+
+    func testFencedCodeIsReadAsWritten() {
+        XCTAssertEqual(make("Run:\n```sh\ncat /Users/j/notes.md\n```\nDone.").text, "Run: cat /Users/j/notes.md. Done.")
+        // chunk by chunk too: the chunk after the fence line knows it is inside the block (Codex round 6)
+        let s = "```sh\ncat /Users/j/notes.md\n```\nDone."
+        let read = TextKit.chunks(s, tokens: TextKit.tokenize(s)).map { Speakable.make(s, range: $0.range, lexicon: [:]).text }
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        XCTAssertEqual(read, "cat /Users/j/notes.md. Done.")
+        // a fence counts only at a line's start, in a scan and when a chunk works out its state
+        XCTAssertEqual(make("Text  ```sh and /Users/j/a.md").text, "Text sh and a.md")   // no fence mid-line: the path is still a name
+        // a single-component ~/ path is kept whole by the chunker too: its name is said once
+        let home = "~/" + String(repeating: "ab-", count: 50) + "notes.md"
+        let homeRead = TextKit.chunks(home, tokens: TextKit.tokenize(home)).map { Speakable.make(home, range: $0.range, lexicon: [:]).text }.joined()
+        XCTAssertEqual(homeRead, String(repeating: "ab-", count: 50) + "notes.md")
+    }
+
+    /// A path too long to keep whole is read as written, never as a cut-short name or twice (Codex round 6).
+    func testAPathLongerThanTheContextIsReadAsWritten() {
+        let path = "/Users/" + String(repeating: "project/", count: 100) + "notes.md"
+        let read = TextKit.chunks(path, tokens: TextKit.tokenize(path)).map { Speakable.make(path, range: $0.range, lexicon: [:]).text }
+            .joined(separator: "")
+        XCTAssertEqual(read.components(separatedBy: "notes.md").count, 2)
+        XCTAssertEqual(read.components(separatedBy: "project").count, 101)
+    }
+
+    /// An unclosed "[" on a long line costs linear time, not a rescan from every bracket (Codex round 5).
+    /// Fence state for every chunk of a long read is a lookup, not a rescan of the text before it (Codex, blocking pass).
+    func testFenceStateStaysFastOverALongRead() {
+        let s = String(repeating: "A plain sentence with no code at all in it. ", count: 20_000)
+        let start = Date()
+        let chunks = TextKit.chunks(s, tokens: TextKit.tokenize(s))
+        for c in chunks { _ = Speakable.make(s, range: c.range, lexicon: [:]) }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 20)
+        XCTAssertGreaterThan(chunks.count, 2000)
+    }
+
+    func testManyOpenBracketsStayFast() {
+        let start = Date()   // a path then 50,000 closing brackets: one pass (Codex round 7)
+        _ = make("/Users/j/notes.md" + String(repeating: ")", count: 50_000))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+        for s in [String(repeating: "[word ", count: 20_000), String(repeating: "[x](word ", count: 20_000) + ")"] {
+            let start = Date()
+            _ = TextKit.chunks(s, tokens: TextKit.tokenize(s))
+            XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+        }
+    }
+
+    /// Lines that each open with a link or path still make chunks of normal size: a chunk may start right at a
+    /// construct, only never inside one (fresh triage of 6039f0d: such a list was one chunk of thousands of characters).
+    func testListsOfLinksAndPathsKeepChunksSmall() {
+        let lists = [String(repeating: "- [Intro](#intro)\n", count: 100),
+                     (1...100).map { "/Users/j/notes/file\($0).md\n" }.joined(),
+                     (1...100).map { "`/Users/j/02 Projects/file\($0).md`\n" }.joined()]
+        for s in lists {
+            let tokens = TextKit.tokenize(s)
+            let chunks = TextKit.chunks(s, tokens: tokens)
+            XCTAssertTrue(chunks.allSatisfy { $0.range.count <= 320 }, "longest \(chunks.map(\.range.count).max() ?? 0)")
+            // every token in exactly one chunk, in order, and the chunks' speech is the whole read's
+            XCTAssertEqual(chunks.flatMap { Array($0.tokens) }, Array(tokens.indices))
+            func words(_ t: String) -> [String] { TextKit.tokenize(t).map(\.text) }   // a chunk's end drops its full stop
+            XCTAssertEqual(chunks.flatMap { words(Speakable.make(s, range: $0.range, lexicon: [:]).text) },
+                           words(Speakable.make(s, range: 0..<(s as NSString).length, lexicon: [:]).text))
+        }
+    }
+
+    /// A read that starts inside a link (a click in the reader, a saved place) reads the link whole (Codex round 2).
+    func testAReadStartingInsideALink() {
+        let s = "[the guide](/Users/j/guide.md) now."
+        let at = (s as NSString).range(of: "guide").location
+        XCTAssertEqual(Speakable.make(s, range: at..<(s as NSString).length, lexicon: [:]).text, "the guide now.")
+    }
+
     func testListItemsGetAPause() {
         XCTAssertEqual(make("- one\n- two\n* three.\n+ four\n\n1. five\n2) six").text, "one. two. three. four. 1. five. 2) six")
         XCTAssertEqual(make("Intro:\n- first\n- second").text, "Intro: first. second")
@@ -273,7 +441,7 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(cited("Claim [citation needed](https://example.com) here."), "Claim here.")
         XCTAssertEqual(cited("A [link](https://example.com) and [3](#n) stay."), "A link and 3 stay.")
         // The look-ahead runs out in spaces: no crash, and too little evidence to drop the 12.
-        let s = "void.12" + String(repeating: " ", count: 100) + "Next"
+        let s = "void.12" + String(repeating: " ", count: 700) + "Next"
         XCTAssertEqual(Speakable.make(s, range: 0..<7, lexicon: [:], skipCitations: true).text, "void.12")
     }
 

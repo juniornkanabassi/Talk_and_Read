@@ -40,16 +40,18 @@ public struct Speakable: Sendable {
         let lo = min(max(range.lowerBound, 0), ns.length)
         let hi = min(max(range.upperBound, lo), ns.length)
         // ponytail: scanned as a slice so regex cost is per chunk, not per document; callers pass chunk-sized ranges.
-        // The slice starts up to 80 characters early, back to its line's start, so a mark at the chunk's start is judged
-        // in context (a footnote "12" the chunker split from "consideration.", a "[12]" glued to the previous chunk's
-        // last word); it also runs up to 80 characters past the chunk, so what follows a mark at the chunk's end is the
-        // real next word, not the cut ("scored;12" | "points"). That context is read, never spoken.
+        // The slice starts up to `Maker.context` characters early, back to its line's start, so a mark at the chunk's
+        // start is judged in context (a footnote "12" the chunker split from "consideration.", a "[12]" glued to the
+        // previous chunk's last word, a link or path the previous chunk began and already spoke); it also runs as far
+        // past the chunk, so what follows a mark at the chunk's end is the real next word, not the cut ("scored;12" |
+        // "points"), and a link or path the chunker cut through is read whole. That context is read, never spoken.
         var ctx = lo
-        while ctx > 0, lo - ctx < 80, ns.character(at: ctx - 1) != 0x0A, ns.character(at: ctx - 1) != 0x0D { ctx -= 1 }
-        let tail = min(ns.length, hi + 80)
+        while ctx > 0, lo - ctx < Maker.context, ns.character(at: ctx - 1) != 0x0A, ns.character(at: ctx - 1) != 0x0D { ctx -= 1 }
+        let tail = min(ns.length, hi + Maker.context)
         let slice = ns.substring(with: NSRange(location: ctx, length: tail - ctx))
         var maker = Maker(slice, lexicon: lexicon, french: language == "fr")
         maker.citations = skipCitations
+        maker.fenced = Speakable.insideFence(ns, before: ctx)
         maker.end = hi - ctx
         maker.endsText = tail == ns.length
         for r in skip.sorted(by: { $0.lowerBound < $1.lowerBound }) {   // into slice coordinates, overlaps merged
@@ -61,6 +63,35 @@ public struct Speakable: Sendable {
         maker.scanAll(from: lo - ctx, sliceStartsLine: ctx == 0 || [0x0A, 0x0D].contains(ns.character(at: ctx - 1)))
         return maker.finish(base: ctx)
     }
+
+    /// Whether `p` lies inside a fenced code block: an odd number of fence lines (``` at a line's start) before it.
+    /// The fence positions are found once per text and cached, as a read asks for every chunk.
+    static func insideFence(_ ns: NSString, before p: Int) -> Bool {
+        let fences = fenceStarts(ns)
+        var l = 0, h = fences.count   // fences before p
+        while l < h { let m = (l + h) / 2; if fences[m] < p { l = m + 1 } else { h = m } }
+        return l % 2 == 1
+    }
+
+    private static func fenceStarts(_ ns: NSString) -> [Int] {
+        fenceCache.lock.lock(); defer { fenceCache.lock.unlock() }
+        if let text = fenceCache.text, text.isEqual(to: ns as String) { return fenceCache.starts }
+        var starts: [Int] = [], from = 0
+        while from < ns.length {
+            let r = ns.range(of: "```", options: .literal, range: NSRange(location: from, length: ns.length - from))
+            guard r.location != NSNotFound else { break }
+            if r.location == 0 || [0x0A, 0x0D].contains(ns.character(at: r.location - 1)) { starts.append(r.location) }
+            from = r.location + 3
+        }
+        (fenceCache.text, fenceCache.starts) = (ns.copy() as? NSString, starts)
+        return starts
+    }
+    private final class FenceCache: @unchecked Sendable {   // guarded by `lock`
+        let lock = NSLock()
+        var text: NSString?
+        var starts: [Int] = []
+    }
+    private static let fenceCache = FenceCache()
 
     /// Speakable UTF-16 range -> source UTF-16 range: the union of the source characters those units came from.
     public func sourceRange(_ r: Range<Int>) -> Range<Int> {
@@ -84,13 +115,25 @@ public struct Speakable: Sendable {
     }
 }
 
-private enum Rx {
+enum Rx {   // internal: the chunker protects the same constructs (TextKit.chunks)
     static func make(_ pattern: String, _ options: NSRegularExpression.Options = []) -> NSRegularExpression {
         try! NSRegularExpression(pattern: pattern, options: options)
     }
     static let marker = make("(?:#{1,6}[ \\t]+|(?:>[ \\t]*)+|[-*+•][ \\t]+)")
     static let image = make("!\\[[^\\]]*\\]\\([^)]*\\)")
-    static let link = make("\\[([^\\]]*)\\]\\([^)\\s]*(?:\\s+\"[^\"]*\")?\\)")
+    /// The target stays on one line and may hold one level of balanced brackets ("Law_(UK)"); it ends at the first ")"
+    /// that closes it. Spaces only in a target wrapped in <…>, or one that starts like a path or address ("/", "~/",
+    /// "./", "../", "scheme://") or ends in a file name ("01 About Me/MEMORY.md", a "#part" or ":42" after it), so
+    /// "options [A](which is best.) or [B]" and "[x](and/or something)" stay prose.
+    /// Every repeat is bounded (labels 300, targets 600 units), so a line of malformed links costs linear time.
+    static let link = make("\\[([^\\[\\]\\n]{0,300})\\]\\((?:<[^>\\n]{0,600}>|(?:[^()\\s]|\\([^()\\s]{0,100}\\)){0,600}|(?=/|~/|\\.\\.?/|[A-Za-z][A-Za-z0-9+.-]{0,20}://|[^)\\n]{0,300}\\.[A-Za-z][A-Za-z0-9]{0,7}(?:[#:][^)\\s]{0,100})?\\))(?:[^()\\n]|\\([^()\\n]{0,100}\\)){0,600}?)(?:[ \\t]+\"[^\"\\n]{0,300}\")?\\)")
+    /// What may be an absolute file path or file URL: "/" or "~/" then two components or more, up to the next space,
+    /// a trailing "/" allowed. `Maker.pathLength` decides whether it is one. A path in backticks may hold spaces
+    /// (`codePath`).
+    static let path = make("(?:file://(?:localhost)?)?~?/(?:[^\\s/<>\"`|\\[\\]]+/)*[^\\s/<>\"`|\\[\\]]+/?", .caseInsensitive)
+    /// A fenced code block's opening line; the block runs to a line that starts with ``` again.
+    static let fence = make("```[^\\n]*(?:\\n|$)")
+    static let codePath = make("`((?:file://(?:localhost)?)?~?/(?:[^/\\n`]+/)*[^/\\n`]+/?)`", .caseInsensitive)
     static let email = make("[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+")
     static let url = make("https?://[^\\s<>\"]+", .caseInsensitive)
     static let citation = make("\\[\\s*(?:[0-9]{1,3}[a-z]?(?:\\s*[,–—-]\\s*[0-9]{1,3}[a-z]?)*|(?:citation|clarification) needed)\\s*\\]", .caseInsensitive)
@@ -117,6 +160,8 @@ private struct Maker {
     /// with its footer and running head removed), so it gets no full stop.
     var skippedAt: Set<Int> = []
     var citations = false
+    /// Inside a fenced code block.
+    var fenced = false
     /// Where the chunk ends in the slice (the rest is look-ahead context), and whether the slice reaches the text's end.
     var end = 0
     var endsText = true
@@ -189,6 +234,106 @@ private struct Maker {
         return end - p
     }
 
+    /// How far a link or path read from the chunk before this one may reach into it (and this one past its end).
+    static let context = 600
+    /// Folders an absolute path on a Mac (or a mounted project) starts from; any other path needs a file extension, so
+    /// "/r/soccer", "/api/v1/users", "/dev/null" and "cd /usr/local/bin" are read as written.
+    static let roots: Set<String> = ["users", "volumes", "mnt", "tmp", "private", "applications", "library", "system", "opt", "home", "var"]
+
+    /// Whether a path may start at p: "/", "~" or "file:" at a word's start, not inside "and/or", "../x" or "a.b/c".
+    func pathStart(_ p: Int) -> Bool {
+        [0x2F, 0x7E, 0x66, 0x46].contains(u[p]) && (p == 0 || !Maker.isWord(u[p - 1]) && !"/.:-_~\\".utf16.contains(u[p - 1]))
+    }
+
+    /// The source a file path at p uses (trailing punctuation and an unbalanced closing bracket left out), or nil when
+    /// there is none: a file URL, a "~/" path, an absolute path from a known root, or one ending in a file name.
+    func pathLength(_ p: Int, limit: Int) -> Int? {
+        // bounded: a path longer than `context` is read as written anyway (`fits`), so never match further
+        guard pathStart(p), let m = match(Rx.path, p, min(limit, p + Maker.context + 1)) else { return nil }
+        let end = Maker.trimmedEnd(u, p, p + m.range.length)
+        return end > p && Maker.isFilePath(String(decoding: u[p..<end], as: UTF16.self)) ? end - p : nil
+    }
+
+    /// A file URL or "~/" path; else an absolute path of two components or more from a known root, or ending in a file
+    /// name. With spaces (in backticks) only the first two: "`/usr/bin/env python3 a.py`" is a command.
+    static func isFilePath(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        if lower.hasPrefix("file:") || lower.hasPrefix("~/") { return true }
+        let parts = lower.split(separator: "/", omittingEmptySubsequences: true)
+        guard parts.count >= 2 else { return false }
+        if roots.contains(String(parts[0])) { return true }
+        return !text.contains(" ") && name(of: text).range(of: "\\.[a-z][a-z0-9]{0,7}$", options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// `p..<end` without trailing punctuation; a closing bracket goes only when it has no opening one in the path
+    /// ("/a/Law_(UK)" keeps its bracket, "(see /a/b.md)" loses it).
+    static func trimmedEnd(_ u: [UInt16], _ p: Int, _ end: Int) -> Int {
+        var end = end
+        let pairs: [UInt16: UInt16] = [0x29: 0x28, 0x5D: 0x5B, 0x7D: 0x7B]
+        var count: [UInt16: Int] = [:]   // brackets in p..<end, counted once and updated as the end moves
+        for c in u[p..<end] where pairs[c] != nil || pairs.values.contains(c) { count[c, default: 0] += 1 }
+        while end > p, ".,;:!?)]}'\"".utf16.contains(u[end - 1]) {
+            let c = u[end - 1]
+            if let open = pairs[c] {
+                if count[open, default: 0] >= count[c, default: 0] { break }   // it closes one of the path's own
+                count[c, default: 0] -= 1
+            }
+            end -= 1
+        }
+        return end
+    }
+
+    /// A path's file name: its last component (a trailing "/" ignored), percent escapes decoded, a ":42" line
+    /// reference dropped.
+    static func name(of path: String) -> String {
+        var name = String(path.split(separator: "/", omittingEmptySubsequences: true).last ?? "")
+        name = name.replacingOccurrences(of: "(?::[0-9]+){1,2}$", with: "", options: .regularExpression)
+        return name.removingPercentEncoding ?? name
+    }
+
+    /// Speaks the file name of the path at `path`, mapped to `source` (the whole path, or with a backticked path's
+    /// backticks) so the highlight covers what is on screen.
+    mutating func emitPath(_ path: Range<Int>, source: Range<Int>) {
+        let name = Maker.name(of: String(decoding: u[path], as: UTF16.self))
+        if name.isEmpty { copy(path.lowerBound, path.upperBound) } else { put(name, source) }
+    }
+
+    /// The source a link or path at q uses, reaching past the chunk: what `scan` treats as one construct there.
+    func construct(at q: Int) -> Int? {
+        let n: Int?
+        switch u[q] {
+        case 0x5B where q == 0 || u[q - 1] != 0x21: n = match(Rx.link, q, u.count)?.range.length
+        case 0x60: n = codePath(at: q)?.whole.count
+        default: n = pathLength(q, limit: u.count)
+        }
+        return n.flatMap { fits(q, $0) ? $0 : nil }
+    }
+
+    /// Whether a construct of n units at q is read as one: at most `context` long (the chunker keeps those whole) and
+    /// ending inside the slice, not cut by its end. A longer one is read as written, chunk by chunk, never shortened
+    /// to a partial name or said twice.
+    func fits(_ q: Int, _ n: Int) -> Bool { n <= Maker.context && (q + n < u.count || endsText) }
+
+    /// A command line in backticks rather than a path with spaces in its folder names: its program sits in a `bin`
+    /// folder or is a known interpreter ("`/Users/j/venv/bin/python scripts/train.py`"). Both look alike otherwise.
+    // ponytail: a fixed list; a command run by another program with spaces after it is still read as a file name.
+    static func isCommand(_ inner: String) -> Bool {
+        guard let space = inner.firstIndex(of: " ") else { return false }
+        let program = inner[..<space].split(separator: "/")
+        return program.dropLast().contains { $0 == "bin" || $0 == "sbin" }
+            || ["python", "python3", "node", "bash", "sh", "zsh", "ruby", "swift", "perl", "env", "git", "npm", "npx", "make"].contains(String(program.last ?? ""))
+    }
+
+    /// A backticked path at q: the path inside, and the whole span with its backticks. A command line is not a path
+    /// ("`/bin/ls -la /tmp/x`", "`/usr/bin/env python3 a.py`"); spaces in folder names are ("02 Projects").
+    func codePath(at q: Int, limit: Int? = nil) -> (path: Range<Int>, whole: Range<Int>)? {
+        guard let m = match(Rx.codePath, q, limit ?? u.count) else { return nil }
+        let r = m.range(at: 1)
+        let inner = String(decoding: u[r.location..<r.location + r.length], as: UTF16.self)
+        guard !inner.contains(" -"), !inner.contains(" /"), !Maker.isCommand(inner), Maker.isFilePath(inner) else { return nil }
+        return (r.location..<r.location + r.length, q..<q + m.range.length)
+    }
+
     /// True when p begins its line (only spaces or tabs before it on the line); `sliceStartsLine` says whether index 0 does.
     func startsLine(_ p: Int, sliceStartsLine: Bool) -> Bool {
         var i = p
@@ -200,6 +345,11 @@ private struct Maker {
     /// match reaches into skipped text (a skipped word would otherwise be spoken and timed).
     mutating func scanAll(from: Int, sliceStartsLine: Bool) {
         var a = from
+        // The chunker never cuts inside a link or code span, so a chunk starts inside one only where a read starts or
+        // resumes (a click in the reader, a saved place): back up and read it whole.
+        for q in 0..<from where [0x5B, 0x60, 0x2F, 0x7E, 0x66, 0x46].contains(u[q]) {
+            if let n = construct(at: q), q + n > from { a = q; break }
+        }
         for r in skip + [end..<end] where r.upperBound > a {
             if r.lowerBound > a { scan(a, r.lowerBound, lineStart: startsLine(a, sliceStartsLine: sliceStartsLine)) }
             if !r.isEmpty { skippedAt.insert(units.count) }
@@ -259,10 +409,19 @@ private struct Maker {
 
     mutating func scan(_ from: Int, _ to: Int, lineStart start: Bool) {
         var p = from
+        // The chunk's last stretch may read a link or path on past its end; a link's label or a stretch before
+        // skipped text may not.
+        let limit = to == end ? u.count : to
         var lineStart = start
         loop: while p < to {
             let c = u[p]
             if c == 0x0A || c == 0x0D { copy(p, p + 1); p += 1; lineStart = true; continue }
+            // A fenced code block is read as written (no path, link or emphasis rules), without its fence lines; the
+            // state carries across chunks (`make` works out whether the chunk starts inside one).
+            if c == 0x60, p == 0 || u[p - 1] == 0x0A || u[p - 1] == 0x0D, let m = match(Rx.fence, p, to) {   // column 0, as `insideFence`
+                p += m.range.length; fenced.toggle(); lineStart = true; continue
+            }
+            if fenced { copy(p, p + 1); p += 1; lineStart = false; continue }
             if lineStart {
                 if c == 0x20 || c == 0x09 { copy(p, p + 1); p += 1; continue }
                 if let m = match(Rx.marker, p, to) { p += m.range.length; continue }   // heading, quote, bullet: dropped
@@ -287,21 +446,30 @@ private struct Maker {
                 }
                 if let m = match(Rx.email, p, to) { emitLabels(p, p + m.range.length); p += m.range.length; continue }
                 if let m = match(Rx.url, p, to) ?? match(Rx.www, p, to) { p += emitAddress(p, m.range.length); continue }
+                if let n = pathLength(p, limit: limit), fits(p, n) { emitPath(p..<p + n, source: p..<p + n); p += n; continue }
                 if french, Maker.isDigit(c) || c == 0x20AC || c == 0x24 || c == 0xA3, let used = frenchNumber(p, to) { p += used; continue }
             }
             let next: UInt16 = p + 1 < to ? u[p + 1] : 0
             switch c {
             case 0x21: // ![alt](url)
                 if let m = match(Rx.image, p, to) { p += m.range.length; continue }
-            case 0x5B: // [text](url) -> text
-                if let m = match(Rx.link, p, to) {
+            case 0x5B: // [text](url) -> text, read whole even when the chunk ends inside it
+                if let m = match(Rx.link, p, limit), fits(p, m.range.length) {
                     let t = m.range(at: 1)
                     scan(t.location, t.location + t.length, lineStart: false)
                     p += m.range.length
                     continue
                 }
             case 0x2A where next == 0x2A, 0x5F where next == 0x5F: p += 2; continue   // ** and __
-            case 0x60, 0x2022: p += 1; continue                                         // backtick, bullet
+            case 0x60:                                                                   // backtick; `a path` -> its name
+                if let span = codePath(at: p, limit: limit), fits(p, span.whole.count) { emitPath(span.path, source: span.whole); p = span.whole.upperBound; continue }
+                // Any other code span is read as written: no path, link or emphasis rules inside it. Within the chunk:
+                // `construct(at:)` does not know it, so a later chunk would read its rest again.
+                if let close = (p + 1..<to).first(where: { u[$0] == 0x60 || u[$0] == 0x0A }), u[close] == 0x60, close > p + 1 {
+                    copy(p + 1, close); p = close + 1; continue
+                }
+                p += 1; continue
+            case 0x2022: p += 1; continue                                               // bullet
             case 0x26: put(french ? " et " : " and ", p..<p + 1); p += 1; continue
             case 0x25 where follows(digitBefore: p): put(french ? " pour cent" : " percent", p..<p + 1); p += 1; continue
             case 0xB0:

@@ -91,6 +91,9 @@ public enum NodeAlignment {
         var map: [Int: Int] = [:]
         var q = start, i = 0
         while i < selectionWords.count, q < streamWords.count {
+            // A chrome word ("") is never a selection word: step over it, so a stretch of it (Claude's hidden heading,
+            // toolbar and timestamps between two messages, often more than 40 words) does not end the run.
+            if streamWords[q].isEmpty { q += 1; continue }
             if streamWords[q] == selectionWords[i] {
                 map[i] = q
                 q += 1; i += 1
