@@ -83,6 +83,23 @@ final class PageFurnitureTests: XCTestCase {
         XCTAssertEqual(PageFurniture.ranges(dashed.text, pageStarts: dashed.starts).count, 3, "a dashed page number is still furniture")
     }
 
+    func testHeadingsUnderDifferentCaseNamesAreRead() {
+        // One case per page: the case name differs, so "Facts" (line 2) and "Held" (second from the bottom) are body;
+        // the page number at the foot is still furniture.
+        let pages = (0..<3).map { i in
+            (["\(words[i].capitalized) v \(words[i + 10].capitalized)", "Facts"] + (0..<5).map { "The \(words[i * 5 + $0]) point." }
+             + ["Held", "\(i + 1)"]).joined(separator: "\n")
+        }
+        let (text, starts) = join(pages)
+        XCTAssertEqual(lines(text, PageFurniture.ranges(text, pageStarts: starts)), ["1", "2", "3"])
+    }
+
+    func testARepeatedSlideTitleOnAFewSlidesIsRead() {
+        let slides = (0..<10).map { i in "\(i < 3 ? "Offer and acceptance" : "Slide topic \(words[i])")\nThe \(words[i]) rule." }
+        let (text, starts) = join(slides)
+        XCTAssertFalse(lines(text, PageFurniture.ranges(text, pageStarts: starts)).contains("Offer and acceptance"))
+    }
+
     func testShortDocumentsAndLongLinesAreLeftAlone() {
         let two = join(["Journal of Law\nBody one.\n1", "Journal of Law\nBody two.\n2"])
         XCTAssertEqual(PageFurniture.ranges(two.text, pageStarts: two.starts), [])
