@@ -176,7 +176,9 @@ import TalkReadCore
     private func makePanel(_ model: AppModel) -> MiniPanel {
         let size = NSSize(width: MiniPlayerView.width, height: MiniPlayerView.height(expanded: model.settings.subtitlesExpanded, notice: hasNotice))
         let panel = MiniPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        let host = NSHostingView(rootView: MiniPlayerRoot(model: model, player: self))
+        // A drag anywhere off a control moves the card. isMovableByWindowBackground alone waits on the hosting view
+        // agreeing to move the window, which SwiftUI does not promise (the pill would not move on the work Mac, 25 Oct).
+        let host = NSHostingView(rootView: MiniPlayerRoot(model: model, player: self).gesture(WindowDragGesture()))
         host.sizingOptions = []   // `resize` sizes the panel (bottom edge put); the content must not move the top or bottom itself
         panel.contentView = host
         panel.isFloatingPanel = true
