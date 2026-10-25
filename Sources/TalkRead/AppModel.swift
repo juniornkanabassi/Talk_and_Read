@@ -433,7 +433,7 @@ extension EngineKind {
             // Stopping the last read put its app back (E8); the glyph found this paragraph while it was awake, so wake it again.
             await AXWake.wake(AXUIElementCreateApplication(block.pid), pid: block.pid)
         } else {
-            found = await PointerCapture.block(at: point, wake: true)
+            found = await PointerCapture.block(at: point, wake: true) { [weak self] in self?.liveSession?.capture?.pid }
         }
         let capture = found.flatMap(PointerCapture.capture)
         let pid = capture?.pid ?? found?.pid

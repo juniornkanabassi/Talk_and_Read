@@ -41,7 +41,8 @@ enum PointerCapture {
 
     /// The paragraph under `point`. `wake` first wakes the app's tree (Chromium and Electron build it on request), so a
     /// first hit on a sleeping Claude window that finds only the window finds the text on the second try.
-    @MainActor static func block(at point: CGPoint, wake: Bool) async -> Block? {
+    /// `inUse` names an app a newer read is using by the time the lookup gives up, whose wake must stay.
+    @MainActor static func block(at point: CGPoint, wake: Bool, inUse: () -> pid_t? = { nil }) async -> Block? {
         guard let first = hit(point) else { return nil }
         if let b = block(from: first.element, pid: first.pid, point: point) { return b }
         guard wake else { return nil }
@@ -51,7 +52,7 @@ enum PointerCapture {
             if let again = hit(point), again.pid == first.pid, let b = block(from: again.element, pid: again.pid, point: point) { return b }
             if attempt < 4 { try? await Task.sleep(for: .milliseconds(150)) }
         }
-        AXWake.restore(first.pid)   // nothing to read there: no Highlighter will put the app back
+        if inUse() != first.pid { AXWake.restore(first.pid) }   // nothing to read there: no Highlighter will put the app back
         return nil
     }
 
@@ -103,10 +104,21 @@ enum PointerCapture {
             guard let parent = axElement(current, kAXParentAttribute), !CFEqual(parent, area) else { break }
             current = parent
             guard let f = axFrame(current), !f.isEmpty else { continue }   // an ignored wrapper: look above it
-            if f.width > limit { break }
+            if f.width > limit || hasSideBySide(current, beside: best) { break }
             best = current
         }
         return best
+    }
+
+    /// A child of `parent` beside `column` rather than above or below it (a sidebar, a second pane): the parent holds
+    /// more than one column.
+    private static func hasSideBySide(_ parent: AXUIElement, beside column: AXUIElement) -> Bool {
+        guard let c = axFrame(column) else { return false }
+        return ((axAttribute(parent, kAXChildrenAttribute) as? [AXUIElement]) ?? []).prefix(40).contains { child in
+            // A real column, not a list bullet or an avatar beside its text.
+            guard let f = axFrame(child), f.width >= max(60, c.width * 0.2), f.height >= 1, !f.contains(c) else { return false }
+            return (f.maxX <= c.minX + 1 || f.minX >= c.maxX - 1) && f.minY < c.maxY && c.minY < f.maxY
+        }
     }
 
     /// Nothing but text runs inside: a paragraph however tall, never a container of blocks.
@@ -152,7 +164,7 @@ enum PointerCapture {
         if end == NSNotFound { end = ns.length }
         guard end > start, !ns.substring(with: NSRange(location: start, length: end - start)).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let frame = axBounds(element, location: start, length: end - start), !frame.isEmpty,
-              frame.insetBy(dx: -4, dy: -4).contains(point) else { return nil }   // the nearest character to a margin or a gap is not under it
+              frame.contains(point) else { return nil }   // the nearest character to a margin or a gap is not under it
         return Block(pid: pid, element: element, frame: frame, start: start, length: end - start)
     }
 

@@ -47,8 +47,10 @@ import TalkReadCore
 
     /// Raw key data from the hotkey tap (main thread), with the shortcuts in force.
     func key(_ type: CGEventType, keyCode: UInt16, flags: UInt64, at time: Double, settings: Settings) {
-        if type == .keyDown, timer == nil, block != nil { hidePanel(); block = nil }   // typing puts a hover glyph away, whatever the reveal key
-        guard let event = Self.revealEvent(type, keyCode: keyCode, flags: flags, settings: settings) else { return }
+        let event = Self.revealEvent(type, keyCode: keyCode, flags: flags, settings: settings)
+        // Any key or modifier but the reveal key itself puts a hover glyph away, whatever the reveal key is set to.
+        if timer == nil, block != nil, type == .keyDown || (type == .flagsChanged && event != .keyDown && event != .keyUp) { hidePanel(); block = nil }
+        guard let event else { return }
         apply(state.handle(event, at: time))
         if event == .keyDown {
             DispatchQueue.main.asyncAfter(deadline: .now() + RevealState.delay) { [weak self] in
@@ -185,6 +187,7 @@ import TalkReadCore
         let point = Self.pointer(), now = ProcessInfo.processInfo.systemUptime
         if let block, !Self.band(block).contains(point) || moved(block) { hidePanel(); self.block = nil; rest = nil }   // left it, or it scrolled
         guard NSEvent.pressedMouseButtons == 0 else { rest = nil; return }   // a drag or a click in progress
+        guard NSEvent.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty else { return }   // a shortcut on its way
         guard let r = rest, hypot(r.point.x - point.x, r.point.y - point.y) < 3 else {
             rest = (point, now, false)
             return
