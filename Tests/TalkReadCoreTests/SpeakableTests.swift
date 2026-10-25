@@ -224,6 +224,24 @@ final class SpeakableTests: XCTestCase {
         }
     }
 
+    /// Lines that each open with a link or path still make chunks of normal size: a chunk may start right at a
+    /// construct, only never inside one (fresh triage of 6039f0d: such a list was one chunk of thousands of characters).
+    func testListsOfLinksAndPathsKeepChunksSmall() {
+        let lists = [String(repeating: "- [Intro](#intro)\n", count: 100),
+                     (1...100).map { "/Users/j/notes/file\($0).md\n" }.joined(),
+                     (1...100).map { "`/Users/j/02 Projects/file\($0).md`\n" }.joined()]
+        for s in lists {
+            let tokens = TextKit.tokenize(s)
+            let chunks = TextKit.chunks(s, tokens: tokens)
+            XCTAssertTrue(chunks.allSatisfy { $0.range.count <= 320 }, "longest \(chunks.map(\.range.count).max() ?? 0)")
+            // every token in exactly one chunk, in order, and the chunks' speech is the whole read's
+            XCTAssertEqual(chunks.flatMap { Array($0.tokens) }, Array(tokens.indices))
+            func words(_ t: String) -> [String] { TextKit.tokenize(t).map(\.text) }   // a chunk's end drops its full stop
+            XCTAssertEqual(chunks.flatMap { words(Speakable.make(s, range: $0.range, lexicon: [:]).text) },
+                           words(Speakable.make(s, range: 0..<(s as NSString).length, lexicon: [:]).text))
+        }
+    }
+
     /// A read that starts inside a link (a click in the reader, a saved place) reads the link whole (Codex round 2).
     func testAReadStartingInsideALink() {
         let s = "[the guide](/Users/j/guide.md) now."

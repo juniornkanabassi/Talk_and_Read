@@ -35,6 +35,24 @@ public enum TextKit {
     /// Longer constructs are cut like prose: one that long is no single name, and a chunk must stay short enough to voice.
     private static let longestProtected = 600
 
+    /// The protected spans of `text`, cached for the last text: a read recuts from a token many times (slow engine,
+    /// seeks), and the scan covers the whole text.
+    private static func protected(_ text: String) -> [Range<Int>] {
+        protectedCache.lock.lock(); defer { protectedCache.lock.unlock() }
+        if protectedCache.text == text { return protectedCache.spans }
+        let ns = text as NSString
+        let spans = protectedSpans.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            .filter { $0.range.length <= longestProtected }.map { $0.range.location..<$0.range.location + $0.range.length }
+        (protectedCache.text, protectedCache.spans) = (text, spans)
+        return spans
+    }
+    private final class ProtectedCache: @unchecked Sendable {   // guarded by `lock`
+        let lock = NSLock()
+        var text: String?
+        var spans: [Range<Int>] = []
+    }
+    private static let protectedCache = ProtectedCache()
+
     /// Words with sentence numbers. Whitespace and lone punctuation are not tokens.
     public static func tokenize(_ text: String) -> [Token] {
         let ns = text as NSString
@@ -118,9 +136,9 @@ public enum TextKit {
             (b < count ? lead(b) : tokens[b - 1].range.upperBound) - lead(a)
         }
         /// Markdown links and paths, never cut: a chunk speaks a link's label or a path's file name only when it
-        /// holds the whole construct (Speakable).
-        let kept = protectedSpans.matches(in: text, range: NSRange(location: 0, length: ns.length))
-            .filter { $0.range.length <= longestProtected }.map { $0.range.location..<$0.range.location + $0.range.length }
+        /// holds the whole construct (Speakable). A chunk may start right at one: `insideKept` takes the chunk's real
+        /// start (`lead`, back over the "[" or "/"), not its first word, which always lies inside.
+        let kept = protected(text)
         func insideKept(_ p: Int) -> Bool {
             var l = 0, h = kept.count   // first span ending after p
             while l < h { let m = (l + h) / 2; if kept[m].upperBound > p { h = m } else { l = m + 1 } }
@@ -134,7 +152,7 @@ public enum TextKit {
             for i in (a + 1)..<b {
                 let len = length(a, i)
                 if len > limit { break }
-                if insideKept(tokens[i].range.lowerBound) { continue }
+                if insideKept(lead(i)) { continue }
                 any = i
                 let gap = ns.substring(with: NSRange(location: tokens[i - 1].range.upperBound,
                                                      length: tokens[i].range.lowerBound - tokens[i - 1].range.upperBound))
@@ -143,7 +161,7 @@ public enum TextKit {
                 if len >= limit / 3, zip(gap, gap.dropFirst()).contains(where: { clauseMarks.contains($0) && $1.isWhitespace }) { clause = i }
             }
             // nil (no cut) when the rest is one link or path (600 characters at most): it stays one chunk
-            return clause ?? space ?? any ?? ((a + 1)..<b).first { !insideKept(tokens[$0].range.lowerBound) }
+            return clause ?? space ?? any ?? ((a + 1)..<b).first { !insideKept(lead($0)) }
         }
 
         var starts = [startToken]   // first token of every chunk
@@ -154,7 +172,7 @@ public enum TextKit {
             while b < count, tokens[b].sentence == tokens[a].sentence { b += 1 }
             var cs = starts[starts.count - 1]
             // chunk 0 is one sentence; a sentence end inside a link label ("[Done. Next](…)") starts no chunk
-            if cs < a, starts.count == 1 || length(cs, b) > limit, !insideKept(tokens[a].range.lowerBound) { starts.append(a); cs = a; limit = max }
+            if cs < a, starts.count == 1 || length(cs, b) > limit, !insideKept(lead(a)) { starts.append(a); cs = a; limit = max }
             while length(cs, b) > limit, let i = cut(cs, b, limit) { starts.append(i); cs = i; limit = max }
             a = b
         }

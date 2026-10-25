@@ -194,8 +194,9 @@ enum TextCapture {
     /// its text is there, else only where `HiddenText.locate` finds its text once beside that place. A node whose
     /// distances cannot be read is left in. The walk stays near the selection: subtrees whose frame misses its bounds
     /// (by more than 60 pt, which keeps a toolbar above a message) are skipped.
-    // ponytail: up to 4000 nodes, two AX calls each (role, classes) plus a frame for pruning, and five per hidden node;
-    // Claude's chat window is about 400 nodes. Walk only the selection's common ancestor if big pages make this slow.
+    // ponytail: up to 4000 nodes and 100 ms, two AX calls each (role, classes) plus a frame for pruning, and five per
+    // hidden node; Claude's chat window is about 400 nodes. Walk only the selection's common ancestor if big pages
+    // keep hitting the budget.
     private static func hiddenRanges(root: AXUIElement, selection: AXTextMarkerRange, text: String, chat: Bool) -> (ranges: [Range<Int>], complete: Bool)? {
         guard (axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: selection) as? String) == text else { return nil }
         let length = text.utf16.count
@@ -213,8 +214,12 @@ enum TextCapture {
         var ranges: [Range<Int>] = [], complete = true
         var stack: [(AXUIElement, HiddenText.Visibility)] = [(root, .init(chat: chat))]
         var visited = 0
+        let deadline = ContinuousClock.now + .milliseconds(100)
         while let (node, parent) = stack.popLast(), visited < 4000 {
             visited += 1
+            // A big page that outruns the budget is read as selected: no cut at all beats a read held up, or a
+            // partial one (Chrome, a 4,000 character page: about 130 ms).
+            if visited % 32 == 0, ContinuousClock.now > deadline { Log.write("hidden text: walk over 100 ms, nothing cut"); return nil }
             if let bounds, let frame = axFrame(node), !frame.isEmpty, !frame.intersects(bounds) { continue }
             let visibility = parent.child(role: axAttribute(node, kAXRoleAttribute) as? String,
                                           classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [])

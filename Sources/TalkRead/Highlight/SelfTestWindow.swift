@@ -104,6 +104,7 @@ enum SelfTestWindow {
         }
         await chromiumProbe()
         hiddenTextProbe()
+        hiddenTextCost()
         let frontAfter = NSWorkspace.shared.frontmostApplication?.processIdentifier
         record("No focus change", frontAfter == frontBefore && !NSApp.isActive, "frontmost pid \(frontBefore.map(String.init) ?? "-") -> \(frontAfter.map(String.init) ?? "-"), our app active: \(NSApp.isActive)")
         NSPasteboard(name: NSPasteboard.Name(pasteboardName)).releaseGlobally()
@@ -1057,7 +1058,15 @@ enum SelfTestWindow {
             guard let web, let r = axParameterizedAttribute(web, "AXTextMarkerRangeForUIElement", parameter: e), CFGetTypeID(r) == AXTextMarkerRangeGetTypeID() else { return nil }
             return (r as! AXTextMarkerRange)
         }
-        guard let web, let window, messages.count >= 2, let first = range(messages[messages.count - 2]), let last = range(messages[messages.count - 1]),
+        // The last two messages whose visible text has three words or more: the node map anchors on three words, so a
+        // selection opening with "go" is boxed only as the read moves on, not in one burst like this probe's.
+        func words(_ m: AXUIElement) -> Int {
+            guard let web, let r = range(m), let t = axParameterizedAttribute(web, "AXStringForTextMarkerRange", parameter: r) as? String else { return 0 }
+            return TextKit.tokenize(TextCapture.withoutHiddenText(Capture(text: t, pid: app.processIdentifier, element: web, window: window,
+                                                                          selectionStart: nil, source: .accessibility), root: web, selection: r).text).count
+        }
+        let full = messages.filter { words($0) >= 3 }
+        guard let web, let window, full.count >= 2, let first = range(full[full.count - 2]), let last = range(full[full.count - 1]),
               let both = axParameterizedAttribute(web, "AXTextMarkerRangeForUnorderedTextMarkers",
                                                   parameter: [AXTextMarkerRangeCopyStartMarker(first), AXTextMarkerRangeCopyEndMarker(last)] as CFArray),
               CFGetTypeID(both) == AXTextMarkerRangeGetTypeID(),
@@ -1065,13 +1074,18 @@ enum SelfTestWindow {
             record(name, nil, "unverified: no Claude chat with two messages in a window"); return
         }
         let selection = both as! AXTextMarkerRange
-        let headings = HiddenText.prefixes.flatMap { prefix in
-            raw.components(separatedBy: prefix).dropFirst().compactMap { rest in
-                // the heading's sentence as it opens the message body (a long heading ends in "…")
-                HiddenText.repeatedHeadings(prefix + rest).first.map { r in
-                    let h = (prefix + rest as NSString).substring(with: NSRange(location: prefix.utf16.count, length: r.count - prefix.utf16.count))
-                    return h.hasSuffix("…") ? String(h.dropLast()) : h
+        // The two messages' screen reader headings, from the tree: their text after the prefix (a long one ends in "…").
+        var headings: [String] = []
+        for m in full.suffix(2) {
+            var stack = [m]
+            while let node = stack.popLast() {
+                if (axAttribute(node, kAXRoleAttribute) as? String) == "AXHeading",
+                   let title = [kAXTitleAttribute, kAXDescriptionAttribute].compactMap({ axAttribute(node, $0) as? String }).first(where: { !$0.isEmpty }),
+                   let prefix = HiddenText.prefixes.first(where: title.hasPrefix) {
+                    let h = String(title.dropFirst(prefix.count))
+                    headings.append(h.hasSuffix("…") ? String(h.dropLast()) : h)
                 }
+                stack.append(contentsOf: (axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]) ?? [])
             }
         }
         guard !headings.isEmpty else { record(name, nil, "unverified: the last two messages expose no screen reader heading"); return }
@@ -1079,19 +1093,55 @@ enum SelfTestWindow {
                                                             selectionStart: nil, source: .accessibility), root: web, selection: selection)
         let text = capture.text
         func plain(_ s: String) -> String { String(decoding: s.utf16.map(HiddenText.plainQuote), as: UTF16.self) }
-        let once = headings.filter { h in plain(text).components(separatedBy: plain(h)).count == 2 }.count
+        // at most once: the body says it, unless its formatting differs from the heading's plain text
+        let once = headings.filter { h in plain(text).components(separatedBy: plain(h)).count <= 2 }.count
         let leftovers = (HiddenText.prefixes + ["Quick reactions available", "\u{FFFC}"]).filter(text.contains)
             + (text.range(of: "(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day, [A-Z][a-z]+ [0-9]{1,2}, [0-9]{4} at", options: .regularExpression) != nil ? ["a timestamp"] : [])
         let locator = Locator(capture: capture)
         let tokens = TextKit.tokenize(text)
         let boxed = tokens.compactMap { locator.rect(forWord: $0.range) }
         let tiny = boxed.filter { $0.width <= 2 || $0.height <= 2 }.count
-        record(name, once == headings.count && leftovers.isEmpty && capture.hiddenRemoved > 0 && tiny == 0 && boxed.count * 10 >= tokens.count * 8,
-               "\(raw.utf16.count) -> \(text.utf16.count) characters (\(capture.hiddenRemoved) hidden cut); \(once)/\(headings.count) opening sentences once; leftovers \(leftovers); \(boxed.count)/\(tokens.count) words boxed (\(locator.nodeMapSummary)), \(tiny) on a hidden node")
+        // judged on placement, which the cut decides; a placed word scrolled out of view is hidden by design
+        record(name, once == headings.count && leftovers.isEmpty && capture.hiddenRemoved > 0 && tiny == 0 && locator.nodeMapCount * 10 >= tokens.count * 9,
+               "\(raw.utf16.count) -> \(text.utf16.count) characters (\(capture.hiddenRemoved) hidden cut); \(once)/\(headings.count) opening sentences at most once; leftovers \(leftovers); \(locator.nodeMapCount)/\(tokens.count) words placed, \(boxed.count) boxed on screen (\(locator.nodeMapSummary)), \(tiny) on a hidden node")
     }
 
-    /// The first AXStaticText of 30+ words, outside chrome, whose first and last words both lie inside the window and on
-    /// a screen (a node can sit inside the window frame while its text is scrolled away).
+    /// What the hidden-text walk costs on the biggest web page open (Chrome, Safari, else Claude): its whole web area
+    /// stands in for the largest selection a mouse could make. Read-only; nothing is selected or set.
+    private func hiddenTextCost() {
+        let name = "Hidden text walk cost"
+        for id in ["com.google.Chrome", "com.apple.Safari", "com.anthropic.claudefordesktop"] {
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: id) {
+                let appElement = AXUIElementCreateApplication(app.processIdentifier)
+                var best: (area: AXUIElement, window: AXUIElement, text: String, range: AXTextMarkerRange)?
+                for w in (axAttribute(appElement, kAXWindowsAttribute) as? [AXUIElement]) ?? [] {
+                    var stack = [w], visited = 0
+                    while let node = stack.popLast(), visited < 3000 {
+                        visited += 1
+                        if (axAttribute(node, kAXRoleAttribute) as? String) == "AXWebArea",
+                           let r = axParameterizedAttribute(node, "AXTextMarkerRangeForUIElement", parameter: node), CFGetTypeID(r) == AXTextMarkerRangeGetTypeID(),
+                           let text = axParameterizedAttribute(node, "AXStringForTextMarkerRange", parameter: r) as? String,
+                           text.utf16.count > (best?.text.utf16.count ?? 0) {
+                            best = (node, w, text, r as! AXTextMarkerRange)
+                        }
+                        stack.append(contentsOf: (axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]) ?? [])
+                    }
+                }
+                guard let best, best.text.utf16.count >= 2000 else { continue }
+                let start = ContinuousClock.now
+                let out = TextCapture.withoutHiddenText(Capture(text: best.text, pid: app.processIdentifier, element: best.area, window: best.window,
+                                                                selectionStart: nil, source: .accessibility), root: best.area, selection: best.range)
+                let ms = Int((ContinuousClock.now - start) / .milliseconds(1))
+                record("\(name) (\(app.localizedName ?? id))", ms <= 150,
+                       "\(best.text.utf16.count) characters selected (a whole web area): \(ms) ms, \(out.hiddenRemoved) hidden cut")
+                return
+            }
+        }
+        record(name, nil, "unverified: no Chrome, Safari or Claude web page with 2,000+ characters open")
+    }
+
+    /// The first AXStaticText of 30+ words, outside chrome and shown once, whose first and last words both lie inside
+    /// the window and on a screen (a node can sit inside the window frame while its text is scrolled away).
     private static func visibleTextRun(in window: AXUIElement, claude: Bool) -> String? {
         guard let windowFrame = axFrame(window) else { return nil }
         func visible(_ node: AXUIElement, _ token: Token?) -> Bool {
@@ -1100,7 +1150,7 @@ enum SelfTestWindow {
             return windowFrame.contains(r) && NSScreen.screens.contains { $0.frame.contains(CGPoint(x: cocoa.midX, y: cocoa.midY)) }
         }
         var stack: [(AXUIElement, Bool, HiddenText.Visibility?)] = [(window, false, nil)]
-        var visited = 0
+        var visited = 0, seen: [String: Int] = [:], candidates: [String] = []
         while let (node, parentChrome, parentWeb) = stack.popLast(), visited < 8000 {
             visited += 1
             let role = axAttribute(node, kAXRoleAttribute) as? String
@@ -1109,12 +1159,14 @@ enum SelfTestWindow {
                 : parentWeb.map { $0.child(role: role, classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? []) }
             let chrome = NodeAlignment.isChrome(role: role, parentChrome: parentChrome) || web?.drawsText == false
             if role == "AXStaticText", !chrome, let value = axAttribute(node, kAXValueAttribute) as? String {
+                seen[value, default: 0] += 1
                 let tokens = TextKit.tokenize(value)
-                if tokens.count >= 30, visible(node, tokens.first), visible(node, tokens.last) { return value }
+                if tokens.count >= 30, visible(node, tokens.first), visible(node, tokens.last) { candidates.append(value) }
             }
             if let children = axAttribute(node, kAXChildrenAttribute) as? [AXUIElement] { stack.append(contentsOf: children.reversed().map { ($0, chrome, web) }) }
         }
-        return nil
+        // one copy only: with two on screen (a message in a thread and in its chat) the node map rightly boxes neither
+        return candidates.first { seen[$0] == 1 }
     }
 }
 

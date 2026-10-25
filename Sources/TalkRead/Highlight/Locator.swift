@@ -12,6 +12,8 @@ import TalkReadCore
     private(set) var pathUsed: Path = .direct
     /// What the last node map build saw, for logs and the self-test.
     private(set) var nodeMapSummary = "not built"
+    /// Selection words the node map has placed on a node, for the self-test.
+    var nodeMapCount: Int { nodeMap?.count ?? 0 }
     private let tokens: [Token]
     private let useOCR: Bool
 
