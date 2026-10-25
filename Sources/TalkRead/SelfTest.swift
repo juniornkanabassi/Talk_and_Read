@@ -1459,6 +1459,13 @@ private final class LoggingEngine: SpeechEngine {
         log.add(voice, text, c, Date().timeIntervalSince(started))
         return c
     }
+    func synthesize(_ text: String, voice: String, speed: Float) async throws -> SynthChunk {
+        let started = Date()
+        let c = try await engine.synthesize(text, voice: voice, speed: speed)
+        log.add(voice, text, c, Date().timeIntervalSince(started))
+        return c
+    }
+    var speaksFaster: Bool { engine.speaksFaster }
     func unload() { engine.unload() }
     var keepsUpTo: Float? { engine.keepsUpTo }
 }

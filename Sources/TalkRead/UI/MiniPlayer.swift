@@ -528,6 +528,12 @@ struct SpeedControl: NSViewRepresentable {
             popover.performClose(nil)
         }
 
+        /// Torn down by SwiftUI while open: close it, so the monitors go with it.
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow == nil, !outsideClicks.isEmpty { popover.performClose(nil) }
+            super.viewWillMove(toWindow: newWindow)
+        }
+
         func popoverDidClose(_ notification: Notification) {
             outsideClicks.forEach(NSEvent.removeMonitor)
             outsideClicks = []
