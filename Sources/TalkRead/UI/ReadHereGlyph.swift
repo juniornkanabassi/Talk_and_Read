@@ -291,7 +291,9 @@ import TalkReadCore
     private func play() {
         guard let block else { return }
         // Its window must still be what shows there: another window or dialog, even the same app's, may cover it since.
-        let line = CGPoint(x: block.frame.minX + min(8, block.frame.width / 2), y: Self.glyphFrame(block).midY)
+        // On the paragraph and clear of the glyph, which a paragraph near the screen's left edge pushes over its text.
+        let glyph = Self.glyphFrame(block)
+        let line = CGPoint(x: min(max(block.frame.minX + min(8, block.frame.width / 2), glyph.maxX + 2), block.frame.maxX - 1), y: glyph.midY)
         let under = PointerCapture.hit(line)
         let sameWindow = under.map { u in
             PointerCapture.bounded {
