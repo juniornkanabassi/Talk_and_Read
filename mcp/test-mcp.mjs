@@ -16,7 +16,8 @@ if (args[0] === 'mcp-manifest') {
   console.log(JSON.stringify([
     { name: 'status', description: 'state', inputSchema: { type: 'object', properties: {}, required: [] } },
     { name: 'speak', description: 'read', inputSchema: { type: 'object', properties: { text: { type: 'string' }, force: { type: 'boolean' } }, required: ['text'] } },
-    { name: 'dictate_file', description: 'file', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }
+    { name: 'dictate_file', description: 'file', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
+    { name: 'history_delete', description: 'delete', inputSchema: { type: 'object', properties: { id: { type: 'string' }, yes: { type: 'boolean' } }, required: ['id', 'yes'] } }
   ]));
   process.exit(0);
 }
@@ -54,7 +55,7 @@ try {
   assert.equal(init.serverInfo.name, 'talkread');
   assert.equal(init.serverInfo.version, '0.1.0');   // no Info.plist beside this script: fallback
   a.send({ id: 2, method: 'tools/list' });
-  assert.deepEqual((await a.reply(2)).result.tools.map(t => t.name), ['status', 'speak', 'dictate_file']);
+  assert.deepEqual((await a.reply(2)).result.tools.map(t => t.name), ['status', 'speak', 'dictate_file', 'history_delete']);
 
   const spoken = await a.call(3, 'speak', { text: '--help me', force: true });
   assert.equal(spoken.result.isError, false);
@@ -72,6 +73,10 @@ try {
     const again = argvOf(await a.call(id, 'status', {}));
     assert.equal(again[again.indexOf('--caller') + 1], callerA);
   }
+
+  // A confirmation reaches the CLI as --yes=true (the CLI refuses a destructive command without it, or with false).
+  const deleted = argvOf(await a.call(6, 'history_delete', { id: 'abc', yes: true }));
+  assert.deepEqual(deleted.slice(0, 3), ['history-delete', '--id=abc', '--yes=true']);
 
   const failed = await a.call(7, 'dictate_file', { path: '/x' });
   assert.equal(failed.result.isError, true);
