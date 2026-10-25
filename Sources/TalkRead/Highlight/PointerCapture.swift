@@ -129,16 +129,18 @@ enum PointerCapture {
         return best
     }
 
-    /// `element` and its following siblings in the same column: a sibling beside it (a sidebar) ends the run.
+    /// `element` and its following siblings in the same column: a sibling beside the run (a sidebar: no horizontal
+    /// overlap, and level with it rather than below it) ends the run.
     private static func sameColumn(from element: AXUIElement, in parent: AXUIElement) -> [AXUIElement] {
         guard let frame = axFrame(element) else { return [element] }
         let siblings = (axAttribute(parent, kAXChildrenAttribute) as? [AXUIElement]) ?? []
         guard let i = siblings.firstIndex(where: { CFEqual($0, element) }) else { return [element] }
-        var run = [element]
+        var run = [element], extent = frame
         for sibling in siblings[(i + 1)...].prefix(2000) {
             guard let f = axFrame(sibling), !f.isEmpty else { continue }
-            if f.maxX <= frame.minX + 1 || f.minX >= frame.maxX - 1 { break }
+            if (f.maxX <= extent.minX + 1 || f.minX >= extent.maxX - 1), f.minY < extent.maxY - 1 { break }
             run.append(sibling)
+            extent = extent.union(f)
         }
         return run
     }

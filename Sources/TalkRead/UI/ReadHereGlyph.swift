@@ -219,7 +219,9 @@ import TalkReadCore
         if !asked.contains(hit.pid) {
             asked.insert(hit.pid)
             hoverColdUntil = now + 1.5
-            _ = AXUIElementSetAttributeValue(AXUIElementCreateApplication(hit.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            _ = PointerCapture.bounded {   // unasked, on the main thread: a hung app answers within the short timeout
+                AXUIElementSetAttributeValue(AXUIElementCreateApplication(hit.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            }
         }
         // Web pages only: in native text views the glyph would follow every click and caret.
         guard let found = PointerCapture.block(from: hit.element, pid: hit.pid, point: point), found.start == nil else {
