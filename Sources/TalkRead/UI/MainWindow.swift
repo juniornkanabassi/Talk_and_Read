@@ -571,7 +571,11 @@ private struct VocabularySection: View {
                         Image(systemName: "arrow.right").foregroundStyle(.tertiary).accessibilityHidden(true)
                         Text(c.typed)
                         Spacer()
-                        Button("Add") { dictation.acceptSuggestion(c) }
+                        Button("Add") {
+                            do { try dictation.acceptSuggestion(c) }
+                            catch let error as AppError { MiniPlayer.shared.flash(error.message) }
+                            catch { MiniPlayer.shared.flash(error.localizedDescription) }
+                        }
                         Button("Dismiss") { dictation.dismissSuggestion(c) }
                     }
                 }

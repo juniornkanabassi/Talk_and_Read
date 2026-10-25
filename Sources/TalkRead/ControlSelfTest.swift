@@ -82,7 +82,8 @@ enum ControlSelfTest {
 
         // Documents: `open` imports into the library (copy + text beside it) without showing a window; `read-file` reads.
         let docs = URL(fileURLWithPath: "Tests/Fixtures/documents")
-        await step("a open sample.pdf", ["open", docs.appendingPathComponent("sample.pdf").path, "--caller", "a"], .ok)
+        let opened = await call(cli, ["open", docs.appendingPathComponent("sample.pdf").path, "--caller", "a"])
+        results.append(check("a open sample.pdf", opened, .ok) && opened.response?.data?["shown"] == .bool(true))
         let item = model.library.first
         let copied = item.map { FileManager.default.fileExists(atPath: Paths.documents.appendingPathComponent($0.fileName).path) } ?? false
         let text = item.flatMap { try? model.documentText($0) } ?? ""
@@ -99,6 +100,7 @@ enum ControlSelfTest {
         await step("a stop", ["stop", "--caller", "a"], .ok)
         await librarySteps(cli, model, &results)
         await admissionSteps(cli, model, &results)
+        await importReplaySteps(model, &results)
         await wordListSteps(cli, model, &results)
 
         // Two callers transcribe at once: the shared transcriber admits one, the other is told busy.
@@ -349,36 +351,29 @@ enum ControlSelfTest {
         let path = WindowRouter.shared.libraryPath
         let active = await call(cli, ["speak", "Keep reading while navigation is refused.", "--caller", "a"])
         record("navigation fixture is reading", active.response?.ok == true && model.liveSession != nil)
+        let before = model.library.count
         for args in [["library-open", item.id.uuidString], ["library-open", item.id.uuidString, "--read", "1"],
                      ["open", "Tests/Fixtures/documents/sample.txt"], ["open", "Tests/Fixtures/documents/sample.txt", "--read", "1"],
                      ["open-url", "https://example.com"], ["open-url", "https://example.com", "--read", "1"]] {
             let result = await call(cli, args + ["--caller", "b"])
             record("navigation refuses another owner: \(args.joined(separator: " "))",
-                   result.response?.code == "busy" && WindowRouter.shared.libraryPath == path)
+                   result.response?.code == "busy" && WindowRouter.shared.libraryPath == path && model.library.count == before)
         }
         model.stopSession()
-        do {
-            _ = try await model.openImported(ControlRequest(command: "open", args: ["read": "1"], caller: "a"), name: "test") {
-                await Task.yield()
-                _ = model.reserve("b")
-                return item
-            }
-            record("superseded import preserves navigation", false)
-        } catch let error as AppError {
-            record("superseded import preserves navigation", error.code == "superseded" && WindowRouter.shared.libraryPath == path)
-        } catch { record("superseded import preserves navigation", false) }
-        model.stopSession()
-        do {
-            _ = try await model.openImported(ControlRequest(command: "open", caller: "a"), name: "test") {
-                await Task.yield()
-                _ = model.reserve("b")
-                return item
-            }
-            record("import rechecks ownership after await", false)
-        } catch let error as AppError {
-            record("import rechecks ownership after await", error.code == "busy" && WindowRouter.shared.libraryPath == path)
-        } catch { record("import rechecks ownership after await", false) }
-        model.stopSession()
+        for read in ["1", "0"] {
+            do {
+                let data = try await model.openImported(ControlRequest(command: "open", args: ["read": read], caller: "a"), name: "test") {
+                    await Task.yield()
+                    _ = model.reserve("b")
+                    return item
+                }
+                record("import keeps item without navigation (read \(read))", data["shown"] == .bool(false)
+                       && data["id"] == .string(item.id.uuidString) && data["title"] == .string(item.title)
+                       && data["kind"] == .string(item.kind) && data["notice"]?.stringValue?.contains("b is reading") == true
+                       && model.owner?.caller == "b" && model.liveSession == nil && WindowRouter.shared.libraryPath == path)
+            } catch { record("import keeps item without navigation (read \(read))", false) }
+            model.stopSession()
+        }
 
         let countWords = model.documentWordCount
         model.documentWordCount = { text in
@@ -451,6 +446,47 @@ enum ControlSelfTest {
         } catch { record("Home play reads, records History and opens its item", false) }
     }
 
+    @MainActor private static func importReplaySteps(_ model: AppModel, _ results: inout [Bool]) async {
+        let path = WindowRouter.shared.libraryPath
+        let before = Set(model.library.map(\.id))
+        let socket = Paths.dataRoot.appendingPathComponent("import-test.sock")
+        do {
+            let server = try ControlServer(path: socket) { r in
+                await Task { @MainActor in
+                    do {
+                        let data = try await model.openImported(r, name: "test") {
+                            let item = model.importText("Imported exactly once.", title: "Import retry")
+                            await Task.yield()
+                            _ = await model.handle(ControlRequest(command: "speak", args: ["text": "Another caller owns this read."], caller: "b", force: true))
+                            return item
+                        }
+                        return ControlResponse(ok: true, data: data)
+                    } catch let error as AppError {
+                        return ControlResponse(ok: false, code: error.code, message: error.message)
+                    } catch { return ControlResponse(ok: false, code: "failed", message: error.localizedDescription) }
+                }.value
+            }
+            defer { server.stop() }
+            let request = ControlRequest(id: UUID().uuidString, command: "open", args: ["read": "1"], caller: "a")
+            let first = try await Task.detached { try ControlClient.send(request, to: socket, timeout: 5) }.value
+            let retry = try await Task.detached { try ControlClient.send(request, to: socket, timeout: 5) }.value
+            let added = model.library.filter { !before.contains($0.id) }
+            var expected = first.data ?? [:]
+            expected["replayed"] = .bool(true)
+            let pass = first.ok && first.data?["shown"] == .bool(false) && first.data?["notice"] != nil
+                && retry.ok && retry.data == expected && added.count == 1
+                && first.data?["id"] == added.first.map { .string($0.id.uuidString) }
+                && model.owner?.caller == "b" && model.liveSession != nil && WindowRouter.shared.libraryPath == path
+            results.append(pass)
+            print("\(pass ? "PASS" : "FAIL")  committed import replays once after another caller starts reading")
+        } catch {
+            results.append(false)
+            print("FAIL  import replay: \(error)")
+        }
+        model.stopSession()
+        for item in model.library where !before.contains(item.id) { model.remove(item) }
+    }
+
     /// Vocabulary, pronunciations and shortcuts through the CLI: written where the Settings editors read them.
     @MainActor private static func wordListSteps(_ cli: URL, _ model: AppModel, _ results: inout [Bool]) async {
         func record(_ label: String, _ pass: Bool, _ detail: String) { results.append(pass); print("\(pass ? "PASS" : "FAIL")  \(label.padding(toLength: 36, withPad: " ", startingAt: 0)) \(detail)") }
@@ -471,6 +507,28 @@ enum ControlSelfTest {
                && WordMapEditor.load(Paths.pronunciations)["Nguyen"] == nil, gone.text)
         let suggestion = await call(cli, ["vocabulary-suggestion", "accept", "--heard", "nobody", "--typed", "Nobody"])
         record("vocabulary-suggestion of an unknown one", suggestion.response?.code == "not_found", suggestion.text)
+
+        let correction = AutoLearn.Correction(heard: "okafor", typed: "Okafor")
+        for _ in 0..<AutoLearn.threshold { model.dictation.learn([correction]) }
+        do {
+            let saved = try Data(contentsOf: Paths.vocabulary)
+            try FileManager.default.removeItem(at: Paths.vocabulary)
+            try FileManager.default.createDirectory(at: Paths.vocabulary, withIntermediateDirectories: false)
+            defer {
+                try? FileManager.default.removeItem(at: Paths.vocabulary)
+                try? saved.write(to: Paths.vocabulary, options: .atomic)
+            }
+            let failed = await call(cli, ["vocabulary-suggestion", "accept", "--heard", correction.heard, "--typed", correction.typed])
+            let listed = await call(cli, ["vocabulary"])
+            let offers = listed.response?.data?["suggestions"]?.arrayValue ?? []
+            record("suggestion save failure keeps suggestion", failed.response?.ok == false && failed.response?.code == "failed"
+                   && model.dictation.suggestions.contains(correction)
+                   && offers.contains { $0.objectValue?["heard"] == .string(correction.heard) }, failed.text)
+        } catch { record("suggestion persistence failure fixture", false, "\(error)") }
+        let accepted = await call(cli, ["vocabulary-suggestion", "accept", "--heard", correction.heard, "--typed", correction.typed])
+        record("suggestion saved before dismissal", accepted.response?.ok == true
+               && WordMapEditor.load(Paths.vocabulary)[correction.heard] == correction.typed
+               && !model.dictation.suggestions.contains(correction), accepted.text)
 
         let bound = await call(cli, ["settings-set", "readShortcut", "ctrl+option+R"])
         let refused = await call(cli, ["settings-set", "readShortcut", "cmd+Q"])
