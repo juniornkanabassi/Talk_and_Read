@@ -69,6 +69,12 @@ final class PageFurnitureTests: XCTestCase {
         XCTAssertEqual(PageFurniture.ranges(text, pageStarts: starts), [])
     }
 
+    func testRepeatedInstructionsAreRead() {
+        let pages = (0..<3).map { "Question \($0 + 1)\nThe \(words[$0]) facts.\nExplain your answer." }
+        let (text, starts) = join(pages)
+        XCTAssertEqual(PageFurniture.ranges(text, pageStarts: starts), [])
+    }
+
     func testShortDocumentsAndLongLinesAreLeftAlone() {
         let two = join(["Journal of Law\nBody one.\n1", "Journal of Law\nBody two.\n2"])
         XCTAssertEqual(PageFurniture.ranges(two.text, pageStarts: two.starts), [])
