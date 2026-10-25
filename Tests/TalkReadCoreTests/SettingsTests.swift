@@ -225,4 +225,11 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: log, encoding: .utf8).hasSuffix(" after rotation\n"))
         XCTAssertLessThan(try Data(contentsOf: log).count, 200)
     }
+
+    func testShortcutDisplayRoundTrips() {
+        for text in ["ctrl+left", "option+return", "cmd+shift+tab", "ctrl+up", "⌃⌥R", "ctrl+space"] {
+            guard let s = Settings.Shortcut(text: text) else { return XCTFail(text) }
+            XCTAssertEqual(Settings.Shortcut(text: s.display), s, text)
+        }
+    }
 }
