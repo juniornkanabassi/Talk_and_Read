@@ -184,7 +184,15 @@ import TalkReadCore
         let stream = NodeAlignment.stream(nodes.map { ($0.value, $0.chrome) })
         guard !stream.isEmpty else { return }
         let prefer = start == 0 ? preferredStream(stream, nodes: nodes.map { ($0.element, $0.inside) }, webAreas: webAreas) : nil
-        let aligned = NodeAlignment.best(stream.map(\.word), tokens.map { $0.text.lowercased() }, from: start, prefer: prefer)
+        let words = tokens.map { $0.text.lowercased() }
+        var aligned = NodeAlignment.best(stream.map(\.word), words, from: start, prefer: prefer)
+        // A selection can open with words the stream holds only as chrome (a "Sent to a thread" button's label): anchor
+        // on the next few words instead, so the rest is boxed from the start of the read.
+        var from = start
+        while aligned.isEmpty, from + 1 < min(start + 8, words.count) {
+            from += 1
+            aligned = NodeAlignment.best(stream.map(\.word), words, from: from)
+        }
         nodeMapSummary = "from \(start): \(nodes.count) nodes, \(stream.count) words, prefer \(prefer.map { String($0.count) } ?? "nil"), placed \(aligned.count)"
         for (i, q) in aligned {
             let range = stream[q].range

@@ -153,7 +153,8 @@ enum TextCapture {
     static func withoutHiddenText(_ c: Capture, root: AXUIElement?, selection: AXTextMarkerRange?) -> Capture {
         var text = c.text, removed = 0
         let chat = root.map { isClaudeChat($0, pid: c.pid) } ?? false
-        let walked = root.flatMap { root in selection.flatMap { hiddenRanges(root: root, selection: $0, text: text, chat: chat) } }
+        // Only Claude's own chat is walked: elsewhere nothing counts as hidden, so a read is exactly as selected.
+        let walked = chat ? root.flatMap { root in selection.flatMap { hiddenRanges(root: root, selection: $0, text: text, chat: chat) } } : nil
         if let walked {
             (text, removed) = HiddenText.cut(text, ranges: walked.ranges)
             // the toolbar's buttons leave their placeholders behind
@@ -192,11 +193,9 @@ enum TextCapture {
     /// The ranges in `text` of the hidden nodes inside a web area's selection; nil when the selection's text is not
     /// `text`. Each node is placed on its own (`HiddenText.place`): exactly when its text-marker distances add up and
     /// its text is there, else only where `HiddenText.locate` finds its text once beside that place. A node whose
-    /// distances cannot be read is left in. The walk stays near the selection: subtrees whose frame misses its bounds
-    /// (by more than 60 pt, which keeps a toolbar above a message) are skipped.
-    // ponytail: up to 4000 nodes and 100 ms, two AX calls each (role, classes) plus a frame for pruning, and five per
-    // hidden node; Claude's chat window is about 400 nodes. Walk only the selection's common ancestor if big pages
-    // keep hitting the budget.
+    /// distances cannot be read is left in.
+    // ponytail: up to 4000 nodes and 100 ms, two AX calls each (role, classes), and five per hidden node; Claude's chat
+    // window is about 400 nodes.
     private static func hiddenRanges(root: AXUIElement, selection: AXTextMarkerRange, text: String, chat: Bool) -> (ranges: [Range<Int>], complete: Bool)? {
         guard (axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: selection) as? String) == text else { return nil }
         let length = text.utf16.count
@@ -205,14 +204,28 @@ enum TextCapture {
             guard let range = axParameterizedAttribute(root, "AXTextMarkerRangeForUnorderedTextMarkers", parameter: [a, b] as CFArray) else { return nil }
             return (axParameterizedAttribute(root, "AXLengthForTextMarkerRange", parameter: range) as? NSNumber)?.intValue
         }
-        var bounds: CGRect?
-        if let value = axParameterizedAttribute(root, "AXBoundsForTextMarkerRange", parameter: selection), CFGetTypeID(value) == AXValueGetTypeID() {
-            var rect = CGRect.zero
-            if AXValueGetValue(value as! AXValue, .cgRect, &rect), !rect.isEmpty { bounds = rect.insetBy(dx: -60, dy: -60) }
+        // The walk covers the selection's own subtree: the nearest element holding both its ends, with the visibility
+        // its ancestors give it. Frames are no guide (Chromium reports them 1 pt tall behind other windows).
+        func element(_ marker: AXTextMarker) -> AXUIElement? {
+            guard let e = axParameterizedAttribute(root, "AXUIElementForTextMarker", parameter: marker), CFGetTypeID(e) == AXUIElementGetTypeID() else { return nil }
+            return (e as! AXUIElement)
+        }
+        func chain(_ e: AXUIElement) -> [AXUIElement] {   // e up to the web area, nearest first; [] when it is not inside
+            var out = [e], cur = e
+            while out.count < 60, !CFEqual(cur, root), let parent = axElement(cur, kAXParentAttribute) { out.append(parent); cur = parent }
+            return CFEqual(cur, root) ? out : []
+        }
+        var top = root, inherited = HiddenText.Visibility(chat: chat)
+        if let a = element(selStart).map(chain), let b = element(selEnd).map(chain), !a.isEmpty, !b.isEmpty,
+           let k = a.firstIndex(where: { e in b.contains { CFEqual($0, e) } }), !CFEqual(a[k], root) {
+            top = a[k]
+            for e in a[k...].reversed().dropFirst() {   // below the web area, down to the top itself
+                inherited = inherited.child(role: axAttribute(e, kAXRoleAttribute) as? String, classes: (axAttribute(e, "AXDOMClassList") as? [String]) ?? [])
+            }
         }
         let ns = text as NSString
         var ranges: [Range<Int>] = [], complete = true
-        var stack: [(AXUIElement, HiddenText.Visibility)] = [(root, .init(chat: chat))]
+        var stack: [(AXUIElement, HiddenText.Visibility)] = [(top, inherited)]
         var visited = 0
         let deadline = ContinuousClock.now + .milliseconds(100)
         while let (node, parent) = stack.popLast(), visited < 4000 {
@@ -220,14 +233,16 @@ enum TextCapture {
             // A big page that outruns the budget is read as selected: no cut at all beats a read held up, or a
             // partial one (Chrome, a 4,000 character page: about 130 ms).
             if visited % 32 == 0, ContinuousClock.now > deadline { Log.write("hidden text: walk over 100 ms, nothing cut"); return nil }
-            if let bounds, let frame = axFrame(node), !frame.isEmpty, !frame.intersects(bounds) { continue }
-            let visibility = parent.child(role: axAttribute(node, kAXRoleAttribute) as? String,
-                                          classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [])
+            let role = axAttribute(node, kAXRoleAttribute) as? String
+            // the top below the web area already has its own visibility, worked out down its ancestors
+            let visibility = visited == 1 && !CFEqual(node, root) ? parent
+                : parent.child(role: role, classes: (axAttribute(node, "AXDOMClassList") as? [String]) ?? [])
             guard visibility.drawsText else {
                 guard let own = axParameterizedAttribute(root, "AXTextMarkerRangeForUIElement", parameter: node),
                       CFGetTypeID(own) == AXTextMarkerRangeGetTypeID(),
                       let string = axParameterizedAttribute(root, "AXStringForTextMarkerRange", parameter: own) as? String else { complete = false; continue }
-                let leaf = (axAttribute(node, kAXChildrenAttribute) as? [AXUIElement])?.isEmpty ?? true
+                // a text node is a leaf whatever Chromium hangs below it (inline text boxes)
+                let leaf = role == "AXStaticText" || ((axAttribute(node, kAXChildrenAttribute) as? [AXUIElement])?.isEmpty ?? true)
                 if !visibility.hidden, !leaf || visibility.draws(string) {
                     // a hover box is never cut whole: a descendant may set its own height and be drawn, so only its
                     // timestamp-shaped text leaves go; look inside it

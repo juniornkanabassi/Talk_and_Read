@@ -213,6 +213,16 @@ final class SpeakableTests: XCTestCase {
     }
 
     /// An unclosed "[" on a long line costs linear time, not a rescan from every bracket (Codex round 5).
+    /// Fence state for every chunk of a long read is a lookup, not a rescan of the text before it (Codex, blocking pass).
+    func testFenceStateStaysFastOverALongRead() {
+        let s = String(repeating: "A plain sentence with no code at all in it. ", count: 20_000)
+        let start = Date()
+        let chunks = TextKit.chunks(s, tokens: TextKit.tokenize(s))
+        for c in chunks { _ = Speakable.make(s, range: c.range, lexicon: [:]) }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 20)
+        XCTAssertGreaterThan(chunks.count, 2000)
+    }
+
     func testManyOpenBracketsStayFast() {
         let start = Date()   // a path then 50,000 closing brackets: one pass (Codex round 7)
         _ = make("/Users/j/notes.md" + String(repeating: ")", count: 50_000))

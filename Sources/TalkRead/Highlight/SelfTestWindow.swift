@@ -1101,16 +1101,17 @@ enum SelfTestWindow {
         let tokens = TextKit.tokenize(text)
         let boxed = tokens.compactMap { locator.rect(forWord: $0.range) }
         let tiny = boxed.filter { $0.width <= 2 || $0.height <= 2 }.count
-        // judged on placement, which the cut decides; a placed word scrolled out of view is hidden by design
-        record(name, once == headings.count && leftovers.isEmpty && capture.hiddenRemoved > 0 && tiny == 0 && locator.nodeMapCount * 10 >= tokens.count * 9,
+        // judged on placement, which the cut decides; a placed word scrolled out of view is hidden by design, and an
+        // inline session link is a button, whose label the node map never boxes (as before this change), hence 3 in 4
+        record(name, once == headings.count && leftovers.isEmpty && capture.hiddenRemoved > 0 && tiny == 0 && locator.nodeMapCount * 4 >= tokens.count * 3,
                "\(raw.utf16.count) -> \(text.utf16.count) characters (\(capture.hiddenRemoved) hidden cut); \(once)/\(headings.count) opening sentences at most once; leftovers \(leftovers); \(locator.nodeMapCount)/\(tokens.count) words placed, \(boxed.count) boxed on screen (\(locator.nodeMapSummary)), \(tiny) on a hidden node")
     }
 
-    /// What the hidden-text walk costs on the biggest web page open (Chrome, Safari, else Claude): its whole web area
+    /// What the hidden-text walk costs on the biggest web page open in Claude (Chrome or Safari show it skipped): its whole web area
     /// stands in for the largest selection a mouse could make. Read-only; nothing is selected or set.
     private func hiddenTextCost() {
         let name = "Hidden text walk cost"
-        for id in ["com.google.Chrome", "com.apple.Safari", "com.anthropic.claudefordesktop"] {
+        for id in ["com.anthropic.claudefordesktop", "com.google.Chrome", "com.apple.Safari"] {   // only Claude's chat is walked
             for app in NSRunningApplication.runningApplications(withBundleIdentifier: id) {
                 let appElement = AXUIElementCreateApplication(app.processIdentifier)
                 var best: (area: AXUIElement, window: AXUIElement, text: String, range: AXTextMarkerRange)?

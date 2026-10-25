@@ -65,17 +65,33 @@ public struct Speakable: Sendable {
     }
 
     /// Whether `p` lies inside a fenced code block: an odd number of fence lines (``` at a line's start) before it.
-    // ponytail: a scan of the text before every chunk for "```"; cheap, as the search skips straight to each occurrence.
+    /// The fence positions are found once per text and cached, as a read asks for every chunk.
     static func insideFence(_ ns: NSString, before p: Int) -> Bool {
-        var inside = false, from = 0
-        while from < p {
-            let r = ns.range(of: "```", options: .literal, range: NSRange(location: from, length: p - from))
+        let fences = fenceStarts(ns)
+        var l = 0, h = fences.count   // fences before p
+        while l < h { let m = (l + h) / 2; if fences[m] < p { l = m + 1 } else { h = m } }
+        return l % 2 == 1
+    }
+
+    private static func fenceStarts(_ ns: NSString) -> [Int] {
+        fenceCache.lock.lock(); defer { fenceCache.lock.unlock() }
+        if let text = fenceCache.text, text.isEqual(to: ns as String) { return fenceCache.starts }
+        var starts: [Int] = [], from = 0
+        while from < ns.length {
+            let r = ns.range(of: "```", options: .literal, range: NSRange(location: from, length: ns.length - from))
             guard r.location != NSNotFound else { break }
-            if r.location == 0 || [0x0A, 0x0D].contains(ns.character(at: r.location - 1)) { inside.toggle() }
+            if r.location == 0 || [0x0A, 0x0D].contains(ns.character(at: r.location - 1)) { starts.append(r.location) }
             from = r.location + 3
         }
-        return inside
+        (fenceCache.text, fenceCache.starts) = (ns.copy() as? NSString, starts)
+        return starts
     }
+    private final class FenceCache: @unchecked Sendable {   // guarded by `lock`
+        let lock = NSLock()
+        var text: NSString?
+        var starts: [Int] = []
+    }
+    private static let fenceCache = FenceCache()
 
     /// Speakable UTF-16 range -> source UTF-16 range: the union of the source characters those units came from.
     public func sourceRange(_ r: Range<Int>) -> Range<Int> {

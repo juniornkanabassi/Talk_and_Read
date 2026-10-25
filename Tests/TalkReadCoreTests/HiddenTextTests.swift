@@ -127,11 +127,13 @@ final class HiddenTextTests: XCTestCase {
             (v == root && !claude ? page : v).child(role: role, classes: classes)
         }
         XCTAssertTrue(child(root, "AXStaticText", []).drawsText)
-        // sr-only, and everything inside it, in any app
-        let heading = child(root, "AXHeading", ["sr-only", "select-none"], claude: false)
+        // sr-only, and everything inside it
+        let heading = child(root, "AXHeading", ["sr-only", "select-none"])
         XCTAssertTrue(heading.hidden)
+        // outside Claude's chat a class name proves nothing: a page may leave sr-only undefined (Codex, blocking pass)
+        XCTAssertTrue(child(root, "AXHeading", ["sr-only"], claude: false).drawsText)
         XCTAssertFalse(child(heading, "AXStaticText", []).drawsText)
-        XCTAssertTrue(child(root, "AXGroup", ["visually-hidden"], claude: false).hidden)
+        XCTAssertTrue(child(root, "AXGroup", ["visually-hidden"]).hidden)
         XCTAssertTrue(child(root, "AXGroup", ["sr-only", "md:not-sr-only"]).drawsText)   // shown somewhere
         XCTAssertTrue(child(root, "AXGroup", ["sr-only", "sr-only-focusable"], claude: false).drawsText)   // shown on focus
         // Claude's hover toolbar and timestamp box; elsewhere a toolbar or an h-0 box may be drawn
@@ -151,6 +153,12 @@ final class HiddenTextTests: XCTestCase {
                       ["h-0", "min-h-10"], ["h-0", "size-4"], ["h-0", "overflow-visible"], ["h-0", "h-fit"], ["md:h-0"]] {
             XCTAssertTrue(child(root, "AXGroup", shown).draws("3m ago"), "\(shown)")
         }
+        // a message row's time outside its content (the latest message has no h-0 box), but never the content's text
+        let row = child(root, "AXGroup", ["group/msg", "group/message-row", "relative"])
+        XCTAssertFalse(child(child(row, "AXGroup", []), "AXStaticText", []).draws("3m ago"))
+        XCTAssertTrue(child(child(row, "AXGroup", []), "AXStaticText", []).draws("A real sentence"))
+        let body = child(row, "AXGroup", ["group/message-row", "flex", "select-text"])
+        XCTAssertTrue(child(body, "AXStaticText", []).draws("now"))
         // user-select: none is drawn (an inline session link), so it is read
         XCTAssertTrue(child(root, "AXButton", ["select-none"]).drawsText)
     }

@@ -152,4 +152,15 @@ final class NodeAlignmentTests: XCTestCase {
         XCTAssertEqual(NodeAlignment.best(stream, selection, from: 3, prefer: nil), [3: 7, 4: 8, 5: 9])
         XCTAssertEqual(NodeAlignment.best(["in", "the", "end", "share", "in", "the", "end"], selection, from: 3, prefer: [4, 5, 6]), [:])
     }
+
+    /// Two messages with 60 chrome words between them (Claude's hidden heading, toolbar and timestamps, cut from the
+    /// capture) still align end to end.
+    func testAlignmentStepsOverLongChrome() {
+        let first = ["first", "message", "words", "here"], second = ["second", "message", "goes", "on"]
+        let stream = first + Array(repeating: "", count: 60) + second
+        let map = NodeAlignment.best(stream, first + second)
+        XCTAssertEqual(map.count, 8)
+        XCTAssertEqual(map[4], 64)
+    }
+
 }

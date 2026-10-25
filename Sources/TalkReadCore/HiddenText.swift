@@ -11,12 +11,15 @@ public enum HiddenText {
     public struct Visibility: Equatable, Sendable {
         /// Not read: a screen-reader-only node, anything inside one, and in Claude its hover toolbar.
         public var hidden = false
-        /// Inside a short zero-height box in Claude: hidden only where its text is a timestamp (`isTimestamp`), the one
-        /// thing Claude's chat hangs there; any other text in such a box may be drawn and is kept.
+        /// Inside a short zero-height box in Claude's chat, or a message row outside its content: hidden only where its
+        /// text is a timestamp (`isTimestamp`), the one thing Claude's chat hangs there; any other text is kept.
         public var hover = false
 
         /// Inside Claude's own chat (its claude.ai web area, not an artifact), whose furniture is known.
         public var chat = false
+        /// Inside a chat message's row (`group/msg`), and inside its selectable content (`select-text`): the row's
+        /// other text is furniture, such as the latest message's time, shown on hover like the others.
+        public var message = false, content = false
 
         public init(hidden: Bool = false, hover: Bool = false, chat: Bool = false) { self.hidden = hidden; self.hover = hover; self.chat = chat }
 
@@ -28,8 +31,9 @@ public enum HiddenText {
 
         /// The visibility of a child of this element, from its role and DOM classes.
         ///
-        /// Anywhere: the `sr-only` / `visually-hidden` classes, unless a `not-sr-only` variant or a `-focusable` class
-        /// shows the node somewhere. In Claude's own chat (`chat`), which is known: its message toolbar (shown on hover), and a zero-height box (`h-0`),
+        /// Only in Claude's own chat (`chat`), whose DOM is known; anywhere else a class name proves nothing (a page
+        /// may leave `sr-only` undefined), so nothing is hidden. There: the `sr-only` / `visually-hidden` classes, unless
+        /// a `not-sr-only` variant or a `-focusable` class shows the node somewhere; its message toolbar (shown on hover), and a zero-height box (`h-0`),
         /// which is how it hangs a message's hover timestamps below it, unless anything else sets its height
         /// (`min-h-10`, `md:h-auto`, `group-hover:h-auto`, `size-4`), it grows (`flex-1 h-0` is a flex layout's pane)
         /// or it lets its content show (`overflow-visible`). Elsewhere a toolbar or an `h-0` box may well be drawn.
@@ -39,13 +43,16 @@ public enum HiddenText {
             var v = self
             let bases = classes.map { $0.split(separator: ":").last.map(String.init) ?? $0 }
             if chat, role == "AXToolbar" { v.hidden = true }
-            if classes.contains(where: Self.hiddenClasses.contains), !bases.contains("not-sr-only"),
+            if chat, classes.contains(where: Self.hiddenClasses.contains), !bases.contains("not-sr-only"),
                !classes.contains(where: { $0.contains("focusable") }) { v.hidden = true }   // shown on focus: may be on screen
             // a descendant that sets its own height or shows its overflow is drawn again
             if v.hover, zip(classes, bases).contains(where: { full, base in
                 full != "h-0" && ["h-", "min-h-", "max-h-", "size-"].contains(where: base.hasPrefix) }) || bases.contains(where: Self.showClasses.contains) {
                 v.hover = false
             }
+            if chat, classes.contains("group/msg") { (v.message, v.content) = (true, false) }
+            if v.message, classes.contains("select-text") { v.content = true }
+            if v.message, !v.content, !classes.contains("group/msg") { v.hover = true }
             if chat, classes.contains("h-0"),
                !zip(classes, bases).contains(where: { full, base in
                    full != "h-0" && ["h-", "min-h-", "max-h-", "size-"].contains(where: base.hasPrefix) }),
