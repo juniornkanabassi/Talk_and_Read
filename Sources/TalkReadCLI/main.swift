@@ -1,5 +1,5 @@
 // `talkread` helper (Contents/Helpers/talkread): one subcommand per control command. Owned by WP2.
-// Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk & Read is not running.
+// Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk & Read is not running and could not be started.
 import Foundation
 import TalkReadCore
 
@@ -234,10 +234,10 @@ func render(_ response: ControlResponse, command: String) {
 
 func help(_ command: Command? = nil) {
     guard let command else {
-        print("talkread <command> [options]   Control Talk & Read from the shell. The app must be open.")
+        print("talkread <command> [options]   Control Talk & Read from the shell. A closed Talk & Read starts in the background, with no window; status never starts it.")
         for c in commands { print("  \(c.name.padding(toLength: 21, withPad: " ", startingAt: 0)) \(c.summary)") }
         print("Global options: --json  --force  --yes  --caller <name>  --request-id <uuid>  --timeout <seconds>  --help")
-        print("Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk & Read is not running.")
+        print("Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk & Read is not running and could not be started.")
         print("Run `talkread <command> --help` for one command with an example.")
         return
     }
@@ -374,9 +374,36 @@ if command.confirm { args["yes"] = "1" }
 let longRunning = command.name == "models" && args["action"] == "download" && args["model"] == nil
 let request = ControlRequest(id: requestID ?? UUID().uuidString, command: command.name, args: args,
                              caller: caller ?? "cli-\(getppid())", force: force)
+let timeout = timeoutOverride ?? (longRunning ? 600 : command.timeout)
+
+/// Starts a closed Talk & Read in the background (no window, no focus) and sends the request once its socket answers.
+/// Only `app_not_running` is retried, and that error means nothing was sent, so no command can run twice.
+func launchAndSend() throws -> ControlResponse {
+    let executable = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()
+    let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let launch = Process()
+    launch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    // This helper's own app when it sits in Contents/Helpers, so a build never drives an older installed copy.
+    launch.arguments = ["-g", "-j"] + (app.pathExtension == "app" ? ["-a", app.path] : ["-b", "com.juniornkanabassi.TalkAndRead"]) + ["--args", "--headless"]
+    launch.standardOutput = FileHandle.nullDevice; launch.standardError = FileHandle.nullDevice
+    try launch.run(); launch.waitUntilExit()
+    guard launch.terminationStatus == 0 else { throw ControlError("app_not_running", "Talk & Read is not running and could not be started.") }
+    // The socket opens once the voices are listed, usually within a second; checking often answers as soon as it does.
+    let deadline = Date().addingTimeInterval(20)
+    while true {
+        do { return try ControlClient.send(request, to: Paths.controlSocket, timeout: timeout) }
+        catch let error as ControlError where error.code == "app_not_running" && Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+    }
+}
+
 do {
-    let response = try ControlClient.send(request, to: Paths.controlSocket,
-                                          timeout: timeoutOverride ?? (longRunning ? 600 : command.timeout))
+    let response: ControlResponse
+    do { response = try ControlClient.send(request, to: Paths.controlSocket, timeout: timeout) }
+    // status reports a closed app without starting it; a TALKREAD_HOME test root never starts the real app.
+    catch let error as ControlError where error.code == "app_not_running" && command.name != "status"
+        && ProcessInfo.processInfo.environment["TALKREAD_HOME"] == nil {
+        response = try launchAndSend()
+    }
     if json { printJSON(response) }
     else if response.ok { render(response, command: command.name) }
     else { stderrLine("\(response.code ?? "error"): \(response.message ?? "The request failed.")") }
