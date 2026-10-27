@@ -46,7 +46,7 @@ Reading and dictation run on your Mac, so your text, audio and documents are not
 
 ## Command line and AI assistants
 
-The app includes a `talkread` command that controls the running app, and an MCP server that lets Claude, Codex and other assistants use the same commands. Whatever you do yourself at the Mac takes priority. Commands will not stop reading or dictation that someone else started unless `--force` is passed. This keeps assistants out of each other's way, but it is not a security barrier, since anything running under your account can get round it. Changing a shortcut while you hold the dictation key also cancels that dictation.
+The app includes a `talkread` command that controls the running app, and an MCP server that lets Claude, Codex and other assistants use the same commands. If Talk & Read is closed, a command starts it in the background without opening any window (`status` only reports that it is closed). Whatever you do yourself at the Mac takes priority. Commands will not stop reading or dictation that someone else started unless `--force` is passed. This keeps assistants out of each other's way, but it is not a security barrier, since anything running under your account can get round it. Changing a shortcut while you hold the dictation key also cancels that dictation.
 
 The command lives inside the app. To use it from Terminal, link it onto your PATH:
 
