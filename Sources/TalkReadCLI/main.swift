@@ -396,7 +396,10 @@ func launchAndSend() throws -> ControlResponse {
     let executable = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()
     let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     // A copy that is still starting (two MCP calls at once) must not be opened again: macOS would send it a reopen,
-    // which opens the main window. Wait for its socket instead.
+    // which opens the main window. Wait for its socket instead. The lock makes CLIs that find the app closed at the
+    // same moment decide one at a time; it is held until this process exits, after the socket answered.
+    let lock = Darwin.open(Paths.dataRoot.appendingPathComponent("cli-launch.lock").path, O_CREAT | O_RDWR, 0o600)
+    if lock >= 0 { flock(lock, LOCK_EX) }
     let ownExecutable = app.pathExtension == "app" ? app.appendingPathComponent("Contents/MacOS/TalkRead").resolvingSymlinksInPath().path : nil
     if !appRunning(executable: "TalkRead", exact: ownExecutable) {
         let launch = Process()
