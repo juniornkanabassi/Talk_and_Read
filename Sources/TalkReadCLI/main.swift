@@ -376,15 +376,16 @@ let request = ControlRequest(id: requestID ?? UUID().uuidString, command: comman
                              caller: caller ?? "cli-\(getppid())", force: force)
 let timeout = timeoutOverride ?? (longRunning ? 600 : command.timeout)
 
-/// Whether a copy of the app is running already, from any install: a process whose executable is
-/// `…/Contents/MacOS/<name>`. Reading the process table costs well under a millisecond.
-func appRunning(executable name: String) -> Bool {
+/// Whether a copy of the app is running already: a process whose executable is `exact` when given (this helper's
+/// own app, so a test copy elsewhere never counts), else any `…/Contents/MacOS/<name>`. Costs well under a millisecond.
+func appRunning(executable name: String, exact: String? = nil) -> Bool {
     var pids = [pid_t](repeating: 0, count: 4096)
     let count = Int(proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size)))
     var path = [CChar](repeating: 0, count: 4096)  // PROC_PIDPATHINFO_MAXSIZE
     for pid in pids.prefix(max(0, count)) where pid > 0 && pid != getpid() {
         guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { continue }
-        if String(cString: path).hasSuffix("/Contents/MacOS/" + name) { return true }
+        let running = String(cString: path)
+        if exact.map({ running == $0 || running == "/private" + $0 }) ?? running.hasSuffix("/Contents/MacOS/" + name) { return true }
     }
     return false
 }
@@ -396,7 +397,8 @@ func launchAndSend() throws -> ControlResponse {
     let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     // A copy that is still starting (two MCP calls at once) must not be opened again: macOS would send it a reopen,
     // which opens the main window. Wait for its socket instead.
-    if !appRunning(executable: "TalkRead") {
+    let ownExecutable = app.pathExtension == "app" ? app.appendingPathComponent("Contents/MacOS/TalkRead").resolvingSymlinksInPath().path : nil
+    if !appRunning(executable: "TalkRead", exact: ownExecutable) {
         let launch = Process()
         launch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         // This helper's own app when it sits in Contents/Helpers, so a build never drives an older installed copy.
