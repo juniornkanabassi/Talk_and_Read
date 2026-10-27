@@ -397,7 +397,8 @@ func launchAndSend() throws -> ControlResponse {
     let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     // A copy that is still starting (two MCP calls at once) must not be opened again: macOS would send it a reopen,
     // which opens the main window. Wait for its socket instead. The lock makes CLIs that find the app closed at the
-    // same moment decide one at a time; it is held until this process exits, after the socket answered.
+    // same moment decide one at a time. Once the app's process exists the next CLI sees it and only waits for the socket,
+    // so the lock is let go then, and a long command never holds up others.
     // A fresh install has no data folder yet; make it (as the app would) so the lock always exists.
     try? FileManager.default.createDirectory(at: Paths.dataRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let lock = Darwin.open(Paths.dataRoot.appendingPathComponent("cli-launch.lock").path, O_CREAT | O_RDWR, 0o600)
@@ -411,8 +412,9 @@ func launchAndSend() throws -> ControlResponse {
         launch.arguments = ["-g"] + (app.pathExtension == "app" ? ["-a", app.path] : ["-b", "com.juniornkanabassi.TalkAndRead"]) + ["--args", "--headless"]
         launch.standardOutput = FileHandle.nullDevice; launch.standardError = FileHandle.nullDevice
         try launch.run(); launch.waitUntilExit()
-        guard launch.terminationStatus == 0 else { throw ControlError("app_not_running", "Talk & Read is not running and could not be started.") }
+        guard launch.terminationStatus == 0 else { close(lock); throw ControlError("app_not_running", "Talk & Read is not running and could not be started.") }
     }
+    close(lock)
     // The socket opens once the voices are listed, usually within a second; checking often answers as soon as it does.
     let deadline = Date().addingTimeInterval(20)
     while true {
