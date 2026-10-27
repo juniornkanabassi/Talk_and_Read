@@ -398,8 +398,10 @@ func launchAndSend() throws -> ControlResponse {
     // A copy that is still starting (two MCP calls at once) must not be opened again: macOS would send it a reopen,
     // which opens the main window. Wait for its socket instead. The lock makes CLIs that find the app closed at the
     // same moment decide one at a time; it is held until this process exits, after the socket answered.
+    // A fresh install has no data folder yet; make it (as the app would) so the lock always exists.
+    try? FileManager.default.createDirectory(at: Paths.dataRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let lock = Darwin.open(Paths.dataRoot.appendingPathComponent("cli-launch.lock").path, O_CREAT | O_RDWR, 0o600)
-    if lock >= 0 { flock(lock, LOCK_EX) }
+    guard lock >= 0, flock(lock, LOCK_EX) == 0 else { throw ControlError("launch_lock_failed", "Could not take the launch lock in \(Paths.dataRoot.path).") }
     let ownExecutable = app.pathExtension == "app" ? app.appendingPathComponent("Contents/MacOS/TalkRead").resolvingSymlinksInPath().path : nil
     if !appRunning(executable: "TalkRead", exact: ownExecutable) {
         let launch = Process()
