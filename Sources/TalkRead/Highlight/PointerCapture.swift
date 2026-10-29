@@ -236,16 +236,15 @@ enum PointerCapture {
         return Block(pid: pid, element: element, frame: frame, start: start, length: end - start, viewport: scroll)
     }
 
-    /// The point is on (or within 4 pt of) the drawn text of the line holding `index`, not in the blank part of the
-    /// paragraph's box beside a short line. A view that cannot say where its lines are passes.
+    /// The point is on the drawn text of the line holding `index` (exact bounds, as native views give them), not in the
+    /// blank part of the paragraph's box beside a short line. Without line attributes, on that character itself.
     private static func onLine(_ element: AXUIElement, index: Int, point: CGPoint) -> Bool {
-        guard let line = axParameterizedAttribute(element, "AXLineForIndex", parameter: index as CFNumber) as? Int,
-              let value = axParameterizedAttribute(element, "AXRangeForLine", parameter: line as CFNumber), CFGetTypeID(value) == AXValueGetTypeID()
-        else { return true }
-        var range = CFRange()
-        guard AXValueGetValue(value as! AXValue, .cfRange, &range), let bounds = axBounds(element, location: range.location, length: range.length)
-        else { return true }
-        return bounds.insetBy(dx: -4, dy: -4).contains(point)
+        var range = CFRange(location: index, length: 1)
+        if let line = axParameterizedAttribute(element, "AXLineForIndex", parameter: index as CFNumber) as? Int,
+           let value = axParameterizedAttribute(element, "AXRangeForLine", parameter: line as CFNumber), CFGetTypeID(value) == AXValueGetTypeID() {
+            AXValueGetValue(value as! AXValue, .cfRange, &range)
+        }
+        return axBounds(element, location: range.location, length: range.length)?.contains(point) == true
     }
 
     private static func hasText(_ element: AXUIElement, area: AXUIElement) -> Bool {
