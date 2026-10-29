@@ -665,6 +665,37 @@ enum SelfTestWindow {
                    && (caret?["selectionStart"] as? Int) == textSecond.location,
                "source=\(caret?["source"] as? String ?? "nil") selectionStart=\(caret?["selectionStart"] as? Int ?? -1) (caret at \(textSecond.location)), \(TextKit.tokenize(caret?["text"] as? String ?? "").count) words to the end")
 
+        // Read from here (1.0): no selection, only a point on a word. The web pane's second paragraph holds the same text as
+        // its first, so every box must land on the paragraph pointed at; the text view's second paragraph is read from
+        // its first character to the end, boxed through the direct path.
+        await clearSelections()
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        func axPoint(_ r: CGRect) -> String { "\(Int(r.midX)),\(Int(primaryHeight - r.midY))" }
+        let hereWords = TextKit.tokenize(SelfTestWindow.webParagraph)
+        func paragraphRects(_ id: String) async -> [CGRect] {
+            let ranges = hereWords.map { "[\($0.range.lowerBound),\($0.range.upperBound)]" }.joined(separator: ",")
+            let js = "(function(){var t=document.getElementById('\(id)').firstChild;return [\(ranges)].map(function(x){var r=document.createRange();r.setStart(t,x[0]);r.setEnd(t,x[1]);var b=r.getBoundingClientRect();return [b.left,b.top,b.width,b.height];});})()"
+            let rows = (try? await web.evaluateJavaScript(js)) as? [[Double]] ?? []
+            return rows.map { b in toScreen(web, CGRect(x: b[0], y: web.isFlipped ? b[1] : web.bounds.height - b[1] - b[3], width: b[2], height: b[3])) }
+        }
+        let hereTruth = await paragraphRects("b"), hereFirst = await paragraphRects("a")
+        if hereWords.count > 3, hereTruth.count == hereWords.count {
+            await pane("Read from here, web paragraph", "here:\(axPoint(hereTruth[3]))", expected: SelfTestWindow.webParagraph,
+                       truth: hereTruth, first: hereFirst)
+        } else {
+            record("Read from here, web paragraph", false, "the web pane's word rects could not be measured")
+        }
+        let lead = "A first paragraph the read must skip.\n"
+        textView.string = lead + SelfTestWindow.textParagraph
+        let leadLength = (lead as NSString).length
+        let textWords = TextKit.tokenize(SelfTestWindow.textParagraph)
+        let textHereTruth = textWords.map { glyphRect(SelfTestWindow.ns($0.range, plus: leadLength)) }
+        if let out = await pane("Read from here, text view paragraph", "here:\(axPoint(textHereTruth[min(5, textHereTruth.count - 1)]))",
+                                expected: SelfTestWindow.textParagraph, truth: textHereTruth, first: []) {
+            record("Read from here starts at the paragraph", (out["selectionStart"] as? Int) == leadLength,
+                   "selectionStart=\(out["selectionStart"] as? Int ?? -1), the paragraph starts at \(leadLength)")
+        }
+
         // Terminal-style (H3): monospaced light-on-dark lines with scrollback, scrolled to the end, read the way
         // Terminal.app's AXTextArea is (direct AXBoundsForRange). The phrase also sits in the scrolled-away history,
         // which must never be boxed.
@@ -1214,12 +1245,24 @@ enum SelfTestClient {
             (out["afterCapture"], out["leftWoken"]) = (enhanced(), AXWake.isWoken(host))
             return 0
         }
-        guard let capture = await TextCapture.capture(pid: host) else {
+        let captured: Capture?
+        if pane.hasPrefix("here:") {   // Read from here at "x,y" (AX top-left): no selection, only the point
+            let xy = pane.dropFirst(5).split(separator: ",").compactMap { Double($0) }
+            guard xy.count == 2 else { return 1 }
+            let block = await PointerCapture.block(at: CGPoint(x: xy[0], y: xy[1]), wake: true)
+            out["block"] = block.flatMap { axAttribute($0.element, kAXRoleAttribute) as? String } ?? "nil"
+            captured = block.flatMap(PointerCapture.capture)
+        } else {
+            captured = await TextCapture.capture(pid: host)
+        }
+        guard let capture = captured else {
             out["error"] = "no capture"
             return 1
         }
         out["source"] = "\(capture.source)"
-        out["text"] = capture.text
+        // A web area's range can end on the page's last line break; the words are the same either way.
+        out["text"] = pane.hasPrefix("here:") ? capture.text.trimmingCharacters(in: .whitespacesAndNewlines) : capture.text
+        out["selectionStart"] = capture.selectionStart
         if pane == "capture" { return 0 }
         let tokens = TextKit.tokenize(capture.text)
         let locator = Locator(capture: capture, useOCR: pane == "ocr")

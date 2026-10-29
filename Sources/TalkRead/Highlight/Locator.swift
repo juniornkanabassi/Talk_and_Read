@@ -187,11 +187,13 @@ import TalkReadCore
         let words = tokens.map { $0.text.lowercased() }
         var aligned = NodeAlignment.best(stream.map(\.word), words, from: start, prefer: prefer)
         // A selection can open with words the stream holds only as chrome (a "Sent to a thread" button's label): anchor
-        // on the next few words instead, so the rest is boxed from the start of the read.
+        // on the next few words instead, so the rest is boxed from the start of the read. A read from the pointer starts
+        // at a whole paragraph, which may open with a long chip (a thread link): look further for its first real words.
         var from = start
-        while aligned.isEmpty, from + 1 < min(start + 8, words.count) {
+        let reach = capture.source == .pointer ? 40 : 8
+        while aligned.isEmpty, from + 1 < min(start + reach, words.count) {
             from += 1
-            aligned = NodeAlignment.best(stream.map(\.word), words, from: from)
+            aligned = NodeAlignment.best(stream.map(\.word), words, from: from, prefer: prefer)
         }
         nodeMapSummary = "from \(start): \(nodes.count) nodes, \(stream.count) words, prefer \(prefer.map { String($0.count) } ?? "nil"), placed \(aligned.count)"
         for (i, q) in aligned {

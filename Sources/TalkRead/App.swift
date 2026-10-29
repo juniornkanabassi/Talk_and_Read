@@ -71,6 +71,7 @@ enum TalkReadMain {
         statusMenu = menu
         updateStatusIcon()
         MiniPlayer.shared.attach(model)
+        ReadHereGlyph.shared.attach(model)
         WindowRouter.shared.showMainWindow = { [weak self] in self?.show("main") }
         WindowRouter.shared.openOnboarding = { [weak self] in self?.show("onboarding") }
         Task {
@@ -131,7 +132,7 @@ enum TalkReadMain {
         defer { lastSettings = s }
         guard let old = lastSettings else { return }
         // Reloading recreates the event tap, so only shortcut changes do it (not every speed-slider step).
-        if Self.keys(s) != Self.keys(old) || s.dictationHoldKey != old.dictationHoldKey { hotkeys?.reload(s) }
+        if Self.keys(s) != Self.keys(old) || s.dictationHoldKey != old.dictationHoldKey || s.readHereKey != old.readHereKey { hotkeys?.reload(s) }
         if s.launchAtLogin != old.launchAtLogin { updateLoginItem(s.launchAtLogin) }
     }
 
@@ -194,6 +195,9 @@ enum TalkReadMain {
         model.refreshPermissions()
         if hotkeys == nil, model.permissions.accessibility {
             let keys = Hotkeys(settings: model.settings) { [weak self] in self?.perform($0) }
+            let glyph = ReadHereGlyph.shared
+            keys.onKey = { glyph.key($0, keyCode: $1, flags: $2, at: $3, settings: $4) }
+            keys.onReset = { glyph.reset() }
             keys.paused = model.hotkeysPaused
             keys.reading = reading
             keys.recording = recording
@@ -209,6 +213,7 @@ enum TalkReadMain {
     private func perform(_ action: HotkeyAction) {
         switch action {
         case .read: model.readSelection()
+        case .readHere: model.readHere()
         case .pause: model.togglePause()
         case .screenshot: model.readScreenshot()
         // The current read only (S4); without one the key was not swallowed and typed its character.

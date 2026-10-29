@@ -166,7 +166,7 @@ final class CLITests: XCTestCase {
     func testHelp() throws {
         let top = try cli(["--help"])
         XCTAssertEqual(top.code, 0)
-        for name in ["status", "voices", "speak", "read-selection", "read-file", "pause", "resume", "stop", "skip", "speed", "voice", "mic", "dictate-start",
+        for name in ["status", "voices", "speak", "read-selection", "read-here", "read-file", "pause", "resume", "stop", "skip", "speed", "voice", "mic", "dictate-start",
                      "dictate-stop", "dictation-last", "history", "dictate-file", "open", "settings-get", "settings-set", "models", "update-check",
                      "dictate-cancel", "insert-again", "history-delete", "read-again", "open-url", "read-pasted", "library", "library-open",
                      "library-remove", "shortcuts-reset", "vocabulary", "vocabulary-set", "vocabulary-remove", "vocabulary-suggestion",
@@ -181,8 +181,8 @@ final class CLITests: XCTestCase {
     func testManifestListsOneToolPerCommand() throws {
         let manifest = try cli(["mcp-manifest"])
         let tools = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(manifest.out.utf8)) as? [[String: Any]])
-        XCTAssertEqual(tools.count, 39)
-        XCTAssertEqual(Set(tools.compactMap { $0["name"] as? String }).count, 39)
+        XCTAssertEqual(tools.count, 40)
+        XCTAssertEqual(Set(tools.compactMap { $0["name"] as? String }).count, 40)
         let history = try XCTUnwrap(tools.first { $0["name"] as? String == "history" }?["inputSchema"] as? [String: Any])
         XCTAssertEqual(Set((history["properties"] as? [String: Any])?.keys.map { $0 } ?? []), ["kind", "limit", "search"])   // read-only: no force
         let speak = try XCTUnwrap(tools.first { $0["name"] as? String == "speak" })

@@ -61,6 +61,20 @@ extension AppModel {
             }
             return try await firstAudio(s)
 
+        case "read-here":
+            let point: CGPoint
+            switch (a["x"].flatMap(Double.init), a["y"].flatMap(Double.init)) {
+            case (let x?, let y?) where x.isFinite && y.isFinite: point = CGPoint(x: x, y: y)
+            case (nil, nil) where a["x"] == nil && a["y"] == nil: point = ReadHereGlyph.pointer()
+            default: throw AppError.badArgs("read-here takes both x and y as numbers, or neither (the pointer).")
+            }
+            try checkOwner(r.caller, force: r.force)
+            let id = reserve(r.caller)
+            guard let s = await captureHereAndRead(id: id, point: point, block: nil) else {
+                throw AppError(code: "no_text", message: "No text under the pointer (or another read started first).")
+            }
+            return try await firstAudio(s)
+
         case "read-file":
             let url = try fileArg(a)
             try checkOwner(r.caller, force: r.force)

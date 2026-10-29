@@ -245,11 +245,11 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃A"))
         XCTAssertEqual(json["skipForwardShortcut"]?.objectValue, ["keyCode": .number(14), "modifiers": .number(524_288), "display": .string("⌥E")])
         XCTAssertNil(json["miniPlayerOrigin"])
-        XCTAssertEqual(Settings.keys.count, 39)   // + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + showHighlight, tintHex, skipCitations, skipHeadersAndFooters; + dictationLanguages
+        XCTAssertEqual(Settings.keys.count, 42)   // + readHereShortcut, readHereKey, readHereHover (1.0); + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + showHighlight, tintHex, skipCitations, skipHeadersAndFooters; + dictationLanguages
         XCTAssertNil(json["tintHex"], "the tint follows the word colour until one is chosen")
         XCTAssertEqual(json["skipCitations"], .bool(true))
         XCTAssertEqual(json["skipHeadersAndFooters"], .bool(true))
-        XCTAssertEqual(Set(Settings.chords.map(\.key)).count, 9)
+        XCTAssertEqual(Set(Settings.chords.map(\.key)).count, 10)
         XCTAssertTrue(Settings.chords.allSatisfy { Settings.keys.contains($0.key) }, "every chord is a settings key")
         XCTAssertTrue(Settings.keys.contains("miniPlayerOrigin"))
         var s = Settings(); s.speed = 1.15

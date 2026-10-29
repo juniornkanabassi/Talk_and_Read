@@ -6,7 +6,7 @@ import ApplicationServices
 import TalkReadCore
 
 struct Capture {
-    enum Source { case accessibility, copied, cursor, clipboard, ocr, provided }
+    enum Source { case accessibility, copied, cursor, clipboard, ocr, provided, pointer }
     let text: String
     let pid: pid_t
     /// The element the selection lives in (copied: the focused element), when known.
@@ -23,7 +23,7 @@ struct Capture {
 
     /// Sources whose text has a place on screen; the Highlighter draws only for these. Clipboard text only with a window
     /// (an xterm terminal's own ⌘C, see `TextCapture.read`).
-    var hasGeometry: Bool { [.accessibility, .copied, .cursor, .ocr].contains(source) || source == .clipboard && window != nil }
+    var hasGeometry: Bool { [.accessibility, .copied, .cursor, .ocr, .pointer].contains(source) || source == .clipboard && window != nil }
 }
 
 enum TextCapture {

@@ -343,6 +343,7 @@ struct ShortcutsPage: View {
         "dictationToggleShortcut": ("Hands-free dictation", "Tap once to start, tap again to stop and type"),
         "pasteLastShortcut": ("Paste last transcript", "Types your latest dictation again"),
         "readShortcut": ("Start reading", "Reads the selected text; press again to stop"),
+        "readHereShortcut": ("Read from here", "Reads from the paragraph under the pointer, nothing selected"),
         "pauseShortcut": ("Pause or resume", "Holds or carries on with the current read"),
         "screenshotShortcut": ("Screenshot and listen", "Drag over part of the screen to hear its text"),
         "increaseSpeedShortcut": ("Increase speed", "0.25× faster, while something is being read"),
@@ -379,6 +380,9 @@ struct ShortcutsPage: View {
                             Text("Off").tag(TalkReadCore.Settings.HoldKey.off)
                         }
                         .labelsHidden().pickerStyle(.menu).fixedSize()
+                        .onChange(of: model.settings.dictationHoldKey) {   // dictation takes Fn from the play button (as validated() does)
+                            if model.settings.dictationHoldKey == .fn, model.settings.readHereKey == .fn { model.settings.readHereKey = .leftOption }
+                        }
                     }
                     ForEach(Self.dictationKeys, id: \.self) { key in
                         Divider()
@@ -388,8 +392,20 @@ struct ShortcutsPage: View {
                     row("Cancel dictation", "Stops recording; nothing is typed") { KeyCaps(display: "esc") }
                 }
                 section("Text to Speech") {
-                    ForEach(Array(Self.readingKeys.enumerated()), id: \.element) { i, key in
-                        if i > 0 { Divider() }
+                    row("Play button", "Hold the key on its own, then click ▶ beside a paragraph") {
+                        Picker("Show the play button", selection: $model.settings.readHereKey) {
+                            Text("Hold left Option").tag(TalkReadCore.Settings.RevealKey.leftOption)
+                            if model.settings.dictationHoldKey != .fn { Text("Hold Fn").tag(TalkReadCore.Settings.RevealKey.fn) }
+                            Text("Off").tag(TalkReadCore.Settings.RevealKey.off)
+                        }
+                        .labelsHidden().pickerStyle(.menu).fixedSize()
+                    }
+                    Divider()
+                    row("Play button on hover", "No key: shows ▶ when the pointer rests on a web page's paragraph") {
+                        Toggle("Play button on hover", isOn: $model.settings.readHereHover).labelsHidden().toggleStyle(.switch)
+                    }
+                    ForEach(Self.readingKeys, id: \.self) { key in
+                        Divider()
                         recorderRow(key)
                     }
                 }

@@ -114,6 +114,9 @@ extension EngineKind {
     private var modelSwitchPending = false
 
     private var highlighter: Highlighter?
+    /// The app whose AX wake a running Highlighter will put back when the read ends (E8). Nil with highlighting off:
+    /// then nobody will, so whoever woke it must.
+    var highlightedPID: pid_t? { highlighter == nil ? nil : liveSession?.capture?.pid }
     private var sessionWatch: AnyCancellable?
     private var dictationWatch: AnyCancellable?
     private var readState: ReadSession.State?
@@ -401,7 +404,8 @@ extension EngineKind {
     @discardableResult func captureAndRead(id: UUID, app: NSRunningApplication?) async -> ReadSession? {
         let capture = await TextCapture.capture(app: app)
         guard owner?.sessionID == id else {
-            if let capture { AXWake.restore(capture.pid) }   // no Highlighter will end this read (E8)
+            // No Highlighter will end this read (E8); a newer read on the same app keeps its wake.
+            if let capture, highlightedPID != capture.pid { AXWake.restore(capture.pid) }
             return nil
         }
         guard let capture, !capture.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -413,6 +417,45 @@ extension EngineKind {
         Log.write("read: capture via \(capture.source), \(capture.text.utf16.count) characters"
                   + (capture.hiddenRemoved > 0 ? ", hidden text cut \(capture.hiddenRemoved)" : ""))
         let s = startSession(capture.text, capture: capture, id: id)   // the player says "Reading clipboard" itself
+        appendRead(capture.text, app: app?.localizedName, bundleID: app?.bundleIdentifier)
+        return s
+    }
+
+    /// Read from here (1.0): the paragraph under the pointer (or the one the glyph showed) to the end of its page, with
+    /// no selection. Unlike Read selection it never toggles: pressing it during a read starts again from the pointer.
+    func readHere(block: PointerCapture.Block? = nil) {
+        let id = reserve("user")
+        let point = ReadHereGlyph.pointer()
+        Task { await captureHereAndRead(id: id, point: point, block: block) }
+    }
+
+    /// Finds the paragraph at `point` (AX top-left coordinates) unless `block` is given, and starts the read reserved
+    /// as `id`; nil when there is no text there or another read took over.
+    @discardableResult func captureHereAndRead(id: UUID, point: CGPoint, block: PointerCapture.Block?) async -> ReadSession? {
+        var found = block
+        if let block {
+            // Stopping the last read put its app back (E8); the glyph found this paragraph while it was awake, so wake it again.
+            await AXWake.wake(AXUIElementCreateApplication(block.pid), pid: block.pid)
+        } else {
+            found = await PointerCapture.block(at: point, wake: true) { [weak self] in self?.highlightedPID }
+        }
+        let capture = found.flatMap(PointerCapture.capture)
+        let pid = capture?.pid ?? found?.pid
+        guard owner?.sessionID == id else {
+            // No Highlighter will end this read (E8); a newer read on the same app keeps its wake.
+            if let pid, highlightedPID != pid { AXWake.restore(pid) }
+            return nil
+        }
+        guard let capture else {
+            if let pid { AXWake.restore(pid) }
+            owner = nil
+            MiniPlayer.shared.flash("No text under the pointer")
+            return nil
+        }
+        Log.write("read here: \(capture.text.utf16.count) characters" + (capture.selectionStart != nil ? " from native text" : " from a web area")
+                  + (capture.hiddenRemoved > 0 ? ", hidden text cut \(capture.hiddenRemoved)" : ""))
+        let s = startSession(capture.text, capture: capture, id: id)
+        let app = NSRunningApplication(processIdentifier: capture.pid)
         appendRead(capture.text, app: app?.localizedName, bundleID: app?.bundleIdentifier)
         return s
     }
