@@ -128,7 +128,7 @@ import TalkReadCore
         guard revealKeyIsDown() else { reset(); return }
         guard !looking, NSEvent.pressedMouseButtons == 0 else { return }   // an Option-drag or Option-click is no reveal
         let point = Self.pointer()
-        if let block, moved(block) { hidePanel(); (self.block, lastPoint) = (nil, nil) }   // the page scrolled under it
+        if let block, moved(block) || hidden(block) { hidePanel(); (self.block, lastPoint) = (nil, nil) }   // scrolled or covered
         guard point != lastPoint else { return }
         lastPoint = point
         if let block, Self.band(block).contains(point) { return }   // on its way to the glyph, or still on the paragraph
@@ -160,6 +160,23 @@ import TalkReadCore
             guard timer != nil else { return }   // the key went up meanwhile
             if let found { show(found) } else if block.map({ !Self.band($0).contains(point) }) ?? true { hidePanel(); block = nil }
         }
+    }
+
+    /// Another window or dialog, even the same app's, shows at `point` on the paragraph instead of its own window.
+    static func covered(_ block: PointerCapture.Block, at point: CGPoint) -> Bool {
+        guard let under = PointerCapture.hit(point), under.pid == block.pid else { return true }
+        return !PointerCapture.bounded {
+            guard let a = axElement(under.element, kAXWindowAttribute), let b = axElement(block.element, kAXWindowAttribute) else { return true }
+            return CFEqual(a, b)
+        }
+    }
+
+    /// The paragraph is no longer what shows beside the glyph: covered by another window, checked on its first line
+    /// clear of the glyph (our own panel answers no hit test). Too short to leave such a point: not checked here.
+    private func hidden(_ block: PointerCapture.Block) -> Bool {
+        let glyph = Self.glyphFrame(block)
+        let x = max(block.frame.minX + min(8, block.frame.width / 2), glyph.maxX + 2)
+        return x < block.frame.maxX - 1 && Self.covered(block, at: CGPoint(x: x, y: glyph.midY))
     }
 
     /// The paragraph's frame moved or changed size (a scroll, a reflow): the glyph no longer belongs where it is.
@@ -208,7 +225,7 @@ import TalkReadCore
     private func hoverTick() {
         guard timer == nil, !looking else { return }   // the held key has the glyph
         let point = Self.pointer(), now = ProcessInfo.processInfo.systemUptime
-        if let block, !Self.band(block).contains(point) || moved(block) { hidePanel(); self.block = nil; rest = nil }   // left it, or it scrolled
+        if let block, !Self.band(block).contains(point) || moved(block) || hidden(block) { hidePanel(); self.block = nil; rest = nil }   // left, scrolled or covered
         guard NSEvent.pressedMouseButtons == 0 else { rest = nil; return }   // a drag or a click in progress
         guard NSEvent.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty else { return }   // a shortcut on its way
         guard let r = rest, hypot(r.point.x - point.x, r.point.y - point.y) < 3 else {
@@ -299,16 +316,7 @@ import TalkReadCore
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             hidePanel()
-            // Its window must still be what shows there: another window or dialog, even the same app's, may cover it since.
-            let line = CGPoint(x: block.frame.minX + min(8, block.frame.width / 2), y: Self.glyphFrame(block).midY)
-            let under = PointerCapture.hit(line)
-            let sameWindow = under.map { u in
-                PointerCapture.bounded {
-                    guard let a = axElement(u.element, kAXWindowAttribute), let b = axElement(block.element, kAXWindowAttribute) else { return true }
-                    return CFEqual(a, b)
-                }
-            } ?? false
-            guard under?.pid == block.pid, sameWindow else { return }
+            guard !Self.covered(block, at: CGPoint(x: block.frame.minX + min(8, block.frame.width / 2), y: Self.glyphFrame(block).midY)) else { return }
             woken.remove(block.pid)   // the read's Highlighter puts the app back when it ends (E8)
             model?.readHere(block: block)
         }

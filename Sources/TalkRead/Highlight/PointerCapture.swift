@@ -126,7 +126,10 @@ enum PointerCapture {
     /// then stops at the end of its own column instead of reading on into the next one. A short heading or list item is
     /// narrower than its column, so an ancestor up to three quarters of the page's width still counts as the column.
     private static func column(of element: AXUIElement, frame: CGRect, area: AXUIElement) -> AXUIElement {
-        let limit = max(frame.width * 1.6 + 60, (axFrame(area)?.width ?? 0) * 0.75)
+        // Measured on the widest block beside it, so a short heading or list item in a wide article still finds the article.
+        let siblings = axElement(element, kAXParentAttribute).flatMap { axAttribute($0, kAXChildrenAttribute) as? [AXUIElement] } ?? []
+        let width = siblings.prefix(40).compactMap { axFrame($0)?.width }.reduce(frame.width, max)
+        let limit = max(width * 1.6 + 60, (axFrame(area)?.width ?? 0) * 0.75)
         var best = element, current = element
         for _ in 0..<40 {
             guard let parent = axElement(current, kAXParentAttribute), !CFEqual(parent, area) else { break }
