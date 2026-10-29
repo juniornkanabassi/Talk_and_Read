@@ -114,6 +114,9 @@ extension EngineKind {
     private var modelSwitchPending = false
 
     private var highlighter: Highlighter?
+    /// The app whose AX wake a running Highlighter will put back when the read ends (E8). Nil with highlighting off:
+    /// then nobody will, so whoever woke it must.
+    var highlightedPID: pid_t? { highlighter == nil ? nil : liveSession?.capture?.pid }
     private var sessionWatch: AnyCancellable?
     private var dictationWatch: AnyCancellable?
     private var readState: ReadSession.State?
@@ -402,7 +405,7 @@ extension EngineKind {
         let capture = await TextCapture.capture(app: app)
         guard owner?.sessionID == id else {
             // No Highlighter will end this read (E8); a newer read on the same app keeps its wake.
-            if let capture, liveSession?.capture?.pid != capture.pid { AXWake.restore(capture.pid) }
+            if let capture, highlightedPID != capture.pid { AXWake.restore(capture.pid) }
             return nil
         }
         guard let capture, !capture.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -434,13 +437,13 @@ extension EngineKind {
             // Stopping the last read put its app back (E8); the glyph found this paragraph while it was awake, so wake it again.
             await AXWake.wake(AXUIElementCreateApplication(block.pid), pid: block.pid)
         } else {
-            found = await PointerCapture.block(at: point, wake: true) { [weak self] in self?.liveSession?.capture?.pid }
+            found = await PointerCapture.block(at: point, wake: true) { [weak self] in self?.highlightedPID }
         }
         let capture = found.flatMap(PointerCapture.capture)
         let pid = capture?.pid ?? found?.pid
         guard owner?.sessionID == id else {
             // No Highlighter will end this read (E8); a newer read on the same app keeps its wake.
-            if let pid, liveSession?.capture?.pid != pid { AXWake.restore(pid) }
+            if let pid, highlightedPID != pid { AXWake.restore(pid) }
             return nil
         }
         guard let capture else {

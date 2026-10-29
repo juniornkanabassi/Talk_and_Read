@@ -118,7 +118,7 @@ import TalkReadCore
         timer = nil
         hidePanel()
         (block, lastPoint) = (nil, nil)
-        let reading = model?.liveSession?.capture?.pid
+        let reading = model?.highlightedPID
         for pid in woken where pid != reading { AXWake.restore(pid) }
         woken = []
     }
@@ -145,7 +145,7 @@ import TalkReadCore
                 coldUntil = ProcessInfo.processInfo.systemUptime + 1.5
                 await AXWake.wake(AXUIElementCreateApplication(hit.pid), pid: hit.pid)
                 guard timer != nil else {   // the key went up during the wake, after stop() put back what it knew of
-                    if hit.pid != model?.liveSession?.capture?.pid { AXWake.restore(hit.pid) }
+                    if hit.pid != model?.highlightedPID { AXWake.restore(hit.pid) }
                     return
                 }
                 // A key-up and a fresh hold during the wake: that stop() cleared `woken` before the wake could ledger
