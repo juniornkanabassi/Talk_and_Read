@@ -21,10 +21,11 @@ BUILD_ARGS=(--package-path "$ROOT" --configuration release --scratch-path "$BUIL
             --cache-path "$BUILD_ROOT/Cache" --config-path "$BUILD_ROOT/Config" --security-path "$BUILD_ROOT/Security")
 # The commit this builds, taken before compiling ("-dirty" with uncommitted changes). release.sh publishes only a
 # clean HEAD's build; packaging stops below if HEAD or the worktree moves while it runs.
-tree_state() { git -C "$ROOT" rev-parse HEAD; git -C "$ROOT" status --porcelain; }
-STATE=$(tree_state)
+# Untracked files count (whatever git's config says), and a git status that fails stops the build.
+tree_state() { git -C "$ROOT" rev-parse HEAD && git -C "$ROOT" status --porcelain --untracked-files=all; }
+STATE=$(tree_state) || { print -u2 "git status failed"; exit 1; }
 COMMIT=$(git -C "$ROOT" rev-parse HEAD)
-[[ -z $(git -C "$ROOT" status --porcelain) ]] || COMMIT+="-dirty"
+[[ $STATE == $COMMIT ]] || COMMIT+="-dirty"
 swift build "${BUILD_ARGS[@]}"
 BIN_DIR=$(swift build "${BUILD_ARGS[@]}" --show-bin-path)
 # MLX's GPU kernels: SwiftPM compiles them only when the Metal Toolchain is installed (`xcodebuild -downloadComponent
@@ -94,7 +95,8 @@ if [[ "$SIGN_ID" != "-" && "${TALKREAD_NOTARISE:-1}" == 1 ]]; then
   /usr/sbin/spctl --assess --type execute -vv "$APP"
   print "Notarised and stapled"
 fi
-[[ $(tree_state) == $STATE ]] || { print -u2 "The source changed while packaging (HEAD or the worktree), so $COMMIT may not be what was built. Build again."; exit 1; }
+NOW=$(tree_state) || { print -u2 "git status failed"; exit 1; }
+[[ $NOW == $STATE ]] || { print -u2 "The source changed while packaging (HEAD or the worktree), so $COMMIT may not be what was built. Build again."; exit 1; }
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$TMP_ARCHIVE"
 # DMG begin: the website download, from the same stapled app (a plain disk image: the app and an Applications link, no
 # Finder window styling, which would need Finder automation). Signed, notarised and stapled like the app, so the
