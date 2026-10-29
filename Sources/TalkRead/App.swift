@@ -100,7 +100,8 @@ enum TalkReadMain {
         }
         updateLoginItem(model.settings.launchAtLogin)
         startPolling()
-        if !model.settings.onboardingDone { show("onboarding") }
+        // A start by the CLI or MCP (--headless) stays out of sight; onboarding waits for the next ordinary launch.
+        if !model.settings.onboardingDone && !CommandLine.arguments.contains("--headless") { show("onboarding") }
     }
 
     /// Sol #4, #20: a quit during a copy or paste closes the pasteboard gate (queued pastes change nothing) and waits

@@ -1,5 +1,5 @@
 // `talkread` helper (Contents/Helpers/talkread): one subcommand per control command. Owned by WP2.
-// Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk & Read is not running.
+// Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk & Read is not running and could not be started.
 import Foundation
 import TalkReadCore
 
@@ -238,10 +238,10 @@ func render(_ response: ControlResponse, command: String) {
 
 func help(_ command: Command? = nil) {
     guard let command else {
-        print("talkread <command> [options]   Control Talk & Read from the shell. The app must be open.")
+        print("talkread <command> [options]   Control Talk & Read from the shell. A closed Talk & Read starts in the background, with no window; status never starts it.")
         for c in commands { print("  \(c.name.padding(toLength: 21, withPad: " ", startingAt: 0)) \(c.summary)") }
         print("Global options: --json  --force  --yes  --caller <name>  --request-id <uuid>  --timeout <seconds>  --help")
-        print("Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk & Read is not running.")
+        print("Exit codes: 0 ok, 1 the app refused or failed, 2 usage, 3 Talk & Read is not running and could not be started.")
         print("Run `talkread <command> --help` for one command with an example.")
         return
     }
@@ -378,9 +378,63 @@ if command.confirm { args["yes"] = "1" }
 let longRunning = command.name == "models" && args["action"] == "download" && args["model"] == nil
 let request = ControlRequest(id: requestID ?? UUID().uuidString, command: command.name, args: args,
                              caller: caller ?? "cli-\(getppid())", force: force)
+let timeout = timeoutOverride ?? (longRunning ? 600 : command.timeout)
+
+/// Whether a copy of the app is running already: a process whose executable is `exact` when given (this helper's
+/// own app, so a test copy elsewhere never counts), else any `…/Contents/MacOS/<name>`. Costs well under a millisecond.
+func appRunning(executable name: String, exact: String? = nil) -> Bool {
+    var pids = [pid_t](repeating: 0, count: 4096)
+    let count = Int(proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size)))
+    var path = [CChar](repeating: 0, count: 4096)  // PROC_PIDPATHINFO_MAXSIZE
+    for pid in pids.prefix(max(0, count)) where pid > 0 && pid != getpid() {
+        guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { continue }
+        let running = String(cString: path)
+        if exact.map({ running == $0 || running == "/private" + $0 }) ?? running.hasSuffix("/Contents/MacOS/" + name) { return true }
+    }
+    return false
+}
+
+/// Starts a closed Talk & Read in the background (no window, no focus) and sends the request once its socket answers.
+/// Only `app_not_running` is retried, and that error means nothing was sent, so no command can run twice.
+func launchAndSend() throws -> ControlResponse {
+    let executable = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()
+    let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    // A copy that is still starting (two MCP calls at once) must not be opened again: macOS would send it a reopen,
+    // which opens the main window. Wait for its socket instead. The lock makes CLIs that find the app closed at the
+    // same moment decide one at a time. Once the app's process exists the next CLI sees it and only waits for the socket,
+    // so the lock is let go then, and a long command never holds up others.
+    // A fresh install has no data folder yet; make it (as the app would) so the lock always exists.
+    try? FileManager.default.createDirectory(at: Paths.dataRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let lock = Darwin.open(Paths.dataRoot.appendingPathComponent("cli-launch.lock").path, O_CREAT | O_RDWR, 0o600)
+    guard lock >= 0, flock(lock, LOCK_EX) == 0 else { throw ControlError("launch_lock_failed", "Could not take the launch lock in \(Paths.dataRoot.path).") }
+    let ownExecutable = app.pathExtension == "app" ? app.appendingPathComponent("Contents/MacOS/TalkRead").resolvingSymlinksInPath().path : nil
+    if !appRunning(executable: "TalkRead", exact: ownExecutable) {
+        let launch = Process()
+        launch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        // This helper's own app when it sits in Contents/Helpers, so a build never drives an older installed copy.
+        // Not -j: a hidden app would also hide the mini player and dictation pill for the rest of the session.
+        launch.arguments = ["-g"] + (app.pathExtension == "app" ? ["-a", app.path] : ["-b", "com.juniornkanabassi.TalkAndRead"]) + ["--args", "--headless"]
+        launch.standardOutput = FileHandle.nullDevice; launch.standardError = FileHandle.nullDevice
+        try launch.run(); launch.waitUntilExit()
+        guard launch.terminationStatus == 0 else { close(lock); throw ControlError("app_not_running", "Talk & Read is not running and could not be started.") }
+    }
+    close(lock)
+    // The socket opens once the voices are listed, usually within a second; checking often answers as soon as it does.
+    let deadline = Date().addingTimeInterval(20)
+    while true {
+        do { return try ControlClient.send(request, to: Paths.controlSocket, timeout: timeout) }
+        catch let error as ControlError where error.code == "app_not_running" && Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+    }
+}
+
 do {
-    let response = try ControlClient.send(request, to: Paths.controlSocket,
-                                          timeout: timeoutOverride ?? (longRunning ? 600 : command.timeout))
+    let response: ControlResponse
+    do { response = try ControlClient.send(request, to: Paths.controlSocket, timeout: timeout) }
+    // status reports a closed app without starting it; a TALKREAD_HOME test root never starts the real app.
+    catch let error as ControlError where error.code == "app_not_running" && command.name != "status"
+        && ProcessInfo.processInfo.environment["TALKREAD_HOME"] == nil {
+        response = try launchAndSend()
+    }
     if json { printJSON(response) }
     else if response.ok { render(response, command: command.name) }
     else { stderrLine("\(response.code ?? "error"): \(response.message ?? "The request failed.")") }

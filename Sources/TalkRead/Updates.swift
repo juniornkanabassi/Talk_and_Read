@@ -109,8 +109,9 @@ import TalkReadCore
     var supportsGentleScheduledUpdateReminders: Bool { true }
 
     /// Near launch Sparkle brings its alert forward itself; later, the menu bar menu and the status icon say so instead.
+    /// A start by the CLI or MCP (--headless) never puts the alert up; the menu and status icon carry the reminder.
     func standardUserDriverShouldHandleShowingScheduledUpdate(_ update: SUAppcastItem, andInImmediateFocus immediateFocus: Bool) -> Bool {
-        immediateFocus
+        immediateFocus && !CommandLine.arguments.contains("--headless")
     }
 
     func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState) {

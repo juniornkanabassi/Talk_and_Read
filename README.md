@@ -6,7 +6,7 @@ I listen to almost everything I read at 2.5× and dictate most of what I write, 
 
 [Download the latest release](https://github.com/juniornkanabassi/Talk_and_Read/releases/latest) · [App page](https://juniornkanabassi.com/apps/talkandread/)
 
-Earlier releases, from before the app moved to this repository, are also kept on [talkandread-releases](https://github.com/juniornkanabassi/talkandread-releases/releases).
+Every release, including the ones from before the app moved to this repository, is on the [Releases page](https://github.com/juniornkanabassi/Talk_and_Read/releases).
 
 Talk & Read 1.0 is the first public release. I use it every day, but it is built by one person, so please [open an issue](https://github.com/juniornkanabassi/Talk_and_Read/issues) if something goes wrong.
 
@@ -46,7 +46,7 @@ Reading and dictation run on your Mac, so your text, audio and documents are not
 
 ## Command line and AI assistants
 
-The app includes a `talkread` command that controls the running app, and an MCP server that lets Claude, Codex and other assistants use the same commands. Whatever you do yourself at the Mac takes priority. Commands will not stop reading or dictation that someone else started unless `--force` is passed. This keeps assistants out of each other's way, but it is not a security barrier, since anything running under your account can get round it. Changing a shortcut while you hold the dictation key also cancels that dictation.
+The app includes a `talkread` command that controls the running app, and an MCP server that lets Claude, Codex and other assistants use the same commands. If Talk & Read is closed, a command starts it in the background without opening any window (`status` only reports that it is closed). Whatever you do yourself at the Mac takes priority. Commands will not stop reading or dictation that someone else started unless `--force` is passed. This keeps assistants out of each other's way, but it is not a security barrier, since anything running under your account can get round it. Changing a shortcut while you hold the dictation key also cancels that dictation.
 
 The command lives inside the app. To use it from Terminal, link it onto your PATH:
 
