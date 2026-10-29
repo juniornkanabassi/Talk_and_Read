@@ -193,7 +193,7 @@ import TalkReadCore
         let reach = capture.source == .pointer ? 40 : 8
         while aligned.isEmpty, from + 1 < min(start + reach, words.count) {
             from += 1
-            aligned = NodeAlignment.best(stream.map(\.word), words, from: from)
+            aligned = NodeAlignment.best(stream.map(\.word), words, from: from, prefer: prefer)
         }
         nodeMapSummary = "from \(start): \(nodes.count) nodes, \(stream.count) words, prefer \(prefer.map { String($0.count) } ?? "nil"), placed \(aligned.count)"
         for (i, q) in aligned {

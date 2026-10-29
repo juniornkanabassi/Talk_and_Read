@@ -148,6 +148,9 @@ import TalkReadCore
                     if hit.pid != model?.liveSession?.capture?.pid { AXWake.restore(hit.pid) }
                     return
                 }
+                // A key-up and a fresh hold during the wake: that stop() cleared `woken` before the wake could ledger
+                // this app, so this hold's stop() must be the one to put it back.
+                woken.insert(hit.pid)
                 if let again = PointerCapture.hit(point), again.pid == hit.pid {
                     found = PointerCapture.block(from: again.element, pid: again.pid, point: point)
                 }

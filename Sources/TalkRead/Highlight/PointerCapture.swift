@@ -61,9 +61,9 @@ enum PointerCapture {
     /// Runs `body` with every AX call answering within a quarter of a second: the glyph and hover look on the main
     /// thread, unasked, so a hung app must not freeze Talk & Read. The system-wide timeout is every element's, so it
     /// goes back to the default afterwards.
-    @MainActor static func bounded<T>(_ body: () -> T) -> T {
+    @MainActor static func bounded<T>(_ seconds: Float = 0.25, _ body: () -> T) -> T {
         let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 0.25)
+        AXUIElementSetMessagingTimeout(system, seconds)
         defer { AXUIElementSetMessagingTimeout(system, 0) }
         return body()
     }
@@ -243,7 +243,13 @@ enum PointerCapture {
     // MARK: - The read
 
     /// The text from the block to the end of its page or document, ready for `AppModel.startSession`.
+    /// The walks below run on the main thread: each call waits at most a second, not the six-second default, so an app
+    /// that stops answering after the hit test cannot freeze Talk & Read (a long page's text can take a while to hand over).
     @MainActor static func capture(_ block: Block) -> Capture? {
+        bounded(1) { readBlock(block) }
+    }
+
+    @MainActor private static func readBlock(_ block: Block) -> Capture? {
         let window = window(of: block.element)
         if let start = block.start {   // native text: the direct path boxes each word from the paragraph's offset
             guard let text = axAttribute(block.element, kAXValueAttribute) as? String else { return nil }

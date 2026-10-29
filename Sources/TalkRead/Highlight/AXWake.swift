@@ -13,9 +13,12 @@ import ApplicationServices
 
     static func isWoken(_ pid: pid_t) -> Bool { ledger.contains(pid) }
 
-    static func wake(_ app: AXUIElement, pid: pid_t) async {
+    static func wake(_ caller: AXUIElement, pid: pid_t) async {
         prune()
-        AXUIElementSetMessagingTimeout(app, 0.25)   // its writes and read-backs too: a hung app must not stall the main thread
+        // Writes and read-backs go through an element of our own with a short timeout, so a hung app cannot stall the
+        // main thread and the caller's element (a selection read's, which goes on to use it) keeps its own timeout.
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
         _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         // The probe is main-actor work across a process boundary: 250 ms in total, and a short timeout per call, on an
         // element of its own so the caller's keeps its timeout. Out of time counts as "no text found".
@@ -24,7 +27,7 @@ import ApplicationServices
         AXUIElementSetMessagingTimeout(probe, 0.1)
         for attempt in 0..<6 {
             // Scoped short timeout for the whole walk: the window and children it reaches are other elements than `probe`.
-            if PointerCapture.bounded({ exposesText(probe, until: deadline) }) { return }
+            if PointerCapture.bounded(0.25, { exposesText(probe, until: deadline) }) { return }
             guard attempt < 5, ContinuousClock.now < deadline else { break }
             try? await Task.sleep(for: .milliseconds(50))
         }
