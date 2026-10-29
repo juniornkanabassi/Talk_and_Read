@@ -132,16 +132,16 @@ fi
 # The pinned Sparkle's tools, resolved (not built) into this run's own folder (mktemp, mode 0700): a cache shared in
 # /private/tmp could hold a replacement written by another user.
 SIGN_UPDATE="$WORK/tools/artifacts/sparkle/Sparkle/bin/sign_update"
-/usr/bin/swift package resolve --package-path "$ROOT" --scratch-path "$WORK/tools" >/dev/null || die "could not resolve Sparkle"
+/usr/bin/swift package resolve --disable-automatic-resolution --package-path "$ROOT" --scratch-path "$WORK/tools" >/dev/null || die "could not resolve Sparkle"
 [[ -x $SIGN_UPDATE ]] || die "no sign_update at $SIGN_UPDATE"
 # Everything from here reads private copies, so a build that replaces the zip or disk image mid-run cannot change
 # what is checked, signed and published.
 SRC_ZIP=$ZIP ZIP="$WORK/input.zip"
 /bin/cp "$SRC_ZIP" "$ZIP" || die "could not copy $SRC_ZIP"
 # Sparkle installs the first matching bundle it finds in the zip, so the zip must hold this one app and nothing else.
-# (ditto's __MACOSX entries carry that app's own extended attributes)
+# (ditto's __MACOSX entries carry that app's own extended attributes, the bundle folder's included)
 LISTING=("${(@f)$(/usr/bin/zipinfo -1 "$ZIP")}") || die "could not list $SRC_ZIP"
-OTHERS=(${${LISTING:#(__MACOSX/|)Talk\ \&\ Read.app/*}:#__MACOSX/})
+OTHERS=(${${${LISTING:#(__MACOSX/|)Talk\ \&\ Read.app/*}:#__MACOSX/}:#__MACOSX/._Talk\ \&\ Read.app})
 (( ${#OTHERS} == 0 )) || die "$SRC_ZIP holds more than Talk & Read.app: ${OTHERS[1]}"
 [[ ${(j:\n:)LISTING} != *(/..|../)* ]] || die "$SRC_ZIP has a .. path"
 /usr/bin/ditto -x -k "$ZIP" "$WORK/app" || die "could not unpack $SRC_ZIP"
@@ -375,13 +375,15 @@ else
     TAGGED=1
   fi
   git -C "$ROOT" push origin "refs/tags/v$VERSION" || die "could not push tag v$VERSION (rerun with --resume --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
-  RTAG=$(git -C "$ROOT" ls-remote origin "refs/tags/v$VERSION" "refs/tags/v$VERSION^{}" | sort -k2 | tail -1 | cut -f1)
+  RTAGS=$(git -C "$ROOT" ls-remote origin "refs/tags/v$VERSION" "refs/tags/v$VERSION^{}") \
+    || die "could not read tag v$VERSION back from origin; nothing uploaded (rerun with --resume --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
+  RTAG=$(print -r -- "$RTAGS" | sort -k2 | tail -1 | cut -f1)
   [[ $RTAG == $HEAD ]] || die "tag v$VERSION on origin is '$RTAG', not $HEAD; nothing uploaded"
   if (( EXISTS )); then
     # A prerelease is not what /releases/latest serves, so the appcast and website must not point at it. A draft is
     # what an interrupted gh release create leaves: it is finished below once its assets check out.
     STATE=$(gh release view "v$VERSION" --repo $GHREPO --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')
-    [[ $STATE == *" false" ]] || die "v$VERSION on $REPO is a prerelease; make it a full release first, then rerun with --resume --zip ${(q)SRC_ZIP}"
+    [[ $STATE == *" false" ]] || die "v$VERSION on $REPO is a prerelease; make it a full release first, then rerun with --resume --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG}"
     HAVE=$(gh release view "v$VERSION" --repo $GHREPO --json assets --jq '.assets[].name')
     missing=()
     for name in $NAMES; do   # every asset already there is checked first; only then is a missing one uploaded
@@ -423,7 +425,7 @@ if (( DRY )); then
   APPCAST="$OUT/appcast.xml"
   /bin/cp "$WORK/appcast.xml" "$APPCAST"
 else
-  [[ $(digest "$APPCAST") == $SEEN ]] || die "$APPCAST changed while this ran; rerun with --resume --zip ${(q)SRC_ZIP}"
+  [[ $(digest "$APPCAST") == $SEEN ]] || die "$APPCAST changed while this ran; rerun with --resume --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG}"
   mkdir -p "${APPCAST:h}"
   /bin/cp "$WORK/appcast.xml" "$APPCAST.tmp.$$" && /bin/mv -f "$APPCAST.tmp.$$" "$APPCAST" || die "could not write $APPCAST"
 fi
