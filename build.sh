@@ -119,6 +119,9 @@ else
   print "No disk image: it is made only for a notarised Developer ID build"
 fi
 # DMG end
+# Again after the disk image's notarisation, which can wait 30 minutes: nothing is promoted from a moved source.
+NOW=$(tree_state) || { print -u2 "git status failed"; exit 1; }
+[[ $NOW == $STATE ]] || { print -u2 "The source changed while the disk image was notarised, so $COMMIT may not be what was built. Build again."; exit 1; }
 mkdir -p "$OUTPUT_ROOT"
 # Both are copied in before either is promoted; if the disk image cannot be promoted, the zip this run promoted is
 # taken back out, so Outputs never keeps one without the other (Sol inspection 9 #3).
