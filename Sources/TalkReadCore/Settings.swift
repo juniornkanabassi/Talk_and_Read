@@ -94,7 +94,7 @@ public struct Settings: Codable, Equatable, Sendable {
     public var frenchVoiceID = "ff_siwis"
     /// The English Kokoro voice a read switches to when a slower model falls behind (V3); French uses `ff_siwis`.
     public var fallbackVoiceID = "af_heart"
-    public var speed: Float = 2.5                  // 0.5...3.0, step 0.05; Junior's Speechify speed
+    public var speed: Float = 2.5                  // `speedRange`, step 0.05; Junior's Speechify speed
     /// ReadAlong's "Enabled": false reads aloud with no box or tint over the app (the reader still highlights).
     public var showHighlight = true
     public var highlightHex = "#FFD21F"
@@ -158,12 +158,52 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.onboardingDone, &onboardingDone); get(.historyLimit, &historyLimit)
     }
 
+    // MARK: Speed
+
+    /// Every speed the app plays. 4x is past what Apple's stretcher declares (2x); the R3 self-test holds 3.25-4x to the
+    /// same clock and WER bars as 0.5-3x.
+    public static let speedRange: ClosedRange<Float> = 0.5 ... 4.0
+    /// One press of the speed panel's minus or plus, ⌥S/⌥D and ⌘−/⌘+.
+    public static let speedStep: Float = 0.25
+    /// The speed panel's chips, the menu bar's Speed menu and the Voices page.
+    public static let speedPresets: [Float] = [1, 1.5, 2, 2.5, 2.75, 3]
+
+    /// The most the Player stretches a voice that can speak faster itself (Kokoro); above it Kokoro speaks the rest.
+    /// Speed grid, 25 Oct, M3 Max (af_heart, R3 fixture, Parakeet word errors at the real speed heard): stretching 1x
+    /// audio alone gave 11.7 % at 2.5x, 33 % at 2.75x, 47 % at 3x and 91 % at 4x; Kokoro about 1.25x stretched 2x gave
+    /// 8.1 %, 20-36 %, 44 % and 80 %. Every split loses most words past about 3x; the recogniser is not a listener there.
+    public static let stretchLimit: Float = 2
+
+    /// How much faster than its 1x pace such a voice really speaks at `rate`: 1 up to `stretchLimit`, the rest above.
+    public static func nativeSpeed(for rate: Float) -> Float { max(1, rate / stretchLimit) }
+
+    // ponytail: Kokoro's `speed` setting against the pace it really speaks (1x audio length over the audio's length),
+    // the speed grid of 25 Oct (FluidAudio c79c410, .legacy, af_heart). It flattens out: asked 4x, it speaks 2.33x.
+    // Re-measure with TALKREAD_SPEED_GRID=1 if the model or FluidAudio changes.
+    static let kokoroPaces: [(setting: Float, pace: Float)] = [(1, 1), (1.25, 1.188), (1.5, 1.549), (1.75, 1.686), (2, 1.865),
+                                                               (2.25, 2.014), (2.5, 2.093), (3, 2.217), (4, 2.332)]
+
+    /// The `speed` to ask Kokoro for so that it really speaks `pace`× faster (between measured points, linearly).
+    public static func kokoroSetting(forPace pace: Float) -> Float {
+        for (a, b) in zip(kokoroPaces, kokoroPaces.dropFirst()) where pace <= b.pace {
+            return a.setting + max(0, pace - a.pace) / (b.pace - a.pace) * (b.setting - a.setting)
+        }
+        return kokoroPaces.last!.setting
+    }
+
+    /// The next 0.25 mark above or below `speed`, so 2.6 goes to 2.75 or 2.5 and 2.5 to 2.75 or 2.25; clamped to `speedRange`.
+    public static func steppedSpeed(_ speed: Float, up: Bool) -> Float {
+        let marks = speed / speedStep
+        let next = up ? (marks + 0.001).rounded(.down) + 1 : (marks - 0.001).rounded(.up) - 1
+        return min(speedRange.upperBound, max(speedRange.lowerBound, next * speedStep))
+    }
+
     // MARK: Validation
 
     /// A copy with every value clamped into its legal range.
     public func validated() -> Settings {
         var s = self
-        s.speed = min(3.0, max(0.5, ((speed.isFinite ? speed : 2.5) * 20).rounded() / 20)) // 0.05 steps
+        s.speed = min(Self.speedRange.upperBound, max(Self.speedRange.lowerBound, ((speed.isFinite ? speed : 2.5) * 20).rounded() / 20)) // 0.05 steps
         s.opacity = opacity.isFinite ? min(1.0, max(0.1, opacity)) : 0.85
         s.miniPlayerAutoHideSeconds = miniPlayerAutoHideSeconds.isFinite ? min(60, max(0, miniPlayerAutoHideSeconds)) : 3
         s.unloadAfterMinutes = min(240, max(1, unloadAfterMinutes))

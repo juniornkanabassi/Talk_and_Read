@@ -17,6 +17,14 @@ import TalkReadCore
     let capture: Capture?
     var firstAudioMs: Int?
     let player = Player()
+    /// The speed the user chose. The Player stretches by `rate / nativeSpeed`.
+    private(set) var rate: Float
+    /// How much faster than its 1x pace an engine that `speaksFaster` (Kokoro) really speaks the chunks queued since the
+    /// last restart (it is asked for `Settings.kokoroSetting(forPace:)`); 1 for the others.
+    private(set) var nativeSpeed: Float = 1
+    /// Where the last restart began, until playback reports a word: a speed change before then restarts there, not at a
+    /// word from before a paused skip or seek.
+    private var restartToken: Int?
     private(set) var voice: Voice
     /// The voice actually speaking now: `voice`, or the Kokoro fallback once the engine fell behind (V3). The UI shows it.
     @Published private(set) var effectiveVoice: Voice
@@ -103,6 +111,7 @@ import TalkReadCore
         self.skipCitations = skipCitations
         self.startToken = startToken
         self.fallback = fallback
+        self.rate = rate
         player.rate = rate
         player.onInterrupted = { [weak self] in
             // Device change, paused or not: the player dropped its queue, so the producer and its bookkeeping are stale.
@@ -139,7 +148,7 @@ import TalkReadCore
         userPaused = false
         warmFallback()   // a long pause may have let the idle timer unload it
         if needsRestart {
-            restart(from: currentToken ?? startToken)
+            restart(from: restartToken ?? currentToken ?? startToken)
         } else if !heardAudio {
             state = .preparing   // first audible chunk still synthesising (a silent one may be queued); it starts playing when queued
         } else {
@@ -194,7 +203,30 @@ import TalkReadCore
         restart(from: token)
     }
 
-    func setRate(_ r: Float) { player.rate = r }
+    /// Instant while the engine's own speed stays; past `Settings.stretchLimit` with Kokoro the speed it speaks at changes,
+    /// so the read restarts at the word playing (audio already made is at the old pace). The Player takes the new rate at
+    /// once; the restart waits until the speed has rested `paceSettle` seconds, so a slider drag or several ⌥D presses
+    /// restart once, not once per step (each would leave a cancelled Kokoro chunk running ahead of the next).
+    /// A rate the queued audio cannot reach through the Player (4x audio slowed to 0.5x) restarts at once instead.
+    func setRate(_ r: Float) {
+        rate = r
+        player.rate = r / nativeSpeed
+        paceRestart?.cancel()
+        guard speakingSpeed(for: effectiveVoice) != nativeSpeed, state != .finished, !tokens.isEmpty else { return }
+        guard TalkReadCore.Settings.speedRange.contains(r / nativeSpeed) else { return restart(from: restartToken ?? currentToken ?? startToken) }
+        let gen = generation
+        paceRestart = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.paceSettle * 1e9))
+            guard let self, !Task.isCancelled, gen == generation, state != .finished,
+                  speakingSpeed(for: effectiveVoice) != nativeSpeed else { return }
+            restart(from: restartToken ?? currentToken ?? startToken)
+        }
+    }
+
+    static let paceSettle = 0.3
+    private var paceRestart: Task<Void, Never>?
+
+    private func speakingSpeed(for v: Voice) -> Float { engines.engine(for: v).speaksFaster ? TalkReadCore.Settings.nativeSpeed(for: rate) : 1 }
 
     func setVoice(_ v: Voice) {
         voice = v
@@ -216,9 +248,14 @@ import TalkReadCore
         // the system voice of its language): at start (its first audio, no wait for a chunk handed over seconds later,
         // no GPU; lead, 0.4.0) and at every restart (seek, skip, resume after an interruption) once the rate is past it
         // (Sol inspection 5 #3, #4). The saved choice is untouched; a fallback already chosen stays, as any hand-over.
-        if effectiveVoice == voice, let limit = engines.engine(for: voice).keepsUpTo, player.rate > limit {
-            useFallback("\(voice.engine.modelName) keeps up to \(String(format: "%g", limit))×; \(fallbackName) is reading at \(String(format: "%g", player.rate))×")
+        if effectiveVoice == voice, let limit = engines.engine(for: voice).keepsUpTo, rate > limit {
+            useFallback("\(voice.engine.modelName) keeps up to \(String(format: "%g", limit))×; \(fallbackName) is reading at \(String(format: "%g", rate))×")
         }
+        // A hand-over to Kokoro later in the read keeps 1: the slow engine's queued chunks are at their 1x pace, and the
+        // Player has one rate for all of them (Kokoro is stretched there until the next restart).
+        nativeSpeed = speakingSpeed(for: effectiveVoice)
+        player.rate = rate / nativeSpeed
+        restartToken = token
         timings = []
         made = []
         chunkEnds = []
@@ -290,6 +327,14 @@ import TalkReadCore
                 let spoken = said!.text, started = Date()
                 do {
                     synth = try await synthesize(spoken)
+                } catch let failed as FastPaceFailed {
+                    // The system voice's 1x audio would play at the Player's 1x here: the read goes on with it from the word
+                    // playing, at a pace it can keep (the restart sets nativeSpeed 1, the Player the whole rate).
+                    guard gen == generation else { return }
+                    Log.write("read: neural voice failed at \(nativeSpeed)x (\(failed.underlying.localizedDescription)); \(systemVoice.name) reads on")
+                    effectiveVoice = systemVoice
+                    fallbackReason = "Switched to \(systemVoice.name) because Kokoro could not read at \(String(format: "%g", rate))×"
+                    return restart(from: restartToken ?? currentToken ?? chunk!.tokens.lowerBound)
                 } catch {
                     guard gen == generation else { return }
                     Log.write("read: chunk \(k) failed: \(error.localizedDescription)")
@@ -333,7 +378,7 @@ import TalkReadCore
     /// as fast as the engine's measured headroom allows.
     private func nextSlowChunk(from next: Int, opening: Bool) -> Chunk? {
         let kind = engines.engine(for: effectiveVoice).kind
-        if opening { return slowChunk(from: next, limit: Self.openingChars(rate: player.rate, kind: kind), fill: 10) }   // the buffer: fill it
+        if opening { return slowChunk(from: next, limit: Self.openingChars(rate: rate, kind: kind), fill: 10) }   // the buffer: fill it
         // Paused (nothing drains) or nothing measured yet: the largest chunk; the watchdog covers a later resume.
         guard player.isPlaying, let spc = slowSecondsPerChar else { return slowChunk(from: next, limit: Self.slowChars) }
         let fixed = Self.spare + fallbackFixed - 0.2   // `spare` counts the warm fallback's 0.2 s
@@ -435,7 +480,7 @@ import TalkReadCore
     }
 
     private var fallbackName: String { (fallback?.engine ?? .system) == .neural ? "Kokoro" : "the system voice" }
-    private var keepUpReason: String { "Switched to \(fallbackName) to keep up at \(String(format: "%g", player.rate))×" }
+    private var keepUpReason: String { "Switched to \(fallbackName) to keep up at \(String(format: "%g", rate))×" }
 
     /// The rest of the read uses the fallback (the system voice of the read's language when none was given); queued
     /// audio and timings stay.
@@ -455,13 +500,18 @@ import TalkReadCore
         }
         let engine = engines.engine(for: effectiveVoice)
         do {
-            return try await engine.synthesize(speakable, voice: effectiveVoice.id)
+            return try await engine.synthesize(speakable, voice: effectiveVoice.id,
+                                               speed: nativeSpeed == 1 ? 1 : TalkReadCore.Settings.kokoroSetting(forPace: nativeSpeed))
         } catch let error where engine.kind == .neural && !(error is CancellationError) {
+            if nativeSpeed != 1 { throw FastPaceFailed(underlying: error) }
             let retry = systemVoice
             Log.write("read: neural voice failed (\(error.localizedDescription)); retrying the chunk with \(retry.name)")
             return try await engines.system.synthesize(speakable, voice: retry.id)
         }
     }
+
+    /// Kokoro failed while speaking faster itself, so a 1x retry cannot join its queue.
+    private struct FastPaceFailed: Error { let underlying: Error }
 
     /// The installed system voice of the read's language (French stays French, Sol inspection 4 #3); "" (the best English
     /// voice) only if that language has none.
@@ -489,6 +539,7 @@ import TalkReadCore
         // Zero-length sentinels (removed or unspoken tokens) are never lit; the previous word stays.
         if let i = Timeline.index(at: t, in: timings), timings[i].end > timings[i].start, currentToken != timings[i].token {
             currentToken = timings[i].token
+            restartToken = nil
             currentSentence = tokens[timings[i].token].sentence
         }
         if doneEnqueueing, t >= player.queuedUntil - 0.0005 { finish() }

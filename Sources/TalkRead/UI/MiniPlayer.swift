@@ -96,6 +96,7 @@ import TalkReadCore
 
     func hide() {
         hideTask?.cancel()
+        SpeedControl.SpeedButton.closePanel()   // never left hanging off a hidden player
         panel?.orderOut(nil)
         message = nil
         if isShowing { isShowing = false }   // a docked dictation moves back to its own pill
@@ -165,7 +166,9 @@ import TalkReadCore
         guard seconds > 0 else { return }
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
-            while !Task.isCancelled, self?.docked != nil || self?.containsPointer == true { try? await Task.sleep(for: .seconds(0.5)) }
+            while !Task.isCancelled, self?.docked != nil || self?.containsPointer == true || SpeedControl.SpeedButton.panelShown {
+                try? await Task.sleep(for: .seconds(0.5))
+            }
             if !Task.isCancelled { self?.hide() }
         }
     }
@@ -376,7 +379,7 @@ struct MiniPlayerView: View {
             SymbolButton(symbol: "forward.fill", label: "Next sentence", size: 13) { model.skip(1) }.disabled(!active)
             if let note { Text(note).font(.caption).foregroundStyle(.secondary).padding(.leading, 6).lineLimit(1) }
             Spacer(minLength: 6)
-            SpeedControl(speed: Double(model.activeSpeed)) { model.setSpeed(Float($0)) }   // a 1x preview shows 1x
+            SpeedControl(model: model)
                 .frame(width: 56, height: 24)
             VoiceMenu(voices: voices, english: model.settings.voiceID, french: model.settings.frenchVoiceID, title: voiceName) { model.setVoice($0) }
                 .help("Reading with \(voiceName). A new choice applies to the next read.")
@@ -456,55 +459,84 @@ struct Subtitles: View {
     }
 }
 
-/// "1.50×": click to choose 1×, 1.5×, 2×, 2.5× or 3×; scroll to fine-tune. AppKit, because SwiftUI has no scroll-wheel hook.
+/// "1.50×": click for the speed panel; scroll to fine-tune by 0.05×. AppKit, because SwiftUI has no scroll-wheel hook.
 struct SpeedControl: NSViewRepresentable {
-    let speed: Double
-    let set: (Double) -> Void
+    @ObservedObject var model: AppModel
 
-    func makeNSView(context: Context) -> SpeedButton { SpeedButton() }
+    func makeNSView(context: Context) -> SpeedButton { SpeedButton(model: model) }
 
     func updateNSView(_ button: SpeedButton, context: Context) {
+        let speed = Double(model.activeSpeed)   // a 1x preview shows 1x
         button.speed = speed
-        button.onChange = set
         button.attributedTitle = NSAttributedString(string: Theme.speed(speed), attributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor.labelColor])
         button.setAccessibilityValue(Theme.speed(speed))
     }
 
-    final class SpeedButton: NSButton {
-        static let presets = Theme.quickSpeeds
+    final class SpeedButton: NSButton, NSPopoverDelegate {
         var speed = 1.0
-        var onChange: ((Double) -> Void)?
+        let model: AppModel
         private var scrolled: CGFloat = 0
+        /// The one open panel (one mini player).
+        private static weak var shown: NSPopover?
+        /// `.transient` misses clicks in other apps (the player is usually not in the active app) and in the player itself
+        /// (AppKit exempts a `becomesKeyOnlyIfNeeded` panel): these two monitors close the panel on both.
+        private var outsideClicks: [Any] = []
+        private lazy var popover: NSPopover = {
+            let p = NSPopover()
+            p.behavior = .transient
+            p.animates = false
+            p.delegate = self
+            p.contentViewController = NSHostingController(rootView: LiveSpeedPanel(model: model))
+            return p
+        }()
 
-        override init(frame: NSRect) {
-            super.init(frame: frame)
+        static var panelShown: Bool { shown?.isShown == true }
+        static func closePanel() { shown?.performClose(nil) }
+
+        init(model: AppModel) {
+            self.model = model
+            super.init(frame: .zero)
             isBordered = false
             target = self
-            action = #selector(showMenu)
-            toolTip = "Click to choose 1×, 1.5×, 2×, 2.5× or 3×; scroll to fine-tune"
+            action = #selector(togglePanel)
+            toolTip = "Click for the speed panel; scroll to fine-tune"
             setAccessibilityLabel("Speed")
         }
         required init?(coder: NSCoder) { fatalError("not used") }
 
-        static func presetItems(current: Double) -> [(title: String, value: Double, on: Bool)] {
-            presets.map { (title: Theme.speed($0), value: $0, on: abs($0 - current) < 0.001) }
+        @objc private func togglePanel() {
+            if popover.isShown { return popover.performClose(nil) }
+            popover.show(relativeTo: bounds, of: self, preferredEdge: .maxY)
+            Self.shown = popover
+            let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
+            outsideClicks = [
+                NSEvent.addGlobalMonitorForEvents(matching: clicks) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.popover.performClose(nil) }
+                },
+                NSEvent.addLocalMonitorForEvents(matching: clicks) { [weak self] event in
+                    MainActor.assumeIsolated { self?.closeUnlessInside(event) }
+                    return event
+                },
+            ].compactMap { $0 }
         }
 
-        @objc private func showMenu() {
-            let menu = NSMenu()
-            for item in Self.presetItems(current: speed) {
-                let menuItem = NSMenuItem(title: item.title, action: #selector(choose(_:)), keyEquivalent: "")
-                menuItem.target = self
-                menuItem.representedObject = item.value
-                menuItem.state = item.on ? .on : .off
-                menu.addItem(menuItem)
-            }
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 4), in: self)
+        /// A click in the panel stays; one on this button is left to its toggle; anywhere else closes the panel.
+        private func closeUnlessInside(_ event: NSEvent) {
+            guard popover.isShown, event.window !== popover.contentViewController?.view.window else { return }
+            if event.window === window, bounds.contains(convert(event.locationInWindow, from: nil)) { return }
+            popover.performClose(nil)
         }
 
-        @objc private func choose(_ sender: NSMenuItem) {
-            if let value = sender.representedObject as? Double { onChange?(value) }
+        /// Torn down by SwiftUI while open: close it, so the monitors go with it.
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow == nil, !outsideClicks.isEmpty { popover.performClose(nil) }
+            super.viewWillMove(toWindow: newWindow)
+        }
+
+        func popoverDidClose(_ notification: Notification) {
+            outsideClicks.forEach(NSEvent.removeMonitor)
+            outsideClicks = []
         }
 
         override func scrollWheel(with event: NSEvent) {
@@ -512,7 +544,7 @@ struct SpeedControl: NSViewRepresentable {
             let steps = scrolled.rounded(.towardZero)
             guard steps != 0 else { return }
             scrolled -= steps
-            onChange?(min(3, max(0.5, ((speed + Double(steps) * 0.05) * 20).rounded() / 20)))
+            model.setSpeed(model.activeSpeed + Float(steps) * 0.05)   // `validated` snaps to 0.05 within the range
         }
     }
 }

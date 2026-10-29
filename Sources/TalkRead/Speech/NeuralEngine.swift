@@ -74,9 +74,14 @@ final class NeuralEngine: SpeechEngine {
         _ = try await manager.synthesizeDetailed(text: french ? "Prêt." : "Ready.", voice: voice, speed: 1)
     }
 
-    func synthesize(_ text: String, voice: String) async throws -> SynthChunk {
+    var speaksFaster: Bool { true }
+
+    func synthesize(_ text: String, voice: String) async throws -> SynthChunk { try await synthesize(text, voice: voice, speed: 1) }
+
+    /// `speed` scales Kokoro's predicted durations, so the audio and the words' timings both come out at that pace.
+    func synthesize(_ text: String, voice: String, speed: Float) async throws -> SynthChunk {
         let manager = try await (Self.isFrench(voice) ? frenchLoader : loader).manager()
-        let result = try await manager.synthesizeDetailed(text: text, voice: voice, speed: 1)
+        let result = try await manager.synthesizeDetailed(text: text, voice: voice, speed: speed)
         guard !result.samples.isEmpty, result.samples.allSatisfy(\.isFinite) else { throw SpeechError.badAudio }
         let rate = Double(result.sampleRate)
         assert(abs(result.samples.count - Int(result.predictedDurations.reduce(0, +)) * Int(Self.samplesPerFrame)) < Int(Self.samplesPerFrame),

@@ -41,6 +41,10 @@ protocol SpeechEngine: AnyObject {
     func voices() async -> [Voice]
     func prepare(voice: String) async throws
     func synthesize(_ text: String, voice: String) async throws -> SynthChunk
+    /// At `speed`× its natural pace, with timings for that pace; only an engine that `speaksFaster` honours it.
+    func synthesize(_ text: String, voice: String, speed: Float) async throws -> SynthChunk
+    /// Can speak faster itself, which stays clearer than stretching its 1x audio past `Settings.stretchLimit`.
+    var speaksFaster: Bool { get }
     func unload()
     /// Preparing, synthesising or unloading right now (V-A, additive): the idle unload waits for it.
     var isBusy: Bool { get }
@@ -50,6 +54,8 @@ protocol SpeechEngine: AnyObject {
 
 extension SpeechEngine {
     var isBusy: Bool { false }
+    var speaksFaster: Bool { false }
+    func synthesize(_ text: String, voice: String, speed: Float) async throws -> SynthChunk { try await synthesize(text, voice: voice) }
     var keepsUpTo: Float? { nil }
     /// Renders well below real time, so a read uses bounded chunks, the time budget and the Kokoro fallback (V3).
     var isSlow: Bool { kind == .qwen || kind == .breeze }
