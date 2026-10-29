@@ -165,8 +165,9 @@ import TalkReadCore
     /// Another window or dialog, even the same app's, shows at `point` on the paragraph instead of its own window.
     static func covered(_ block: PointerCapture.Block, at point: CGPoint) -> Bool {
         guard let under = PointerCapture.hit(point), under.pid == block.pid else { return true }
+        // Only a window positively matched to the paragraph's own counts as uncovered.
         return !PointerCapture.bounded {
-            guard let a = axElement(under.element, kAXWindowAttribute), let b = axElement(block.element, kAXWindowAttribute) else { return true }
+            guard let a = PointerCapture.window(of: under.element), let b = PointerCapture.window(of: block.element) else { return false }
             return CFEqual(a, b)
         }
     }

@@ -48,7 +48,8 @@ import ApplicationServices
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.25)
         _ = AXUIElementSetAttributeValue(app, enhanced, kCFBooleanFalse)
-        if !isOn(app) { ledger.remove(pid) }   // read-back, not the return code; still on keeps the pid for `restoreAll` at quit
+        // Only a read-back of "off" clears it: still on, or no answer in time, keeps the pid for `restoreAll` at quit.
+        if (axAttribute(app, enhanced as String) as? Bool) == false { ledger.remove(pid) }
     }
 
     /// Every app we woke, for a caller that has no pid (app quit).

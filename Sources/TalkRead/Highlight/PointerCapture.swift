@@ -91,9 +91,10 @@ enum PointerCapture {
         let kids = (axAttribute(current, kAXChildrenAttribute) as? [AXUIElement]) ?? []
         if !inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? ""), !kids.isEmpty {
             guard onlyText(current) else { return nil }
-            // A paragraph's own padding: the point must be on (or within 4 pt of) the lines of its text.
-            let lines = kids.prefix(200).compactMap { axFrame($0) }.filter { !$0.isEmpty }.reduce(CGRect.null) { $0.union($1) }
-            if !lines.isNull, !lines.insetBy(dx: -4, dy: -4).contains(point) { return nil }
+            // A paragraph's own padding, or the space between two of its text runs: the point must be on (or within 4 pt
+            // of) one of them.
+            let lines = kids.prefix(200).compactMap { axFrame($0) }.filter { !$0.isEmpty }
+            if !lines.isEmpty, !lines.contains(where: { $0.insetBy(dx: -4, dy: -4).contains(point) }) { return nil }
         }
         while steps < 12, !CFEqual(current, area), let parent = axElement(current, kAXParentAttribute),
               inline.contains(axAttribute(current, kAXRoleAttribute) as? String ?? "")
@@ -229,10 +230,22 @@ enum PointerCapture {
         if end == NSNotFound { end = ns.length }
         guard end > start, !ns.substring(with: NSRange(location: start, length: end - start)).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let frame = axBounds(element, location: start, length: end - start), !frame.isEmpty,
-              frame.contains(point) else { return nil }   // the nearest character to a margin or a gap is not under it
+              frame.contains(point), onLine(element, index: range.location, point: point) else { return nil }   // the nearest character to a margin or a gap is not under it
         // The scroll view showing the text, where the glyph stays when the paragraph's first line is scrolled away.
         let scroll = axElement(element, kAXParentAttribute).flatMap { (axAttribute($0, kAXRoleAttribute) as? String) == "AXScrollArea" ? axFrame($0) : nil }
         return Block(pid: pid, element: element, frame: frame, start: start, length: end - start, viewport: scroll)
+    }
+
+    /// The point is on (or within 4 pt of) the drawn text of the line holding `index`, not in the blank part of the
+    /// paragraph's box beside a short line. A view that cannot say where its lines are passes.
+    private static func onLine(_ element: AXUIElement, index: Int, point: CGPoint) -> Bool {
+        guard let line = axParameterizedAttribute(element, "AXLineForIndex", parameter: index as CFNumber) as? Int,
+              let value = axParameterizedAttribute(element, "AXRangeForLine", parameter: line as CFNumber), CFGetTypeID(value) == AXValueGetTypeID()
+        else { return true }
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range), let bounds = axBounds(element, location: range.location, length: range.length)
+        else { return true }
+        return bounds.insetBy(dx: -4, dy: -4).contains(point)
     }
 
     private static func hasText(_ element: AXUIElement, area: AXUIElement) -> Bool {
@@ -334,7 +347,7 @@ enum PointerCapture {
     }
 
     /// The window holding `element`: its AXWindow, else the nearest ancestor with the window role.
-    private static func window(of element: AXUIElement) -> AXUIElement? {
+    static func window(of element: AXUIElement) -> AXUIElement? {
         if let w = axElement(element, kAXWindowAttribute) { return w }
         var current: AXUIElement? = element
         for _ in 0..<60 {
