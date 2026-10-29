@@ -108,7 +108,7 @@ extension AppModel {
             return ["sentences": .number(Double(n))]
 
         case "speed":
-            guard let raw = a["value"] else { throw AppError.badArgs("speed needs a value from 0.5 to 3.0.") }
+            guard let raw = a["value"] else { throw AppError.badArgs("speed needs a value from 0.5 to 4.0.") }
             let v = try validSpeed(raw)
             try claim(r)
             changeSpeed(v)   // as the GUI's: during a preview only the preview changes (Sol verification 7 #3)
@@ -598,7 +598,7 @@ extension AppModel {
     }
 
     private func validSpeed(_ raw: String) throws -> Float {
-        guard let v = Float(raw), (0.5...3.0).contains(v) else { throw AppError.badArgs("Speed must be a number from 0.5 to 3.0.") }
+        guard let v = Float(raw), TalkReadCore.Settings.speedRange.contains(v) else { throw AppError.badArgs("Speed must be a number from 0.5 to 4.0.") }
         return v
     }
 

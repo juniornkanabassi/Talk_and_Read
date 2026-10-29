@@ -648,8 +648,8 @@ extension EngineKind {
     /// 1x), else the saved one.
     var activeSpeed: Float { liveSession == nil ? settings.speed : sessionInfo.rate }
 
-    /// The speed keys and the reader's nudges: from what is playing; `validated` keeps 0.05 steps within 0.5-3x.
-    func stepSpeed(_ delta: Float) { setSpeed(activeSpeed + delta) }
+    /// ⌥D/⌥S, ⌘+/⌘− and the speed panel's plus and minus: to the next 0.25 mark from what is playing.
+    func stepSpeed(up: Bool) { setSpeed(TalkReadCore.Settings.steppedSpeed(activeSpeed, up: up)) }
 
     /// The picker, the menus and `talkread voice`: a French voice becomes the French voice, any other the English one;
     /// an English Kokoro voice is also the one a slower model falls back to. Applies from the next read (V1).

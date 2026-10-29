@@ -346,8 +346,8 @@ struct ShortcutsPage: View {
         "readHereShortcut": ("Read from here", "Reads from the paragraph under the pointer, nothing selected"),
         "pauseShortcut": ("Pause or resume", "Holds or carries on with the current read"),
         "screenshotShortcut": ("Screenshot and listen", "Drag over part of the screen to hear its text"),
-        "increaseSpeedShortcut": ("Increase speed", "0.05× faster, while something is being read"),
-        "decreaseSpeedShortcut": ("Decrease speed", "0.05× slower, while something is being read"),
+        "increaseSpeedShortcut": ("Increase speed", "0.25× faster, while something is being read"),
+        "decreaseSpeedShortcut": ("Decrease speed", "0.25× slower, while something is being read"),
         "skipBackwardShortcut": ("Skip backward", "Back one sentence in the current read"),
         "skipForwardShortcut": ("Skip forward", "On one sentence in the current read"),
     ]
