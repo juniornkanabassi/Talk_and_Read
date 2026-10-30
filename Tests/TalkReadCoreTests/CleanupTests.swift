@@ -165,5 +165,7 @@ final class CleanupTests: XCTestCase {
         XCTAssertFalse(Cleanup.keepsWords("No, please stop and listen.", of: "No no no please stop."))   // each word counts once
         XCTAssertFalse(Cleanup.keepsWords("The shop is open on Sunday.", of: "Is the shop open on Sunday?"))   // a question stays one
         XCTAssertTrue(Cleanup.keepsWords("No, no, no, please stop.", of: "no no no please stop"))
+        XCTAssertFalse(Cleanup.keepsWords("It is open. What time does the shop close on Sunday?",
+                                          of: "Is it open? What time does the shop close on Sunday?"))
     }
 }

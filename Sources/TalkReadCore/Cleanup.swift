@@ -57,13 +57,13 @@ public enum Cleanup {
     }
 
     /// Whether a model's rewrite kept the speaker's words: at least 80% of the original's words (lower case) are still in it,
-    /// in the same order (longest common subsequence), and a question stays a question. Stops a dictated question being
+    /// in the same order (longest common subsequence), and no question mark is lost. Stops a dictated question being
     /// replaced by the model's answer.
     public static func keepsWords(_ polished: String, of original: String) -> Bool {
         func words(_ t: String) -> [String] { t.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty } }
         let before = words(original), after = words(polished)
         guard !before.isEmpty else { return true }
-        if original.contains("?"), !polished.contains("?") { return false }
+        if polished.filter({ $0 == "?" }).count < original.filter({ $0 == "?" }).count { return false }   // every question stays one
         var row = [Int](repeating: 0, count: after.count + 1)
         for w in before {
             var diagonal = 0

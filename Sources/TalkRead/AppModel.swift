@@ -889,7 +889,9 @@ extension EngineKind {
     /// before the next save overwrites it; a missing file is just nil.
     nonisolated static func loadJSON<T: Decodable>(_ url: URL) -> T? {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: url.path) else { return nil }
+        var isDirectory: ObjCBool = false
+        // A folder in the file's place is not a damaged file: left where it is, so the next save fails rather than moves it.
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else { return nil }
         do { return try JSONDecoder().decode(T.self, from: Data(contentsOf: url)) } catch {
             let bad = url.appendingPathExtension("bad-\(Int(Date().timeIntervalSince1970 * 1000))")
             let kept = (try? fm.moveItem(at: url, to: bad)) != nil || (try? fm.copyItem(at: url, to: bad)) != nil
