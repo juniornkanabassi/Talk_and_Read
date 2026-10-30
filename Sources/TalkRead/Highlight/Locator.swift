@@ -125,7 +125,8 @@ import TalkReadCore
         switch result { case .rect, .hidden: return result; case .stale, .noEntry: break }
         // A long read outruns the map built at its start: Chromium and CodeMirror expose only the text near the viewport,
         // and a scroll can replace the nodes already mapped. Re-walk from this word, at most once a second.
-        guard !(nodeMap ?? [:]).isEmpty, Date().timeIntervalSince1970 - nodeMapBuiltAt > 1 else { return result }
+        // An empty map is retried too: a woken app (ChatGPT) answers bounds only seconds after the wake.
+        guard Date().timeIntervalSince1970 - nodeMapBuiltAt > 1 else { return result }
         buildNodeMap(from: index)
         return nodeMapLookup(index)
     }
@@ -229,7 +230,7 @@ import TalkReadCore
         return inside.isEmpty ? nil : Set(stream.indices.filter { inside.contains(stream[$0].node) })
     }
 
-    /// The selection's bounding box in AX (top-left) coordinates, read once: AXBoundsForRange on the element when its
+    /// The selection's bounding box in AX (top-left) coordinates, read once found: AXBoundsForRange on the element when its
     /// range is known; else the selected text marker range (WebKit, Chromium) of the element or, when the window is not
     /// key and nothing has focus, of the web area whose selection is the captured text.
     private var selectionBoundsValue: CGRect?? = nil
@@ -250,7 +251,7 @@ import TalkReadCore
                 if AXValueGetValue(value as! AXValue, .cgRect, &rect), !rect.isEmpty { result = rect; break }
             }
         }
-        selectionBoundsValue = .some(result)
+        if result != nil { selectionBoundsValue = .some(result) }   // a woken app may answer only seconds later: ask again
         return result
     }
 
