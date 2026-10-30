@@ -149,11 +149,12 @@ extension EngineKind {
 
     // MARK: Settings
 
-    /// The three Dictation settings live on the controller (V-G).
+    /// The Dictation settings live on the controller (V-G).
     private func applyDictationSettings() {
         dictation.preferApple = settings.dictationEngine == "apple"
         dictation.learnCorrections = settings.learnCorrections
         dictation.britishSpelling = settings.britishSpelling
+        dictation.historyLimit = settings.historyLimit
         dictation.languages = settings.dictationLanguages
         dictation.microphoneUID = settings.dictationMicrophone
     }

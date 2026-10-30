@@ -528,7 +528,7 @@ struct WordMapEditor: View {
     }
 
     static func load(_ url: URL) -> [String: String] {
-        (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: url))) ?? [:]
+        AppModel.loadJSON(url) ?? [:]   // a bad file is kept as .bad, not overwritten by the next save
     }
 
     static func save(_ rows: [Row], to url: URL) {
