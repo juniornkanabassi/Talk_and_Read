@@ -384,8 +384,8 @@ import TalkReadCore
         let fixed = Self.spare + fallbackFixed - 0.2   // `spare` counts the warm fallback's 0.2 s
         let room = (bufferedSeconds - fixed - Self.chunkOverhead(kind)) / (spc * Self.costMargin(kind) + fallbackSecondsPerChar)   // spoken characters that fit
         var limit = min(Int(room), Self.slowChars)
-        // ponytail: each try re-chunks the rest of the text (linear in it, about 1 ms per 10k characters); a token
-        // window if 100k-character reads ever show it.
+        // ponytail: each try stops after the first chunk (maxChunks 1); only the protected-span scan covers the whole text,
+        // and it is cached per text.
         while limit >= Self.minSlowChars {
             let c = slowChunk(from: next, limit: limit)
             let n = speakable(c).text.utf16.count
@@ -405,9 +405,9 @@ import TalkReadCore
         var range = 0 ..< 0, end = next
         repeat {
             let room = max(limit - range.count, Self.minSlowChars)
-            var c = TextKit.chunks(text, tokens: tokens, from: end, firstMax: room + Self.minSlowChars, max: room)[0]
+            var c = TextKit.chunks(text, tokens: tokens, from: end, firstMax: room + Self.minSlowChars, max: room, maxChunks: 1)[0]
             if c.tokens.upperBound < tokens.count, tokens[c.tokens.upperBound].sentence == tokens[c.tokens.upperBound - 1].sentence {
-                c = TextKit.chunks(text, tokens: tokens, from: end, firstMax: room, max: room)[0]   // longer still: cut at the room
+                c = TextKit.chunks(text, tokens: tokens, from: end, firstMax: room, max: room, maxChunks: 1)[0]   // longer still: cut at the room
             }
             range = (end == next ? c.range.lowerBound : range.lowerBound) ..< c.range.upperBound
             end = c.tokens.upperBound
