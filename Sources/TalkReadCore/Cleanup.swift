@@ -64,8 +64,16 @@ public enum Cleanup {
         let before = words(original), after = words(polished)
         guard !before.isEmpty else { return true }
         // Every question stays one, on the same word: the words just before the original's "?"s are, in order, among the
-        // rewrite's (which may add a "?", fixing the recogniser's punctuation).
-        func asked(_ t: String) -> [String] { t.components(separatedBy: "?").dropLast().map { words($0).last ?? "" } }
+        // rewrite's (which may add a "?", fixing the recogniser's punctuation). A word counts with its occurrence ("today"
+        // the 1st time is not "today" the 2nd), so a "?" cannot move to a later sentence ending the same way.
+        func asked(_ t: String) -> [String] {
+            var seen: [String: Int] = [:]
+            return t.components(separatedBy: "?").dropLast().map { part in
+                let ws = words(part)
+                for w in ws { seen[w, default: 0] += 1 }
+                return ws.last.map { "\($0)#\(seen[$0]!)" } ?? ""
+            }
+        }
         var rest = asked(polished)[...]
         for word in asked(original) {
             guard let i = rest.firstIndex(of: word) else { return false }

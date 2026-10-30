@@ -169,5 +169,9 @@ final class CleanupTests: XCTestCase {
                                           of: "Is it open? What time does the shop close on Sunday?"))
         XCTAssertFalse(Cleanup.keepsWords("The shop is open on Sunday. Please let me know when you can?",
                                           of: "Is the shop open on Sunday? Please let me know when you can."))
+        XCTAssertFalse(Cleanup.keepsWords("You can deliver it today. I was told it would arrive today?",
+                                          of: "You can deliver it today? I was told it would arrive today."))
+        XCTAssertTrue(Cleanup.keepsWords("Can you deliver it today? I was told it would arrive today.",
+                                         of: "can you deliver it today? i was told it would arrive today"))
     }
 }
