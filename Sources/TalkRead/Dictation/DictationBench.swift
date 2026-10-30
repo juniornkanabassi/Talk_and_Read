@@ -1,4 +1,4 @@
-// `TalkRead --selftest-asr <dir> --bench [--engines parakeet,parakeet-v3,apple-speech,apple-dictation]
+// `TalkRead --selftest-asr <dir> --bench [--engines parakeet,parakeet-boost,parakeet-v2,parakeet-v3,parakeet-ultra,apple-speech,apple-dictation]
 // [--languages en,fr] [--context]`: compares recognisers on a
 // fixture folder through the live streaming path (real-time 100 ms buffers). Per engine: WER of the cleaned text
 // (numbers, £, %, am/pm compared leniently), key terms from terms.txt typed exactly, clips typed exactly, latency from
@@ -30,6 +30,12 @@ import TalkReadCore
             switch name {
             case "parakeet": asr = Transcriber()
             case "parakeet-v3": asr = ParakeetV3Transcriber()
+            case "parakeet-v2": asr = ParakeetV3Transcriber(version: .v2)
+            case "parakeet-ultra": asr = ParakeetV3Transcriber(version: .ultra)
+            case "parakeet-boost":
+                let boosted = Transcriber()
+                boosted.boosting = Transcriber.boostingTerms(vocabulary)
+                asr = boosted
             case "apple-speech", "apple-dictation":
                 let apple = AppleTranscriber(model: name == "apple-speech" ? .speech : .dictation)
                 if CommandLine.arguments.contains("--context") { apple.contextualStrings = Cleanup.terms(vocabulary) }

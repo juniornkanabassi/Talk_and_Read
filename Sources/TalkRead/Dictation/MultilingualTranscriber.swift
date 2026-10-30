@@ -11,6 +11,7 @@ import TalkReadCore
 
 @MainActor final class ParakeetV3Transcriber: DictationASR {
     let directory: URL
+    let version: AsrModelVersion
     private var manager: AsrManager?
     private(set) var isLoading = false { didSet { onLoadingChange?() } }
     var onLoadingChange: (() -> Void)?
@@ -20,10 +21,13 @@ import TalkReadCore
 
     // ponytail: its own AsrManager, separate from the Aligner's on the same files. Both loaded cost about 13 MB footprint
     // and 17 MB resident more than one (measured 25 Oct; the weights are memory-mapped), so they are not shared.
-    init(directory: URL? = nil) { self.directory = directory ?? AsrModels.defaultCacheDirectory(for: .v3) }
+    init(version: AsrModelVersion = .v3, directory: URL? = nil) {
+        self.version = version
+        self.directory = directory ?? AsrModels.defaultCacheDirectory(for: version)
+    }
 
     var isLoaded: Bool { manager != nil }
-    var isDownloaded: Bool { AsrModels.modelsExist(at: directory, version: .v3) }
+    var isDownloaded: Bool { AsrModels.modelsExist(at: directory, version: version) }
 
     /// Downloads (first use only; the Settings choice of languages is the consent) and loads; one load shared by every
     /// caller, as `Transcriber.load`.
@@ -31,16 +35,16 @@ import TalkReadCore
         if manager != nil { return }
         if !isLoading {
             isLoading = true
-            let directory = directory
+            let directory = directory, version = version
             Task {
                 do {
-                    if !AsrModels.modelsExist(at: directory, version: .v3) {
-                        try await AsrModels.download(to: directory, version: .v3) { p in
+                    if !AsrModels.modelsExist(at: directory, version: version) {
+                        try await AsrModels.download(to: directory, version: version) { p in
                             Task { @MainActor in progress?(p.fractionCompleted * 0.95) }
                         }
                     }
                     let m = AsrManager(config: .default)
-                    try await m.loadModels(try await AsrModels.load(from: directory, version: .v3))
+                    try await m.loadModels(try await AsrModels.load(from: directory, version: version))
                     manager = m
                     loadError = nil
                 } catch {
