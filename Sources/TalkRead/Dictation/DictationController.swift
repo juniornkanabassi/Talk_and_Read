@@ -74,6 +74,8 @@ enum DictationError: LocalizedError, Equatable {
     var learnCorrections = false
     /// Respell American spellings the British dictionary rejects (Junior writes British English; lead: a Settings row).
     var britishSpelling = true
+    /// Settings.historyLimit: the dictations kept in the history (lead: set with the other settings).
+    var historyLimit = 200
     /// Settings.dictationLanguages. English alone uses `asr` (or Apple's); anything else uses `multilingual` once its
     /// model is on the Mac, and the clean-up treats each sentence in its own language.
     var languages = ["en"]
@@ -111,7 +113,7 @@ enum DictationError: LocalizedError, Equatable {
         self.multilingual = multilingual ?? ParakeetV3Transcriber()
         self.insert = insert ?? { await Inserter.insert($0, targetPID: $1, requireField: $2, isCurrent: $3) }
         self.decode = decode ?? { try Transcriber.samples(of: $0) }
-        history = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
+        history = AppModel.loadJSON(Paths.history) ?? []   // a bad file is kept as .bad, not overwritten
         self.asr.onLoadingChange = { [weak self] in self?.updateBusy() }
         self.multilingual.onLoadingChange = { [weak self] in self?.updateBusy() }
         Task { [weak self] in
@@ -381,7 +383,7 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     private func vocabulary() -> [String: String] {
-        (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: Paths.vocabulary))) ?? [:]
+        AppModel.loadJSON(Paths.vocabulary) ?? [:]
     }
 
     // MARK: Learning from corrections (opt-in)
@@ -391,7 +393,7 @@ enum DictationError: LocalizedError, Equatable {
     /// Counts the corrections of one dictation; those seen twice and not yet in the vocabulary are offered.
     func learn(_ found: [AutoLearn.Correction]) {
         guard !found.isEmpty else { return }
-        var counts = (try? JSONDecoder().decode([String: Int].self, from: Data(contentsOf: Self.learntFile))) ?? [:]
+        var counts: [String: Int] = AppModel.loadJSON(Self.learntFile) ?? [:]
         let ready = AutoLearn.record(found, in: &counts)
         try? JSONEncoder().encode(counts).write(to: Self.learntFile, options: .atomic)
         let known = vocabulary()
@@ -490,7 +492,7 @@ enum DictationError: LocalizedError, Equatable {
 
     private func remember(_ text: String, app: String?, bundleID: String?) {
         history.insert(DictationEntry(id: UUID(), date: Date(), text: text, app: app, bundleID: bundleID), at: 0)
-        history = Array(history.prefix(Settings.load().historyLimit))
+        history = Array(history.prefix(historyLimit))
         saveHistory()
     }
 

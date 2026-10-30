@@ -56,6 +56,46 @@ public enum Cleanup {
         }
     }
 
+    /// Whether a model's rewrite kept the speaker's words: at least 80% of the original's words (lower case) are still in it,
+    /// in the same order (longest common subsequence), every question mark stays after the same word, and a text ending in a question
+    /// still does. Stops a dictated question being replaced by, or followed by, the model's answer.
+    public static func keepsWords(_ polished: String, of original: String) -> Bool {
+        func words(_ t: String) -> [String] { t.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty } }
+        let before = words(original), after = words(polished)
+        guard !before.isEmpty else { return true }
+        // Every question stays one, on the same word: the words just before the original's "?"s are, in order, among the
+        // rewrite's (which may add a "?", fixing the recogniser's punctuation). A word counts with its occurrence ("today"
+        // the 1st time is not "today" the 2nd), so a "?" cannot move to a later sentence ending the same way.
+        func asked(_ t: String) -> [String] {
+            var seen: [String: Int] = [:]
+            return t.components(separatedBy: "?").dropLast().map { part in
+                let ws = words(part)
+                for w in ws { seen[w, default: 0] += 1 }
+                return ws.last.map { "\($0)#\(seen[$0]!)" } ?? ""
+            }
+        }
+        var rest = asked(polished)[...]
+        for word in asked(original) {
+            guard let i = rest.firstIndex(of: word) else { return false }
+            rest = rest[(i + 1)...]
+        }
+        // Nothing is tacked on after a closing question: "Is it open on Sunday?" must not come back as "... Sunday? Yes." or
+        // "... Sunday? Yes, why?": the rewrite ends on that same question.
+        // Ends asking: no word after its last "?" (closing quotes, brackets or "?!" may follow).
+        func endsAsking(_ t: String) -> Bool { t.contains("?") && words(String(t[t.lastIndex(of: "?")!...])).isEmpty }
+        if endsAsking(original), !endsAsking(polished) || asked(polished).last != asked(original).last { return false }
+        var row = [Int](repeating: 0, count: after.count + 1)
+        for w in before {
+            var diagonal = 0
+            for (j, v) in after.enumerated() {
+                let up = row[j + 1]
+                row[j + 1] = w == v ? diagonal + 1 : Swift.max(row[j + 1], row[j])
+                diagonal = up
+            }
+        }
+        return Double(row[after.count]) >= 0.8 * Double(before.count)
+    }
+
     /// The spellings the vocabulary teaches (every "type instead" value, once), for recogniser biasing.
     public static func terms(_ vocabulary: [String: String]) -> [String] {
         Array(Set(vocabulary.values.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })).sorted()

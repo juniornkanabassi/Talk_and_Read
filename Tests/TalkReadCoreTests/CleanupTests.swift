@@ -157,4 +157,31 @@ final class CleanupTests: XCTestCase {
     func testInputPlaceholderCharactersCannotInjectText() {
         XCTAssertEqual(clean("a\u{E000}0\u{E001} b"), "A0 b")
     }
+
+    func testPolishMustKeepTheSpeakersWords() {
+        let said = "what time does the shop open on sunday"
+        XCTAssertTrue(Cleanup.keepsWords("What time does the shop open on Sunday?", of: said))
+        XCTAssertFalse(Cleanup.keepsWords("The shop opens at ten on Sundays, I think.", of: said))   // answered, not polished
+        XCTAssertFalse(Cleanup.keepsWords("No, please stop and listen.", of: "No no no please stop."))   // each word counts once
+        XCTAssertFalse(Cleanup.keepsWords("The shop is open on Sunday.", of: "Is the shop open on Sunday?"))   // a question stays one
+        XCTAssertTrue(Cleanup.keepsWords("No, no, no, please stop.", of: "no no no please stop"))
+        XCTAssertFalse(Cleanup.keepsWords("It is open. What time does the shop close on Sunday?",
+                                          of: "Is it open? What time does the shop close on Sunday?"))
+        XCTAssertFalse(Cleanup.keepsWords("The shop is open on Sunday. Please let me know when you can?",
+                                          of: "Is the shop open on Sunday? Please let me know when you can."))
+        XCTAssertFalse(Cleanup.keepsWords("Can you tell me whether the shop is open on Sunday? Yes, why?",
+                                          of: "Can you tell me whether the shop is open on Sunday?"))   // an answer and a new question
+        XCTAssertTrue(Cleanup.keepsWords("Can you tell me whether the shop is open on Sunday?",
+                                         of: "can you tell me whether the shop is open on sunday?"))
+        XCTAssertFalse(Cleanup.keepsWords("Is the shop open on Sunday?! Yes.", of: "Is the shop open on Sunday?!"))
+        XCTAssertFalse(Cleanup.keepsWords("He said “is the shop open on Sunday?” Yes.", of: "he said “is the shop open on sunday?”"))
+        XCTAssertTrue(Cleanup.keepsWords("Is the shop open on Sunday?!", of: "is the shop open on sunday?!"))
+        XCTAssertTrue(Cleanup.keepsWords("He said “Is the shop open on Sunday?”", of: "he said “is the shop open on sunday?”"))
+        XCTAssertFalse(Cleanup.keepsWords("You can deliver it today. I was told it would arrive today?",
+                                          of: "You can deliver it today? I was told it would arrive today."))
+        XCTAssertTrue(Cleanup.keepsWords("Can you deliver it today? I was told it would arrive today.",
+                                         of: "can you deliver it today? i was told it would arrive today"))
+        XCTAssertFalse(Cleanup.keepsWords("Is the shop open on Sunday? Yes.", of: "Is the shop open on Sunday?"))   // no answer added
+        XCTAssertTrue(Cleanup.keepsWords("Is the shop open on Sunday?", of: "is the shop open on sunday?"))
+    }
 }

@@ -66,6 +66,9 @@ extension DictationASR {
     private var loadError: Error?
     private var loadWaiters: [AsyncStream<Void>.Continuation] = []
     private let queue = RecogniserQueue()
+    /// Terms the recogniser listens for (CTC keyword boosting with Parakeet CTC 110M); nil switches boosting off. Read at
+    /// load, so a change needs an unload.
+    var boosting: CustomVocabularyContext?
 
     var isLoaded: Bool { manager != nil }
     var isDownloaded: Bool { Self.isDownloaded }
@@ -92,6 +95,9 @@ extension DictationASR {
                     let m = StreamingUnifiedAsrManager(config: Self.variant.unifiedConfig!, encoderPrecision: .int8)
                     try await m.loadModels(to: nil, configuration: nil) { p in
                         Task { @MainActor in progress?(p.fractionCompleted) }
+                    }
+                    if let boosting {
+                        try await m.configureVocabularyBoosting(vocabulary: boosting, ctcModels: try await CtcModels.downloadAndLoad())
                     }
                     manager = m
                     loadError = nil
@@ -144,6 +150,15 @@ extension DictationASR {
                 .init(text: $0.token, start: $0.startTime, end: $0.endTime + Self.endLag)
             })))
         }
+    }
+
+    /// The boosting terms for a vocabulary: each written form once, its heard forms as aliases.
+    static func boostingTerms(_ vocabulary: [String: String]) -> CustomVocabularyContext? {
+        let heard = Dictionary(grouping: vocabulary.keys, by: { vocabulary[$0]! })
+        let terms = heard.keys.sorted().map { written in
+            CustomVocabularyTerm(text: written, aliases: heard[written]!.filter { $0.caseInsensitiveCompare(written) != .orderedSame }.sorted())
+        }
+        return terms.isEmpty ? nil : CustomVocabularyContext(terms: terms)
     }
 
     /// The model times a word's end early and the next word's start late, so every gap reads long: Kokoro speech with known
