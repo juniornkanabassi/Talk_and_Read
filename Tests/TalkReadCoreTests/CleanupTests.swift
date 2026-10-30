@@ -173,5 +173,7 @@ final class CleanupTests: XCTestCase {
                                           of: "You can deliver it today? I was told it would arrive today."))
         XCTAssertTrue(Cleanup.keepsWords("Can you deliver it today? I was told it would arrive today.",
                                          of: "can you deliver it today? i was told it would arrive today"))
+        XCTAssertFalse(Cleanup.keepsWords("Is the shop open on Sunday? Yes.", of: "Is the shop open on Sunday?"))   // no answer added
+        XCTAssertTrue(Cleanup.keepsWords("Is the shop open on Sunday?", of: "is the shop open on sunday?"))
     }
 }
