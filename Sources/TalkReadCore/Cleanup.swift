@@ -81,7 +81,8 @@ public enum Cleanup {
         }
         // Nothing is tacked on after a closing question: "Is it open on Sunday?" must not come back as "... Sunday? Yes." or
         // "... Sunday? Yes, why?": the rewrite ends on that same question.
-        func endsAsking(_ t: String) -> Bool { t.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") }
+        // Ends asking: no word after its last "?" (closing quotes, brackets or "?!" may follow).
+        func endsAsking(_ t: String) -> Bool { t.contains("?") && words(String(t[t.lastIndex(of: "?")!...])).isEmpty }
         if endsAsking(original), !endsAsking(polished) || asked(polished).last != asked(original).last { return false }
         var row = [Int](repeating: 0, count: after.count + 1)
         for w in before {
