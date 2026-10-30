@@ -885,14 +885,15 @@ extension EngineKind {
 
     // MARK: JSON files
 
-    /// A file that exists but does not decode is kept as `<name>.bad` instead of being overwritten by the next save.
+    /// A file that exists but cannot be read or decoded is kept as `<name>.bad-<time>` (never replacing an earlier one)
+    /// before the next save overwrites it; a missing file is just nil.
     nonisolated static func loadJSON<T: Decodable>(_ url: URL) -> T? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        do { return try JSONDecoder().decode(T.self, from: data) } catch {
-            let bad = url.appendingPathExtension("bad")
-            try? FileManager.default.removeItem(at: bad)
-            try? FileManager.default.moveItem(at: url, to: bad)
-            Log.write("\(url.lastPathComponent) was unreadable, kept as \(bad.lastPathComponent): \(error)")
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return nil }
+        do { return try JSONDecoder().decode(T.self, from: Data(contentsOf: url)) } catch {
+            let bad = url.appendingPathExtension("bad-\(Int(Date().timeIntervalSince1970 * 1000))")
+            let kept = (try? fm.moveItem(at: url, to: bad)) != nil || (try? fm.copyItem(at: url, to: bad)) != nil
+            Log.write("\(url.lastPathComponent) was unreadable (\(error)); " + (kept ? "kept as \(bad.lastPathComponent)" : "it could not be kept"))
             return nil
         }
     }

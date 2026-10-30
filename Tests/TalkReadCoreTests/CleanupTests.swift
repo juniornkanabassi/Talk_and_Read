@@ -162,5 +162,8 @@ final class CleanupTests: XCTestCase {
         let said = "what time does the shop open on sunday"
         XCTAssertTrue(Cleanup.keepsWords("What time does the shop open on Sunday?", of: said))
         XCTAssertFalse(Cleanup.keepsWords("The shop opens at ten on Sundays, I think.", of: said))   // answered, not polished
+        XCTAssertFalse(Cleanup.keepsWords("No, please stop and listen.", of: "No no no please stop."))   // each word counts once
+        XCTAssertFalse(Cleanup.keepsWords("The shop is open on Sunday.", of: "Is the shop open on Sunday?"))   // a question stays one
+        XCTAssertTrue(Cleanup.keepsWords("No, no, no, please stop.", of: "no no no please stop"))
     }
 }

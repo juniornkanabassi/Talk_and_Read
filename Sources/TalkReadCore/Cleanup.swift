@@ -56,12 +56,24 @@ public enum Cleanup {
         }
     }
 
-    /// Whether a model's rewrite kept the speaker's words: at least 80% of the original's words (lower case) are still in it.
-    /// Stops a dictated question being replaced by the model's answer.
+    /// Whether a model's rewrite kept the speaker's words: at least 80% of the original's words (lower case) are still in it,
+    /// in the same order (longest common subsequence), and a question stays a question. Stops a dictated question being
+    /// replaced by the model's answer.
     public static func keepsWords(_ polished: String, of original: String) -> Bool {
         func words(_ t: String) -> [String] { t.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty } }
-        let before = words(original), after = Set(words(polished))
-        return before.isEmpty || Double(before.filter(after.contains).count) >= 0.8 * Double(before.count)
+        let before = words(original), after = words(polished)
+        guard !before.isEmpty else { return true }
+        if original.contains("?"), !polished.contains("?") { return false }
+        var row = [Int](repeating: 0, count: after.count + 1)
+        for w in before {
+            var diagonal = 0
+            for (j, v) in after.enumerated() {
+                let up = row[j + 1]
+                row[j + 1] = w == v ? diagonal + 1 : Swift.max(row[j + 1], row[j])
+                diagonal = up
+            }
+        }
+        return Double(row[after.count]) >= 0.8 * Double(before.count)
     }
 
     /// The spellings the vocabulary teaches (every "type instead" value, once), for recogniser biasing.

@@ -95,6 +95,17 @@ final class TextTests: XCTestCase {
         }
     }
 
+    func testMaxChunksInOneLongSentenceAndFromItsMiddle() {
+        let s = Array(repeating: "word", count: 400).joined(separator: " ") + "."
+        let t = TextKit.tokenize(s)
+        for from in [0, 150] {
+            let all = TextKit.chunks(s, tokens: t, from: from, firstMax: 60, max: 120)
+            XCTAssertGreaterThan(all.count, 3)
+            XCTAssertEqual(TextKit.chunks(s, tokens: t, from: from, firstMax: 60, max: 120, maxChunks: 1), [all[0]])
+            XCTAssertEqual(TextKit.chunks(s, tokens: t, from: from, firstMax: 60, max: 120, maxChunks: 2), Array(all.prefix(2)))
+        }
+    }
+
     func testFirstChunkIsTheFirstSentenceAndTheLastKeepsClosingPunctuation() {
         let s = "Hello there. How are you?"
         let t = TextKit.tokenize(s)

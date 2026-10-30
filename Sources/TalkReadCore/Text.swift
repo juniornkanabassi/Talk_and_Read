@@ -175,7 +175,7 @@ public enum TextKit {
             var cs = starts[starts.count - 1]
             // chunk 0 is one sentence; a sentence end inside a link label ("[Done. Next](…)") starts no chunk
             if cs < a, starts.count == 1 || length(cs, b) > limit, !insideKept(lead(a)) { starts.append(a); cs = a; limit = max }
-            while length(cs, b) > limit, let i = cut(cs, b, limit) { starts.append(i); cs = i; limit = max }
+            while starts.count <= maxChunks, length(cs, b) > limit, let i = cut(cs, b, limit) { starts.append(i); cs = i; limit = max }
             if starts.count > maxChunks { break }
             a = b
         }
