@@ -65,10 +65,10 @@ import ApplicationServices
     /// A text element with text that answers AXBoundsForRange, within the focused (else first) window; a bounded
     /// breadth-first look, by count and by time.
     private static func exposesGeometry(_ app: AXUIElement, until deadline: ContinuousClock.Instant) -> Bool {
-        guard let window = (axElement(app, kAXFocusedWindowAttribute) ?? (axAttribute(app, kAXWindowsAttribute) as? [AXUIElement])?.first)
-            .map(short) else { return false }
+        guard let window = axElement(app, kAXFocusedWindowAttribute) ?? (axAttribute(app, kAXWindowsAttribute) as? [AXUIElement])?.first
+        else { return false }
         // A titled window always has its title as an AXStaticText child; that is not the app's text.
-        var queue = ((axAttribute(window, kAXChildrenAttribute) as? [AXUIElement]) ?? []).map(short)
+        var queue = ((axAttribute(window, kAXChildrenAttribute) as? [AXUIElement]) ?? [])
             .filter { (axAttribute($0, kAXRoleAttribute) as? String) != "AXStaticText" }
         var visited = 0
         while !queue.isEmpty, visited < 300, ContinuousClock.now < deadline {
@@ -77,14 +77,8 @@ import ApplicationServices
             if let role = axAttribute(node, kAXRoleAttribute) as? String, textRoles.contains(role),
                let value = axAttribute(node, kAXValueAttribute) as? String, !value.isEmpty,
                let rect = axBounds(node, location: 0, length: 1), rect.width > 0, rect.height > 0 { return true }
-            queue += ((axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]) ?? []).map(short)
+            queue += (axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]) ?? []
         }
         return false
-    }
-
-    /// The probe's short timeout, per element: a timeout set on the application element covers only that element.
-    private static func short(_ element: AXUIElement) -> AXUIElement {
-        AXUIElementSetMessagingTimeout(element, 0.1)
-        return element
     }
 }
