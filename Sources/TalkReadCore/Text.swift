@@ -27,7 +27,7 @@ public enum TextKit {
     private static let abbreviations: Set<String> = ["vs", "etc", "no", "approx", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec"]
     private static let dottedAbbreviations: Set<String> = ["eg", "ie", "am", "pm"]   // e.g. i.e. a.m. p.m., as their two letter tokens
     private static let clauseMarks: Set<Character> = [",", ";", ":", "—", "–"]
-    // ponytail: one pass over the text per chunks() call; a read recuts from a token, so a huge document pays it per recut.
+    // ponytail: one pass over the text per chunks() call, stopped early by `maxChunks`; the protected-span scan is cached per text.
     // The constructs Speakable reads as one name, by its own patterns: links, backticked paths and bare paths. Not
     // ordinary code spans, whose words are all spoken: a long one must still be cut to chunk size.
     private static let protectedSpans = try! NSRegularExpression(pattern: "\(Rx.link.pattern)|\(Rx.codePath.pattern)|(?:file:/+|~/)\\S+|/[^\\s/\\[\\]]+/\\S+",
@@ -118,7 +118,9 @@ public enum TextKit {
     }
 
     /// Same, but the first chunk begins at `tokens[startToken]` (resume / seek, mid-sentence allowed), with its prefix.
-    public static func chunks(_ text: String, tokens: [Token], from startToken: Int, firstMax: Int = 120, max: Int = 300) -> [Chunk] {
+    /// `maxChunks` stops the scan once that many chunks (and the start of the next, which ends the last) are known.
+    public static func chunks(_ text: String, tokens: [Token], from startToken: Int, firstMax: Int = 120, max: Int = 300,
+                              maxChunks: Int = .max) -> [Chunk] {
         guard tokens.indices.contains(startToken) else { return [] }
         let ns = text as NSString
         let count = tokens.count
@@ -174,13 +176,14 @@ public enum TextKit {
             // chunk 0 is one sentence; a sentence end inside a link label ("[Done. Next](…)") starts no chunk
             if cs < a, starts.count == 1 || length(cs, b) > limit, !insideKept(lead(a)) { starts.append(a); cs = a; limit = max }
             while length(cs, b) > limit, let i = cut(cs, b, limit) { starts.append(i); cs = i; limit = max }
+            if starts.count > maxChunks { break }
             a = b
         }
         // The last chunk keeps the text's closing punctuation (a final "?" changes the voice's intonation), not trailing whitespace.
         var textEnd = ns.length
         while textEnd > tokens[count - 1].range.upperBound,
               let scalar = Unicode.Scalar(ns.character(at: textEnd - 1)), CharacterSet.whitespacesAndNewlines.contains(scalar) { textEnd -= 1 }
-        return starts.indices.map { k in
+        return starts.indices.prefix(maxChunks).map { k in
             let s = starts[k], e = k + 1 < starts.count ? starts[k + 1] : count
             return Chunk(range: lead(s) ..< (k + 1 < starts.count ? lead(e) : textEnd), tokens: s ..< e)
         }

@@ -84,6 +84,17 @@ final class TextTests: XCTestCase {
         XCTAssertEqual(TextKit.chunks("one two", tokens: t, from: -1), [])
     }
 
+    func testMaxChunksStopsEarlyWithTheSameFirstChunk() {
+        let s = "First sentence here. Second one follows, with a clause or two to make it longer. Third is last! Fourth?"
+        let t = TextKit.tokenize(s)
+        for (first, max) in [(120, 300), (10, 30)] {
+            let all = TextKit.chunks(s, tokens: t, from: 0, firstMax: first, max: max)
+            XCTAssertGreaterThan(all.count, 1)
+            XCTAssertEqual(TextKit.chunks(s, tokens: t, from: 0, firstMax: first, max: max, maxChunks: 1), [all[0]])
+            XCTAssertEqual(TextKit.chunks(s, tokens: t, from: 0, firstMax: first, max: max, maxChunks: 2), Array(all.prefix(2)))
+        }
+    }
+
     func testFirstChunkIsTheFirstSentenceAndTheLastKeepsClosingPunctuation() {
         let s = "Hello there. How are you?"
         let t = TextKit.tokenize(s)

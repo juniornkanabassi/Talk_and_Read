@@ -83,7 +83,7 @@ import TalkReadCore
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false   // ARC owns it; close() frees the window server side
-        // ponytail: the whole panel takes clicks (only Copy and the ✕ act on them); per-region pass-through needs a
+        // ponytail: the whole panel takes clicks (Copy and the ✕ act on them, the body drags the panel); per-region pass-through needs a
         // mouse-tracking monitor, add it if clicks on the pill body are ever missed underneath.
         // Dragged off its buttons, it moves for this dictation (Junior, 25 Oct); the next one shows at the bottom again.
         let host = NSHostingView(rootView: DictationPillView(dictation: dictation) { [weak self] in self?.resize(to: $0) }

@@ -102,7 +102,7 @@ public struct Settings: Codable, Equatable, Sendable {
     public var frenchVoiceID = "ff_siwis"
     /// The English Kokoro voice a read switches to when a slower model falls behind (V3); French uses `ff_siwis`.
     public var fallbackVoiceID = "af_heart"
-    public var speed: Float = 2.5                  // `speedRange`, step 0.05; Junior's Speechify speed
+    public var speed: Float = 2.5                  // `speedRange`; saved to 0.05, a press moves `speedStep` (0.25); Junior's Speechify speed
     /// ReadAlong's "Enabled": false reads aloud with no box or tint over the app (the reader still highlights).
     public var showHighlight = true
     public var highlightHex = "#FFD21F"

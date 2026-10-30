@@ -157,4 +157,10 @@ final class CleanupTests: XCTestCase {
     func testInputPlaceholderCharactersCannotInjectText() {
         XCTAssertEqual(clean("a\u{E000}0\u{E001} b"), "A0 b")
     }
+
+    func testPolishMustKeepTheSpeakersWords() {
+        let said = "what time does the shop open on sunday"
+        XCTAssertTrue(Cleanup.keepsWords("What time does the shop open on Sunday?", of: said))
+        XCTAssertFalse(Cleanup.keepsWords("The shop opens at ten on Sundays, I think.", of: said))   // answered, not polished
+    }
 }
