@@ -79,9 +79,10 @@ public enum Cleanup {
             guard let i = rest.firstIndex(of: word) else { return false }
             rest = rest[(i + 1)...]
         }
-        // Nothing is tacked on after a closing question: "Is it open on Sunday?" must not come back as "... Sunday? Yes."
+        // Nothing is tacked on after a closing question: "Is it open on Sunday?" must not come back as "... Sunday? Yes." or
+        // "... Sunday? Yes, why?": the rewrite ends on that same question.
         func endsAsking(_ t: String) -> Bool { t.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") }
-        if endsAsking(original), !endsAsking(polished) { return false }
+        if endsAsking(original), !endsAsking(polished) || asked(polished).last != asked(original).last { return false }
         var row = [Int](repeating: 0, count: after.count + 1)
         for w in before {
             var diagonal = 0
