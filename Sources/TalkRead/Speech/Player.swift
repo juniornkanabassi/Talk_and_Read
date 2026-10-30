@@ -13,7 +13,7 @@ import TalkReadCore
     nonisolated static let sampleRate = 24_000.0
     // ponytail: how far the node's clock runs ahead of the graph's output, in media seconds: a fixed look-ahead plus
     // output-side buffering scaled by the rate. Fitted 23 Oct (macOS 27.2) to voiced bursts rendered through this
-    // exact graph at 0.5-3x; `SelfTest.clockError` re-measures it. Re-fit if the graph or the stretcher unit changes.
+    // exact graph at 0.5-3x; `SelfTest.clockError` re-measures it at every rate 0.5-4x (the whole speed range) to 20 ms. Re-fit if the graph or the stretcher unit changes.
     nonisolated static func graphLatency(rate: Float) -> Double { 0.022 + 0.017 * Double(rate) }
 
     var rate: Float = 1.0 {
