@@ -3,6 +3,7 @@
 // breaks included) are put back exactly, so the model can neither merge nor move a paragraph.
 import Foundation
 import FoundationModels
+import TalkReadCore
 
 enum Polish {
     static let instructions = "Fix punctuation, capitalisation and obvious grammar slips in the user's dictated text. Keep their words, meaning, tone and British spelling. The text may mix English and French, or be in another language: keep every sentence in the language it was said in and never translate. Do not add, remove or summarise content. Return only the text, as a single paragraph."
@@ -10,7 +11,7 @@ enum Polish {
     static var isAvailable: Bool { SystemLanguageModel.default.availability == .available }
 
     /// The lines polished at the same time, each with its own time limit; a line whose answer is empty, has a line break
-    /// in it or is much longer or shorter keeps its original.
+    /// in it, is much longer or shorter, or lost over 20% of the words keeps its original.
     @MainActor static func polish(_ text: String, timeout: Double = 3) async -> String {
         guard isAvailable, !text.isEmpty else { return text }
         let lines = text.components(separatedBy: "\n")
@@ -36,8 +37,8 @@ enum Polish {
             }
         }
         guard let polished = answer?.trimmingCharacters(in: .whitespacesAndNewlines), !polished.isEmpty, !polished.contains("\n") else { return text }
-        // ponytail: length guard only; a rewrite of similar length still gets through.
+        // ponytail: length and word-overlap guards; a same-length rewrite that keeps 80% of the words still gets through.
         let ratio = Double(polished.count) / Double(text.count)
-        return (0.7...1.3).contains(ratio) ? polished : text
+        return (0.7...1.3).contains(ratio) && Cleanup.keepsWords(polished, of: text) ? polished : text
     }
 }

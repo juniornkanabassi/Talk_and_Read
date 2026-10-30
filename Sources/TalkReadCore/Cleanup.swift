@@ -57,6 +57,14 @@ public enum Cleanup {
     }
 
     /// The spellings the vocabulary teaches (every "type instead" value, once), for recogniser biasing.
+    /// Whether a model's rewrite kept the speaker's words: at least 80% of the original's words (lower case) are still in it.
+    /// Stops a dictated question being replaced by the model's answer.
+    public static func keepsWords(_ polished: String, of original: String) -> Bool {
+        func words(_ t: String) -> [String] { t.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty } }
+        let before = words(original), after = Set(words(polished))
+        return before.isEmpty || Double(before.filter(after.contains).count) >= 0.8 * Double(before.count)
+    }
+
     public static func terms(_ vocabulary: [String: String]) -> [String] {
         Array(Set(vocabulary.values.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })).sorted()
     }
