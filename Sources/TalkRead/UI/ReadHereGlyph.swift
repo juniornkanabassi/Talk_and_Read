@@ -237,6 +237,8 @@ import TalkReadCore
         rest?.looked = true
         if let block, Self.band(block).contains(point) { return }
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid(), let hit = PointerCapture.hit(point) else { return }
+        if let apps = model?.settings.readHereHoverApps, !apps.isEmpty,
+           !apps.contains(NSRunningApplication(processIdentifier: hit.pid)?.bundleIdentifier ?? "") { return }   // hover is limited to listed apps
         if !asked.contains(hit.pid) {
             asked.insert(hit.pid)
             hoverColdUntil = now + 1.5

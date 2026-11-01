@@ -94,6 +94,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var readHereKey = RevealKey.leftOption
     /// Opt in (Junior, 25 Oct): the play glyph shows with no key, beside a web page's paragraph the pointer rests on.
     public var readHereHover = false
+    /// Bundle ids hover mode is limited to; empty = every web page. Alpha (1 Nov 2026): T3 Code first, other apps later.
+    public var readHereHoverApps: [String] = []
     /// CoreAudio UID of the microphone dictation records from; nil = the system default input (`Microphone`).
     public var dictationMicrophone: String?
     /// The English voice (and any text not detected as French). Ids carry the model: `af_heart` (Kokoro), `qwen.us_warm` (Qwen3).
@@ -155,7 +157,7 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.pasteLastShortcut, &pasteLastShortcut); get(.dictationHoldKey, &dictationHoldKey); get(.dictationMicrophone, &dictationMicrophone)
         get(.increaseSpeedShortcut, &increaseSpeedShortcut); get(.decreaseSpeedShortcut, &decreaseSpeedShortcut)
         get(.skipBackwardShortcut, &skipBackwardShortcut); get(.skipForwardShortcut, &skipForwardShortcut)
-        get(.readHereShortcut, &readHereShortcut); get(.readHereKey, &readHereKey); get(.readHereHover, &readHereHover)
+        get(.readHereShortcut, &readHereShortcut); get(.readHereKey, &readHereKey); get(.readHereHover, &readHereHover); get(.readHereHoverApps, &readHereHoverApps)
         // A file from before 1.0 may already use ⌃⇧A for something else: that binding stays, and Read from here starts off.
         if !c.contains(.readHereShortcut), refusal(readHereShortcut, for: "readHereShortcut") != nil { readHereShortcut = .off }
         get(.voiceID, &voiceID); get(.frenchVoiceID, &frenchVoiceID); get(.fallbackVoiceID, &fallbackVoiceID); get(.speed, &speed); get(.showHighlight, &showHighlight); get(.highlightHex, &highlightHex); get(.highlightStyle, &highlightStyle)
@@ -320,6 +322,8 @@ public struct Settings: Codable, Equatable, Sendable {
             }
             highlightStyle = raw
         case "readHereHover": readHereHover = try bool()
+        case "readHereHoverApps":   // "com.t3tools.t3code, com.anthropic.claudefordesktop"; "" or "all" = everywhere
+            readHereHoverApps = ["", "all"].contains(raw.lowercased()) ? [] : raw.split(whereSeparator: { $0 == "," || $0 == " " }).map(String.init)
         case "showHighlight": showHighlight = try bool()
         case "tintEnabled": tintEnabled = try bool()
         case "tintHex":
