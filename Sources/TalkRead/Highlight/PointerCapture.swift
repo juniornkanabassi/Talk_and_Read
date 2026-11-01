@@ -21,6 +21,9 @@ enum PointerCapture {
         var length = 0
         /// The visible part of the page or view holding it (web), where the glyph stays when the first line is scrolled away.
         var viewport: CGRect?
+        /// The frame of the paragraph's first text run (web), so the glyph centres on its first line of text rather
+        /// than on the block's padding (Junior, 1 Nov: "a bit high").
+        var line: CGRect?
     }
 
     private static let maxText = 200_000
@@ -105,8 +108,10 @@ enum PointerCapture {
         // The page itself, or a container most of a screen tall, is no paragraph: the pointer is in a margin or a gap.
         guard !CFEqual(current, area), !inChrome(current, below: area), let frame = axFrame(current), !frame.isEmpty,
               frame.height < max(240, areaFrame.height * 0.6) || onlyText(current), frame.insetBy(dx: -4, dy: -4).contains(point),
-              !isContainer(current, frame: frame), hasText(current, area: area) else { return nil }
-        return Block(pid: pid, element: current, frame: frame, start: nil, viewport: areaFrame)
+              !isContainer(current, frame: frame), hasText(current, area: area), inChat(current, pid: pid, area: area) else { return nil }
+        var block = Block(pid: pid, element: current, frame: frame, start: nil, viewport: areaFrame)
+        block.line = firstLine(of: current)
+        return block
     }
 
     /// The deepest descendant of `element` (itself when none) whose frame holds the point; ten levels, 200 children each.
@@ -140,6 +145,31 @@ enum PointerCapture {
             best = current
         }
         return best
+    }
+
+    /// The frame of the first drawn text run under `element` (document order, four levels, 60 children each).
+    private static func firstLine(of element: AXUIElement) -> CGRect? {
+        var stack = [(element, 0)]
+        while let (node, depth) = stack.popLast() {
+            if (axAttribute(node, kAXRoleAttribute) as? String) == "AXStaticText", let f = axFrame(node), !f.isEmpty, f.height >= 6 { return f }
+            guard depth < 4 else { continue }
+            let kids = (axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+            stack.append(contentsOf: kids.prefix(60).reversed().map { ($0, depth + 1) })
+        }
+        return nil
+    }
+
+    /// In T3 Code only the chat's timeline is read: the thread sidebar, the composer and the footer never get a glyph
+    /// (Junior, 1 Nov). Elsewhere every paragraph counts.
+    private static func inChat(_ element: AXUIElement, pid: pid_t, area: AXUIElement) -> Bool {
+        guard NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.t3tools.t3code" else { return true }
+        var current = element
+        for _ in 0..<40 {
+            if ((axAttribute(current, "AXDOMClassList") as? [String]) ?? []).contains(where: { $0.hasPrefix("messages-timeline-scroll") }) { return true }
+            guard let parent = axElement(current, kAXParentAttribute), !CFEqual(parent, area) else { return false }
+            current = parent
+        }
+        return false
     }
 
     /// In T3 Code the chat message holding `element`, so a read ends with the reply rather than running on through the

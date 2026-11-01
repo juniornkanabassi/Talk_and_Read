@@ -262,9 +262,11 @@ import TalkReadCore
 
     /// The glyph's frame in AX (top-left) coordinates: left of the paragraph, centred on its first line, kept on screen.
     static func glyphFrame(_ block: PointerCapture.Block) -> CGRect {
-        let line = min(block.frame.height, 26)
+        // Centred on the first line of text where the paragraph's first text run is known (its block may carry padding).
+        let top = block.line?.minY ?? block.frame.minY
+        let line = min(block.line?.height ?? block.frame.height, 26)
         var x = block.frame.minX - size - gap
-        var y = block.frame.minY + (line - size) / 2
+        var y = top + (line - size) / 2
         if let view = block.viewport, y < view.minY + 2 { y = min(view.minY + 2, block.frame.maxY - size) }   // first line scrolled away
         let screen = NSScreen.screens.map { Locator.convert(topLeftScreenRect: $0.frame) }.first { $0.contains(CGPoint(x: block.frame.minX, y: y)) }
         if let screen { x = max(screen.minX + 2, x) }
