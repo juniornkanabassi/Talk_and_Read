@@ -30,6 +30,7 @@ import TalkReadCore
     /// Apps this reveal woke (E8); put back when the glyph hides, unless a read on them is running.
     private var woken = Set<pid_t>()
     private var hoverTimer: Timer?
+    private var hoverTicks = 0
     /// Where the pointer last stopped, since when, and whether that place was looked at.
     private var rest: (point: CGPoint, since: Double, looked: Bool)?
     /// Apps hover mode asked to build their tree (AXManualAccessibility: harmless, and it stays set).
@@ -45,7 +46,7 @@ import TalkReadCore
 
     func attach(_ model: AppModel) {
         self.model = model
-        settingsWatch = model.$settings.map(\.readHereHover).removeDuplicates().sink { [weak self] in self?.setHover($0) }
+        settingsWatch = model.$settings.map { ($0.readHereHover, $0.readHereHoverApps) }.removeDuplicates(by: ==).sink { [weak self] in self?.setHover($0.0) }
         // Another Space shows other windows: a hover glyph would read a paragraph no longer on screen (the panel joins every Space).
         spaceWatch = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.spaceChanged() }
@@ -213,10 +214,8 @@ import TalkReadCore
         hoverTimer?.invalidate()
         hoverTimer = nil
         rest = nil
-        if !on {
-            if timer == nil { hidePanel(); block = nil }
-            return
-        }
+        if timer == nil { hidePanel(); block = nil }   // a hover glyph up under the old settings (the app list changed)
+        guard on else { return }
         let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.hoverTick() } }
         t.tolerance = 0.02
         RunLoop.main.add(t, forMode: .common)
@@ -226,7 +225,9 @@ import TalkReadCore
     private func hoverTick() {
         guard timer == nil, !looking else { return }   // the held key has the glyph
         let point = Self.pointer(), now = ProcessInfo.processInfo.systemUptime
-        if let block, !Self.band(block).contains(point) || moved(block) || hidden(block) { hidePanel(); self.block = nil; rest = nil }   // left, scrolled or covered
+        // Left, scrolled or covered: the scroll and cover checks ask the app, so every third tick (150 ms) as before.
+        hoverTicks += 1
+        if let block, !Self.band(block).contains(point) || hoverTicks % 3 == 0 && (moved(block) || hidden(block)) { hidePanel(); self.block = nil; rest = nil }
         guard NSEvent.pressedMouseButtons == 0 else { rest = nil; return }   // a drag or a click in progress
         guard NSEvent.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty else { return }   // a shortcut on its way
         guard let r = rest, hypot(r.point.x - point.x, r.point.y - point.y) < 3 else {

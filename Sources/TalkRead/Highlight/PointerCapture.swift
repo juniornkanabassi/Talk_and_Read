@@ -330,8 +330,9 @@ enum PointerCapture {
         // it and the blocks after it in its column, up to one beside it (a sidebar). Elsewhere the column's own later
         // siblings are not read: in the Claude and Codex apps they are the message box (with any draft) and its footer.
         let direct = axElement(block.element, kAXParentAttribute).map { CFEqual($0, area) } == true
-        let run = direct ? sameColumn(from: block.element, in: area) : [column(of: block.element, frame: block.frame, area: area)]
-        let end = message(of: block.element, pid: block.pid, area: area) ?? run.last ?? block.element
+        let message = message(of: block.element, pid: block.pid, area: area)
+        let run = message.map { [$0] } ?? (direct ? sameColumn(from: block.element, in: area) : [column(of: block.element, frame: block.frame, area: area)])
+        let end = run.last ?? block.element
         if let own = markerRange(of: block.element, in: area), let page = markerRange(of: end, in: area),
            let range = axParameterizedAttribute(area, "AXTextMarkerRangeForUnorderedTextMarkers",
                                                 parameter: [AXTextMarkerRangeCopyStartMarker(own), AXTextMarkerRangeCopyEndMarker(page)] as CFArray),
@@ -347,7 +348,7 @@ enum PointerCapture {
                                                      root: area, selection: nil)
             }
             var cut = TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
-            cut.text = ReadHere.withoutTrailingTimestamp(cut.text)   // the message's time under it (T3 Code "22:48")
+            if message != nil { cut.text = ReadHere.withoutTrailingTimestamp(cut.text) }   // the T3 message's time under it ("22:48")
             return cut
         }
         // No text markers: the page's text nodes from the block on, in document order.
@@ -357,8 +358,8 @@ enum PointerCapture {
             return (node.text, f.map { Double($0.minY) }, f.map { Double($0.maxY) }, f.map { Double($0.minX) }, f.map { Double($0.maxX) })
         })
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        let ns = text as NSString
-        let clipped = ns.length > maxText ? ns.substring(with: ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: maxText))) : text
+        let ns = (message != nil ? ReadHere.withoutTrailingTimestamp(text) : text) as NSString
+        let clipped = ns.length > maxText ? ns.substring(with: ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: maxText))) : ns as String
         // No markers to place hidden nodes with: in Claude's chat the text-only net still drops its headings.
         return TextCapture.withoutHiddenText(Capture(text: clipped, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer),
                                              root: area, selection: nil)

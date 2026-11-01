@@ -352,8 +352,12 @@ import TalkReadCore
     /// reading jumps there. Native text answers AXRangeForPosition; a web page is searched through the node map, only
     /// the nodes whose frame holds the point. nil off every word, or before the map exists (the first words of a read).
     func wordRange(at point: CGPoint) -> Range<Int>? {
+        PointerCapture.bounded { lookupWord(at: point) }   // a hung app answers within a quarter of a second per call
+    }
+
+    private func lookupWord(at point: CGPoint) -> Range<Int>? {
+        var p = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.height ?? 0) - point.y)   // AX top-left coordinates
         if let element = capture.element, let start = capture.selectionStart {
-            var p = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.height ?? 0) - point.y)   // AX top-left coordinates
             if let parameter = AXValueCreate(.cgPoint, &p),
                let value = axParameterizedAttribute(element, "AXRangeForPosition", parameter: parameter), CFGetTypeID(value) == AXValueGetTypeID() {
                 var range = CFRange()
@@ -363,16 +367,16 @@ import TalkReadCore
                 }
             }
         }
-        guard let map = nodeMap else { return nil }
-        var holds: [AXUIElement: Bool] = [:]   // per node, whether its frame holds the point
-        for (index, entry) in map {
-            let node = entry.node
-            if holds[node] == nil {
-                holds[node] = axFrame(node).map { Locator.convert(topLeftScreenRect: $0).insetBy(dx: -2, dy: -2).contains(point) } ?? false
+        guard let map = nodeMap, !map.isEmpty else { return nil }
+        // The text node under the point names the candidates: only its words are measured, at most 300 of them.
+        guard let hit = PointerCapture.hit(p), hit.pid == capture.pid else { return nil }
+        var budget = 300
+        for (index, entry) in map where CFEqual(entry.node, hit.element) {
+            guard budget > 0 else { return nil }
+            budget -= 1
+            if let rect = rect(fromBoundsOf: entry.node, range: entry.range, clipFrom: entry.node), rect.insetBy(dx: -1, dy: -1).contains(point) {
+                return tokens[index].range
             }
-            guard holds[node] == true, let rect = rect(fromBoundsOf: node, range: entry.range, clipFrom: node),
-                  rect.insetBy(dx: -1, dy: -1).contains(point) else { continue }
-            return tokens[index].range
         }
         return nil
     }
