@@ -71,10 +71,12 @@ public enum ReadHere {
 
     /// `text` without a last line that is only a time or date ("22:48", "3 min ago"): a chat message's timestamp.
     public static func withoutTrailingTimestamp(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let lastBreak = trimmed.lastIndex(where: \.isNewline) else { return text }
+        // The time may follow a line break or a run of button placeholders (U+FFFC: T3 Code "…left them.￼￼23:01").
+        let junk = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{FFFC}\u{FFFD}"))
+        let trimmed = text.trimmingCharacters(in: junk)
+        guard let lastBreak = trimmed.lastIndex(where: { $0.isNewline || $0 == "\u{FFFC}" || $0 == "\u{FFFD}" }) else { return text }
         let line = trimmed[trimmed.index(after: lastBreak)...]
-        return HiddenText.isTimestamp(String(line)) ? String(trimmed[..<lastBreak]) : text
+        return HiddenText.isTimestamp(String(line)) ? String(trimmed[..<lastBreak]).trimmingCharacters(in: junk) : text
     }
 
     /// The text of a page's text nodes in reading order, for an app that cannot give one range from a paragraph to the
