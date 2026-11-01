@@ -142,6 +142,22 @@ enum PointerCapture {
         return best
     }
 
+    /// In T3 Code the chat message holding `element`, so a read ends with the reply rather than running on through the
+    /// timeline's later messages, agent rows and goal panel (Junior, 1 Nov). nil elsewhere, or outside a message.
+    // shortcut: T3 Code's own class names (assistant "px-1 py-0.5 min-w-0", user bubble "rounded-2xl max-w-[80%]"), which a
+    // T3 update may rename; move to a generic "message row" rule if a second chat app needs the same.
+    private static func message(of element: AXUIElement, pid: pid_t, area: AXUIElement) -> AXUIElement? {
+        guard NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.t3tools.t3code" else { return nil }
+        var current = element
+        for _ in 0..<30 {
+            let classes = Set((axAttribute(current, "AXDOMClassList") as? [String]) ?? [])
+            if classes.isSuperset(of: ["px-1", "py-0.5", "min-w-0"]) || classes.isSuperset(of: ["rounded-2xl", "max-w-[80%]"]) { return current }
+            guard let parent = axElement(current, kAXParentAttribute), !CFEqual(parent, area) else { return nil }
+            current = parent
+        }
+        return nil
+    }
+
     /// `element` and its following siblings in the same column: a sibling beside the run (a sidebar: no horizontal
     /// overlap, and level with it rather than below it) ends the run.
     private static func sameColumn(from element: AXUIElement, in parent: AXUIElement) -> [AXUIElement] {
@@ -281,7 +297,7 @@ enum PointerCapture {
         // siblings are not read: in the Claude and Codex apps they are the message box (with any draft) and its footer.
         let direct = axElement(block.element, kAXParentAttribute).map { CFEqual($0, area) } == true
         let run = direct ? sameColumn(from: block.element, in: area) : [column(of: block.element, frame: block.frame, area: area)]
-        let end = run.last ?? block.element
+        let end = message(of: block.element, pid: block.pid, area: area) ?? run.last ?? block.element
         if let own = markerRange(of: block.element, in: area), let page = markerRange(of: end, in: area),
            let range = axParameterizedAttribute(area, "AXTextMarkerRangeForUnorderedTextMarkers",
                                                 parameter: [AXTextMarkerRangeCopyStartMarker(own), AXTextMarkerRangeCopyEndMarker(page)] as CFArray),
@@ -296,7 +312,9 @@ enum PointerCapture {
                 return TextCapture.withoutHiddenText(Capture(text: head, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer),
                                                      root: area, selection: nil)
             }
-            return TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
+            var cut = TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
+            cut.text = ReadHere.withoutTrailingTimestamp(cut.text)   // the message's time under it (T3 Code "22:48")
+            return cut
         }
         // No text markers: the page's text nodes from the block on, in document order.
         let nodes = run.enumerated().flatMap { i, root in textNodes(under: root, from: i == 0 ? block.element : nil, limit: 6000) }

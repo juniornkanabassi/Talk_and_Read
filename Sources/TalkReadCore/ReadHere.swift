@@ -69,6 +69,14 @@ public enum ReadHere {
         return start
     }
 
+    /// `text` without a last line that is only a time or date ("22:48", "3 min ago"): a chat message's timestamp.
+    public static func withoutTrailingTimestamp(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lastBreak = trimmed.lastIndex(where: \.isNewline) else { return text }
+        let line = trimmed[trimmed.index(after: lastBreak)...]
+        return HiddenText.isTimestamp(String(line)) ? String(trimmed[..<lastBreak]) : text
+    }
+
     /// The text of a page's text nodes in reading order, for an app that cannot give one range from a paragraph to the
     /// end. Nodes on the same line or the next one are joined with a space; a gap below the last node of more than 0.4 of a
     /// line (a new paragraph, heading or list item) becomes a blank line, so sentences and paragraphs read as they are

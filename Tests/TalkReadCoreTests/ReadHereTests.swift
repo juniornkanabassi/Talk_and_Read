@@ -52,6 +52,12 @@ final class ReadHereTests: XCTestCase {
         XCTAssertEqual(ReadHere.paragraphStart("😀 emoji first\nnext", at: 4), 0, "a surrogate pair is no break")
     }
 
+    func testTrailingTimestampLineIsDropped() {
+        XCTAssertEqual(ReadHere.withoutTrailingTimestamp("Done.\n\nNothing else is queued.\n22:48\n"), "Done.\n\nNothing else is queued.")
+        XCTAssertEqual(ReadHere.withoutTrailingTimestamp("Meet at 22:48"), "Meet at 22:48")
+        XCTAssertEqual(ReadHere.withoutTrailingTimestamp("22:48"), "22:48")
+    }
+
     func testJoinKeepsLinesTogetherAndParagraphsApart() {
         let joined = ReadHere.join([
             ("Talk & Read reads the paragraph ", 100, 140, nil, nil),   // two lines of 20 pt

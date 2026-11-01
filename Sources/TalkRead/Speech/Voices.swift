@@ -109,7 +109,8 @@ final class Engines {
     // ponytail: only the MLX queue is watched; the other engines are never busy outside test fakes.
     func whenIdle(_ f: @escaping () -> Void) { mlx.whenIdle(f) }
     /// Frees every engine's model memory (idle timer, model switch). An engine finishes its in-flight work first.
-    func unloadAll() { unloads += 1; neural.unload(); system.unload(); qwen.unload(); breeze.unload() }
+    /// Kokoro (about 100 MB) stays loaded: a cold first read cost about 1.2 s against 0.2 s warm (Junior, 1 Nov).
+    func unloadAll() { unloads += 1; system.unload(); qwen.unload(); breeze.unload() }
     /// How many times `unloadAll` ran: a read's warm fallback is cold again once this moves (Sol inspection 4 #2).
     private(set) var unloads = 0
 }

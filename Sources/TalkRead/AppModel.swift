@@ -758,7 +758,7 @@ extension EngineKind {
                     engines.unloadAll()
                     modelsWarm = false
                     unloadTask = nil
-                    Log.write("speech models unloaded after \(delay) idle")
+                    Log.write("speech models unloaded after \(delay) idle (Kokoro kept warm)")
                     return
                 }
             }
