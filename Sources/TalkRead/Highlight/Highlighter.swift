@@ -157,14 +157,16 @@ import TalkReadCore
         }
     }
 
-    /// The window under the pointer, looking through our own click-through panel, is the source window.
+    /// A clean click on a word of the text being read (Cocoa screen point): the read jumps there, unless it is the
+    /// word being spoken (a restart would only stutter).
     private func clicked(at point: CGPoint) {
         guard session.state == .playing, let locator, pointerOverSource(),
               let range = locator.wordRange(at: point),
-              let token = session.tokens.firstIndex(where: { $0.range == range }) else { return }
+              let token = session.tokens.firstIndex(where: { $0.range == range }), token != session.currentToken else { return }
         session.seek(token: token)
     }
 
+    /// The window under the pointer, looking through our own click-through panel, is the source window.
     private func pointerOverSource() -> Bool {
         guard let source = overlay.source else { return false }
         let point = NSEvent.mouseLocation

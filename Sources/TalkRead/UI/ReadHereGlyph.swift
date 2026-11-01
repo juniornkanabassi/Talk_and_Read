@@ -31,6 +31,8 @@ import TalkReadCore
     private var woken = Set<pid_t>()
     private var hoverTimer: Timer?
     private var hoverTicks = 0
+    /// The element under the pointer that the last hover lookup found no paragraph in.
+    private var lastMiss: AXUIElement?
     /// Where the pointer last stopped, since when, and whether that place was looked at.
     private var rest: (point: CGPoint, since: Double, looked: Bool)?
     /// Apps hover mode asked to build their tree (AXManualAccessibility: harmless, and it stays set).
@@ -247,11 +249,16 @@ import TalkReadCore
                 AXUIElementSetAttributeValue(AXUIElementCreateApplication(hit.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
             }
         }
+        // A slow drift stops every few ticks: the element already found empty is not asked again until the pointer
+        // reaches another one (or the tree was cold).
+        if let miss = lastMiss, CFEqual(miss, hit.element), now >= hoverColdUntil { return }
         // Web pages only: in native text views the glyph would follow every click and caret.
         guard let found = PointerCapture.block(from: hit.element, pid: hit.pid, point: point), found.start == nil else {
             if now < hoverColdUntil { rest?.looked = false }   // a cold tree: a fresh hit test on the next tick
+            lastMiss = hit.element
             return
         }
+        lastMiss = nil
         show(found)
     }
 

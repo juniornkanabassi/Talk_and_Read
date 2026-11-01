@@ -363,7 +363,10 @@ import TalkReadCore
                 var range = CFRange()
                 if AXValueGetValue(value as! AXValue, .cfRange, &range), range.location != kCFNotFound {
                     let offset = range.location - start
-                    if let token = tokens.first(where: { $0.range.contains(offset) }) { return token.range }
+                    // The nearest character is answered even for a point in the padding or the toolbar: the word must hold the point.
+                    if let token = tokens.first(where: { $0.range.contains(offset) }),
+                       let rect = rect(fromBoundsOf: element, range: CFRange(location: start + token.range.lowerBound, length: token.range.count), clipFrom: element),
+                       rect.insetBy(dx: -1, dy: -1).contains(point) { return token.range }
                 }
             }
         }

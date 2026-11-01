@@ -55,6 +55,7 @@ final class ReadHereTests: XCTestCase {
     func testTrailingTimestampLineIsDropped() {
         XCTAssertEqual(ReadHere.withoutTrailingTimestamp("Done.\n\nNothing else is queued.\n22:48\n"), "Done.\n\nNothing else is queued.")
         XCTAssertEqual(ReadHere.withoutTrailingTimestamp("I left them.\u{FFFC}\u{FFFC}23:01"), "I left them.")
+        XCTAssertEqual(ReadHere.withoutTrailingTimestamp("  Lead space kept.\r\nToday\r\n"), "  Lead space kept.")
         XCTAssertEqual(ReadHere.withoutTrailingTimestamp("Meet at 22:48"), "Meet at 22:48")
         XCTAssertEqual(ReadHere.withoutTrailingTimestamp("22:48"), "22:48")
     }

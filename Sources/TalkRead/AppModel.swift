@@ -755,7 +755,7 @@ extension EngineKind {
                     // Busy without telling us, or the recogniser refused (still loading or draining, Sol #24): wait
                     // another period rather than give up.
                     guard !busy, !engines.isBusy, dictation.unloadModel() else { continue }
-                    engines.unloadAll()
+                    engines.unloadAll(keepKokoro: true)
                     modelsWarm = false
                     unloadTask = nil
                     Log.write("speech models unloaded after \(delay) idle (Kokoro kept warm)")

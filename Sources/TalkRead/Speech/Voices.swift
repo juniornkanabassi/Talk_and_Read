@@ -46,6 +46,8 @@ protocol SpeechEngine: AnyObject {
     /// Can speak faster itself, which stays clearer than stretching its 1x audio past `Settings.stretchLimit`.
     var speaksFaster: Bool { get }
     func unload()
+    /// Frees only the French extras (Kokoro); nothing for the other engines.
+    func unloadFrench()
     /// Preparing, synthesising or unloading right now (V-A, additive): the idle unload waits for it.
     var isBusy: Bool { get }
     /// The fastest playback rate a read keeps up at; above it a read starts on its fallback (lead, 0.4.0). nil: no limit.
@@ -53,6 +55,7 @@ protocol SpeechEngine: AnyObject {
 }
 
 extension SpeechEngine {
+    func unloadFrench() {}
     var isBusy: Bool { false }
     var speaksFaster: Bool { false }
     func synthesize(_ text: String, voice: String, speed: Float) async throws -> SynthChunk { try await synthesize(text, voice: voice) }
@@ -109,8 +112,12 @@ final class Engines {
     // ponytail: only the MLX queue is watched; the other engines are never busy outside test fakes.
     func whenIdle(_ f: @escaping () -> Void) { mlx.whenIdle(f) }
     /// Frees every engine's model memory (idle timer, model switch). An engine finishes its in-flight work first.
-    /// Kokoro (about 100 MB) stays loaded: a cold first read cost about 1.2 s against 0.2 s warm (Junior, 1 Nov).
-    func unloadAll() { unloads += 1; system.unload(); qwen.unload(); breeze.unload() }
+    /// `keepKokoro` (the idle timer): English Kokoro stays loaded, since a cold first read cost about 1.2 s against
+    /// 0.2 s warm (Junior, 1 Nov); its French chain still goes. A model switch and the tests unload everything.
+    func unloadAll(keepKokoro: Bool = false) {
+        if keepKokoro { neural.unloadFrench() } else { unloads += 1; neural.unload() }
+        system.unload(); qwen.unload(); breeze.unload()
+    }
     /// How many times `unloadAll` ran: a read's warm fallback is cold again once this moves (Sol inspection 4 #2).
     private(set) var unloads = 0
 }

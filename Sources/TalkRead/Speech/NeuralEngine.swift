@@ -114,6 +114,8 @@ final class NeuralEngine: SpeechEngine {
         Task { await frenchLoader.drop() }
     }
 
+    func unloadFrench() { Task { await frenchLoader.drop() } }
+
     /// Phoneme groups per word ("en word" / "fr word"), from `synthesize`'s recount; cleared by `unload()`.
     private let countCache = OSAllocatedUnfairLock<[String: Int]>(initialState: [:])
 

@@ -147,10 +147,11 @@ enum PointerCapture {
         return best
     }
 
-    /// The frame of the first drawn text run under `element` (document order, four levels, 60 children each).
+    /// The frame of the first drawn text run under `element` (document order, four levels, 60 children each, 200 nodes).
     private static func firstLine(of element: AXUIElement) -> CGRect? {
-        var stack = [(element, 0)]
-        while let (node, depth) = stack.popLast() {
+        var stack = [(element, 0)], visited = 0
+        while let (node, depth) = stack.popLast(), visited < 200 {
+            visited += 1
             if (axAttribute(node, kAXRoleAttribute) as? String) == "AXStaticText", let f = axFrame(node), !f.isEmpty, f.height >= 6 { return f }
             guard depth < 4 else { continue }
             let kids = (axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]) ?? []
@@ -172,18 +173,16 @@ enum PointerCapture {
         return false
     }
 
-    /// In T3 Code the chat message holding `element`, so a read ends with the reply rather than running on through the
-    /// timeline's later messages, agent rows and goal panel (Junior, 1 Nov). nil elsewhere, or outside a message.
-    // shortcut: T3 Code's own class names (assistant "px-1 py-0.5 min-w-0", user bubble "rounded-2xl max-w-[80%]"), which a
-    // T3 update may rename; move to a generic "message row" rule if a second chat app needs the same.
+    /// In T3 Code the timeline item holding `element` (a reply, a user message, an agent card, a tool row: the items
+    /// of `messages-timeline-scroll` > list > item), so a read ends with that item rather than running on through later
+    /// messages, the composer and the footer (model, machine, project buttons) (Junior, 1 Nov). nil elsewhere.
+    // shortcut: T3 Code's own class name, which a T3 update may rename; a generic "message row" rule if a second chat
+    // app needs the same.
     private static func message(of element: AXUIElement, pid: pid_t, area: AXUIElement) -> AXUIElement? {
         guard NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.t3tools.t3code" else { return nil }
-        var current = element, below: [AXUIElement] = []   // the chain from the element up, so a timeline item can be named
+        var current = element, below: [AXUIElement] = []   // the chain from the element up, so the item can be named
         for _ in 0..<30 {
-            let classes = Set((axAttribute(current, "AXDOMClassList") as? [String]) ?? [])
-            if classes.isSuperset(of: ["px-1", "py-0.5", "min-w-0"]) || classes.isSuperset(of: ["rounded-2xl", "max-w-[80%]"]) { return current }
-            // Not inside a message (an agent card, a tool row): its item of the timeline (scroll > list > item), so the
-            // read never runs into the composer and the footer (model, machine, project buttons) below the timeline.
+            let classes = (axAttribute(current, "AXDOMClassList") as? [String]) ?? []
             if classes.contains(where: { $0.hasPrefix("messages-timeline-scroll") }) { return below.count >= 2 ? below[below.count - 2] : nil }
             guard let parent = axElement(current, kAXParentAttribute), !CFEqual(parent, area) else { return nil }
             below.append(current)
