@@ -148,11 +148,15 @@ enum PointerCapture {
     // T3 update may rename; move to a generic "message row" rule if a second chat app needs the same.
     private static func message(of element: AXUIElement, pid: pid_t, area: AXUIElement) -> AXUIElement? {
         guard NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.t3tools.t3code" else { return nil }
-        var current = element
+        var current = element, below: [AXUIElement] = []   // the chain from the element up, so a timeline item can be named
         for _ in 0..<30 {
             let classes = Set((axAttribute(current, "AXDOMClassList") as? [String]) ?? [])
             if classes.isSuperset(of: ["px-1", "py-0.5", "min-w-0"]) || classes.isSuperset(of: ["rounded-2xl", "max-w-[80%]"]) { return current }
+            // Not inside a message (an agent card, a tool row): its item of the timeline (scroll > list > item), so the
+            // read never runs into the composer and the footer (model, machine, project buttons) below the timeline.
+            if classes.contains(where: { $0.hasPrefix("messages-timeline-scroll") }) { return below.count >= 2 ? below[below.count - 2] : nil }
             guard let parent = axElement(current, kAXParentAttribute), !CFEqual(parent, area) else { return nil }
+            below.append(current)
             current = parent
         }
         return nil
