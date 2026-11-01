@@ -36,7 +36,7 @@ import TalkReadCore
     private var asked = Set<pid_t>()
     private var settingsWatch: AnyCancellable?
     private var spaceWatch: NSObjectProtocol?
-    static let restDelay = 0.3
+    static let restDelay = 0.12   // was 0.3; Junior (1 Nov) wanted the glyph sooner
 
     final class Panel: NSPanel {
         override var canBecomeKey: Bool { false }
@@ -217,8 +217,8 @@ import TalkReadCore
             if timer == nil { hidePanel(); block = nil }
             return
         }
-        let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.hoverTick() } }
-        t.tolerance = 0.05
+        let t = Timer(timeInterval: 0.08, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.hoverTick() } }
+        t.tolerance = 0.02
         RunLoop.main.add(t, forMode: .common)
         hoverTimer = t
     }

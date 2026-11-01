@@ -21,6 +21,7 @@ import TalkReadCore
     private var ticks = 0
     private var stateObserver: AnyCancellable?
     private var scrollMonitor: Any?
+    private var clickMonitor: Any?
     private var activationObserver: NSObjectProtocol?
     private var sentenceCache: (sentence: Int, rects: [CGRect], anchor: Range<Int>, anchorRect: CGRect?)?
     private lazy var sentenceTokens: [Int: Range<Int>] = {
@@ -57,6 +58,12 @@ import TalkReadCore
             let (phase, momentum) = (event.phase, event.momentumPhase)
             MainActor.assumeIsolated { self?.scrolled(phase: phase, momentum: momentum) }
         }
+        // A plain click on a word of the text being read jumps the read there, forwards or back (Speechify's way; Junior,
+        // 1 Nov). The app still gets its click. Only while playing: a paused read leaves clicks alone (copying, selecting).
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard event.clickCount == 1, event.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty else { return }
+            MainActor.assumeIsolated { self?.clicked() }
+        }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] _ in MainActor.assumeIsolated { self?.invalidate(); self?.overlay.follow() } }   // its windows rise over the box
@@ -73,6 +80,8 @@ import TalkReadCore
         stateObserver = nil
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
         scrollMonitor = nil
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        clickMonitor = nil
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
         activationObserver = nil
         if let spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver) }
@@ -135,6 +144,13 @@ import TalkReadCore
     }
 
     /// The window under the pointer, looking through our own click-through panel, is the source window.
+    private func clicked() {
+        guard session.state == .playing, let locator, pointerOverSource(),
+              let range = locator.wordRange(at: NSEvent.mouseLocation),
+              let token = session.tokens.firstIndex(where: { $0.range == range }) else { return }
+        session.seek(token: token)
+    }
+
     private func pointerOverSource() -> Bool {
         guard let source = overlay.source else { return false }
         let point = NSEvent.mouseLocation

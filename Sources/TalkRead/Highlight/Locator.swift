@@ -348,6 +348,35 @@ import TalkReadCore
         return CGRect(x: rect.origin.x, y: primaryScreenHeight - (rect.origin.y + rect.height), width: rect.width, height: rect.height)
     }
 
+    /// The word drawn under `point` (Cocoa screen coordinates), as its UTF-16 range in `capture.text`: a click on it while
+    /// reading jumps there. Native text answers AXRangeForPosition; a web page is searched through the node map, only
+    /// the nodes whose frame holds the point. nil off every word, or before the map exists (the first words of a read).
+    func wordRange(at point: CGPoint) -> Range<Int>? {
+        if let element = capture.element, let start = capture.selectionStart {
+            var p = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.height ?? 0) - point.y)   // AX top-left coordinates
+            if let parameter = AXValueCreate(.cgPoint, &p),
+               let value = axParameterizedAttribute(element, "AXRangeForPosition", parameter: parameter), CFGetTypeID(value) == AXValueGetTypeID() {
+                var range = CFRange()
+                if AXValueGetValue(value as! AXValue, .cfRange, &range), range.location != kCFNotFound {
+                    let offset = range.location - start
+                    if let token = tokens.first(where: { $0.range.contains(offset) }) { return token.range }
+                }
+            }
+        }
+        guard let map = nodeMap else { return nil }
+        var holds: [AXUIElement: Bool] = [:]   // per node, whether its frame holds the point
+        for (index, entry) in map {
+            let node = entry.node
+            if holds[node] == nil {
+                holds[node] = axFrame(node).map { Locator.convert(topLeftScreenRect: $0).insetBy(dx: -2, dy: -2).contains(point) } ?? false
+            }
+            guard holds[node] == true, let rect = rect(fromBoundsOf: node, range: entry.range, clipFrom: node),
+                  rect.insetBy(dx: -1, dy: -1).contains(point) else { continue }
+            return tokens[index].range
+        }
+        return nil
+    }
+
     private func tokenIndex(for range: Range<Int>) -> Int? {
         var low = tokens.startIndex, high = tokens.endIndex
         while low < high {
