@@ -69,6 +69,18 @@ public enum ReadHere {
         return start
     }
 
+    /// `text` without a last line that is only a time or date ("22:48", "3 min ago"): a chat message's timestamp.
+    public static func withoutTrailingTimestamp(_ text: String) -> String {
+        // The time may follow a line break or a run of button placeholders (U+FFFC: T3 Code "…left them.￼￼23:01").
+        func junk(_ c: Character) -> Bool { c.isWhitespace || c == "\u{FFFC}" || c == "\u{FFFD}" }
+        let end = text.lastIndex(where: { !junk($0) }).map(text.index(after:)) ?? text.startIndex
+        let kept = text[..<end]   // the head is left exactly as captured
+        guard let lastBreak = kept.lastIndex(where: { $0.isNewline || $0 == "\u{FFFC}" || $0 == "\u{FFFD}" }) else { return text }
+        guard HiddenText.isTimestamp(String(kept[kept.index(after: lastBreak)...])) else { return text }
+        let cut = kept[..<lastBreak]
+        return String(cut[..<(cut.lastIndex(where: { !junk($0) }).map(cut.index(after:)) ?? cut.startIndex)])
+    }
+
     /// The text of a page's text nodes in reading order, for an app that cannot give one range from a paragraph to the
     /// end. Nodes on the same line or the next one are joined with a space; a gap below the last node of more than 0.4 of a
     /// line (a new paragraph, heading or list item) becomes a blank line, so sentences and paragraphs read as they are

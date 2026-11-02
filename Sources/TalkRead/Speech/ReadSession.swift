@@ -340,6 +340,7 @@ import TalkReadCore
                     Log.write("read: chunk \(k) failed: \(error.localizedDescription)")
                     return fail(error.localizedDescription)
                 }
+                if k == 0 { Log.write("read: first chunk \(spoken.utf16.count) characters synthesised in \(Int(Date().timeIntervalSince(started) * 1000)) ms") }
                 if effectiveVoice != voice, !spoken.isEmpty {
                     fallbackSecondsPerChar = 0.5 * fallbackSecondsPerChar + 0.5 * Date().timeIntervalSince(started) / Double(spoken.utf16.count)
                 }

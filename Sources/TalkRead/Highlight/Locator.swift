@@ -62,7 +62,11 @@ import TalkReadCore
         case .stale, .noEntry: break
         }
         if let rect = rectViaPDF(index) { return succeed(.pdf, rect) }
-        if (nodeMap ?? [:]).isEmpty, (pdfLocator ?? nil)?.isEmpty ?? true, let ocr = ocr() {   // no AX geometry at all
+        // No AX geometry at all, or none usable: a page that names its words but draws them on a canvas (Google Docs)
+        // fills the node map with nodes whose bounds never place a word, so after three words without a box OCR is
+        // tried as it is for an app with no text nodes (Junior, 2 Nov: Docs read but never highlighted).
+        let noGeometry = (nodeMap ?? [:]).isEmpty && ((pdfLocator ?? nil)?.isEmpty ?? true)
+        if noGeometry || consecutiveFailures >= 2 && failedRange != range, let ocr = ocr() {
             if let rect = ocr.rect(forTokenIndex: index) { return succeed(.ocr, rect) }
             if ocr.isPending { return nil }   // first recognition still running: not a failure
         }
@@ -346,6 +350,42 @@ import TalkReadCore
     nonisolated static func convert(topLeftScreenRect rect: CGRect) -> CGRect {
         let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? 0 // empty for a moment while displays reconfigure
         return CGRect(x: rect.origin.x, y: primaryScreenHeight - (rect.origin.y + rect.height), width: rect.width, height: rect.height)
+    }
+
+    /// The word drawn under `point` (Cocoa screen coordinates), as its UTF-16 range in `capture.text`: a click on it while
+    /// reading jumps there. Native text answers AXRangeForPosition; a web page is searched through the node map, only
+    /// the nodes whose frame holds the point. nil off every word, or before the map exists (the first words of a read).
+    func wordRange(at point: CGPoint) -> Range<Int>? {
+        PointerCapture.bounded { lookupWord(at: point) }   // a hung app answers within a quarter of a second per call
+    }
+
+    private func lookupWord(at point: CGPoint) -> Range<Int>? {
+        var p = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.height ?? 0) - point.y)   // AX top-left coordinates
+        if let element = capture.element, let start = capture.selectionStart {
+            if let parameter = AXValueCreate(.cgPoint, &p),
+               let value = axParameterizedAttribute(element, "AXRangeForPosition", parameter: parameter), CFGetTypeID(value) == AXValueGetTypeID() {
+                var range = CFRange()
+                if AXValueGetValue(value as! AXValue, .cfRange, &range), range.location != kCFNotFound {
+                    let offset = range.location - start
+                    // The nearest character is answered even for a point in the padding or the toolbar: the word must hold the point.
+                    if let token = tokens.first(where: { $0.range.contains(offset) }),
+                       let rect = rect(fromBoundsOf: element, range: CFRange(location: start + token.range.lowerBound, length: token.range.count), clipFrom: element),
+                       rect.insetBy(dx: -1, dy: -1).contains(point) { return token.range }
+                }
+            }
+        }
+        guard let map = nodeMap, !map.isEmpty else { return nil }
+        // The text node under the point names the candidates: only its words are measured, at most 300 of them.
+        guard let hit = PointerCapture.hit(p), hit.pid == capture.pid else { return nil }
+        var budget = 300
+        for (index, entry) in map where CFEqual(entry.node, hit.element) {
+            guard budget > 0 else { return nil }
+            budget -= 1
+            if let rect = rect(fromBoundsOf: entry.node, range: entry.range, clipFrom: entry.node), rect.insetBy(dx: -1, dy: -1).contains(point) {
+                return tokens[index].range
+            }
+        }
+        return nil
     }
 
     private func tokenIndex(for range: Range<Int>) -> Int? {

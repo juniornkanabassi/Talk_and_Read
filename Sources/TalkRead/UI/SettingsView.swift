@@ -88,10 +88,10 @@ struct SettingsContent: View {
             }
             Section("Mini player") {
                 Toggle("Show the mini player when reading", isOn: $model.settings.showMiniPlayer)
-                Picker("Hide it after reading ends", selection: Binding(get: { Int(model.settings.miniPlayerAutoHideSeconds) },
-                                                                        set: { model.settings.miniPlayerAutoHideSeconds = Double($0) })) {
-                    Text("Never").tag(0)
-                    ForEach([3, 5, 10, 30], id: \.self) { Text("\($0) seconds").tag($0) }
+                Picker("Hide it after reading stops or pauses", selection: $model.settings.miniPlayerAutoHideSeconds) {
+                    Text("Never").tag(0.0)
+                    Text("Half a second").tag(0.5)
+                    ForEach([3.0, 5, 10, 30], id: \.self) { Text("\(Int($0)) seconds").tag($0) }
                 }
                 Toggle("Show three lines of subtitles", isOn: $model.settings.subtitlesExpanded)
             }

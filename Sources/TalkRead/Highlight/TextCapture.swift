@@ -7,7 +7,7 @@ import TalkReadCore
 
 struct Capture {
     enum Source { case accessibility, copied, cursor, clipboard, ocr, provided, pointer }
-    let text: String
+    var text: String
     let pid: pid_t
     /// The element the selection lives in (copied: the focused element), when known.
     let element: AXUIElement?

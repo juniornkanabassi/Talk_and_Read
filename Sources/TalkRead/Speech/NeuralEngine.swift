@@ -99,7 +99,7 @@ final class NeuralEngine: SpeechEngine {
                 if let n = countCache.withLock({ $0[key] }) { return n }
                 let ipa = (try? await manager.phonemes(for: w)) ?? ""
                 let n = ipa.split(separator: " ").filter { $0.contains(where: \.isLetter) }.count
-                countCache.withLock { $0[key] = n }
+                countCache.withLock { if $0.count >= 20_000 { $0 = [:] }; $0[key] = n }   // bounded: Kokoro now stays loaded
                 return n
             }
         }
@@ -113,6 +113,8 @@ final class NeuralEngine: SpeechEngine {
         Task { await loader.drop() }
         Task { await frenchLoader.drop() }
     }
+
+    func unloadFrench() { Task { await frenchLoader.drop() } }
 
     /// Phoneme groups per word ("en word" / "fr word"), from `synthesize`'s recount; cleared by `unload()`.
     private let countCache = OSAllocatedUnfairLock<[String: Int]>(initialState: [:])

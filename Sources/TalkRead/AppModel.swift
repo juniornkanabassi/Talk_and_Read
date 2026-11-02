@@ -434,6 +434,7 @@ extension EngineKind {
     /// as `id`; nil when there is no text there or another read took over.
     @discardableResult func captureHereAndRead(id: UUID, point: CGPoint, block: PointerCapture.Block?) async -> ReadSession? {
         var found = block
+        let began = Date()
         if let block {
             // Stopping the last read put its app back (E8); the glyph found this paragraph while it was awake, so wake it again.
             await AXWake.wake(AXUIElementCreateApplication(block.pid), pid: block.pid)
@@ -454,7 +455,7 @@ extension EngineKind {
             return nil
         }
         Log.write("read here: \(capture.text.utf16.count) characters" + (capture.selectionStart != nil ? " from native text" : " from a web area")
-                  + (capture.hiddenRemoved > 0 ? ", hidden text cut \(capture.hiddenRemoved)" : ""))
+                  + (capture.hiddenRemoved > 0 ? ", hidden text cut \(capture.hiddenRemoved)" : "") + ", captured in \(Int(Date().timeIntervalSince(began) * 1000)) ms")
         let s = startSession(capture.text, capture: capture, id: id)
         let app = NSRunningApplication(processIdentifier: capture.pid)
         appendRead(capture.text, app: app?.localizedName, bundleID: app?.bundleIdentifier)
@@ -754,10 +755,10 @@ extension EngineKind {
                     // Busy without telling us, or the recogniser refused (still loading or draining, Sol #24): wait
                     // another period rather than give up.
                     guard !busy, !engines.isBusy, dictation.unloadModel() else { continue }
-                    engines.unloadAll()
+                    engines.unloadAll(keepKokoro: true)
                     modelsWarm = false
                     unloadTask = nil
-                    Log.write("speech models unloaded after \(delay) idle")
+                    Log.write("speech models unloaded after \(delay) idle (Kokoro kept warm)")
                     return
                 }
             }

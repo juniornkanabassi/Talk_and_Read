@@ -205,6 +205,8 @@ private struct Maker {
     static func isPictograph(_ s: Unicode.Scalar) -> Bool {
         let v = s.value
         if v == 0xFE0F || v == 0x200D || v == 0x20E3 || (0xE0020...0xE007F).contains(v) || (0x1F3FB...0x1F3FF).contains(v) { return true }
+        // An icon font's glyph (private use) or a placeholder for an image or button: nothing to say (T3 Code, 1 Nov).
+        if v == 0xFFFC || v == 0xFFFD || (0xE000...0xF8FF).contains(v) || v >= 0xF0000 { return true }
         return v >= 0x2190 && (s.properties.isEmojiPresentation || s.properties.isEmoji)
     }
 

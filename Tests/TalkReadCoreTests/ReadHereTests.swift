@@ -52,6 +52,14 @@ final class ReadHereTests: XCTestCase {
         XCTAssertEqual(ReadHere.paragraphStart("😀 emoji first\nnext", at: 4), 0, "a surrogate pair is no break")
     }
 
+    func testTrailingTimestampLineIsDropped() {
+        XCTAssertEqual(ReadHere.withoutTrailingTimestamp("Done.\n\nNothing else is queued.\n22:48\n"), "Done.\n\nNothing else is queued.")
+        XCTAssertEqual(ReadHere.withoutTrailingTimestamp("I left them.\u{FFFC}\u{FFFC}23:01"), "I left them.")
+        XCTAssertEqual(ReadHere.withoutTrailingTimestamp("  Lead space kept.\r\nToday\r\n"), "  Lead space kept.")
+        XCTAssertEqual(ReadHere.withoutTrailingTimestamp("Meet at 22:48"), "Meet at 22:48")
+        XCTAssertEqual(ReadHere.withoutTrailingTimestamp("22:48"), "22:48")
+    }
+
     func testJoinKeepsLinesTogetherAndParagraphsApart() {
         let joined = ReadHere.join([
             ("Talk & Read reads the paragraph ", 100, 140, nil, nil),   // two lines of 20 pt
@@ -75,6 +83,11 @@ final class ReadHereTests: XCTestCase {
         XCTAssertFalse(s.readHereHover, "hover mode is opt in")
         try s.set("readHereHover", to: "on")
         XCTAssertTrue(s.readHereHover)
+        XCTAssertEqual(s.readHereHoverApps, [], "hover is everywhere until apps are listed")
+        try s.set("readHereHoverApps", to: "com.t3tools.t3code, com.anthropic.claudefordesktop")
+        XCTAssertEqual(s.readHereHoverApps, ["com.t3tools.t3code", "com.anthropic.claudefordesktop"])
+        try s.set("readHereHoverApps", to: "all")
+        XCTAssertEqual(s.readHereHoverApps, [])
         try s.set("readHereKey", to: "off")
         XCTAssertEqual(s.readHereKey, .off)
         XCTAssertThrowsError(try s.set("readHereKey", to: "rightOption"))

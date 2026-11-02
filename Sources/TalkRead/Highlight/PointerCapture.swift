@@ -21,6 +21,9 @@ enum PointerCapture {
         var length = 0
         /// The visible part of the page or view holding it (web), where the glyph stays when the first line is scrolled away.
         var viewport: CGRect?
+        /// The frame of the paragraph's first text run (web), so the glyph centres on its first line of text rather
+        /// than on the block's padding (Junior, 1 Nov: "a bit high").
+        var line: CGRect?
     }
 
     private static let maxText = 200_000
@@ -105,8 +108,10 @@ enum PointerCapture {
         // The page itself, or a container most of a screen tall, is no paragraph: the pointer is in a margin or a gap.
         guard !CFEqual(current, area), !inChrome(current, below: area), let frame = axFrame(current), !frame.isEmpty,
               frame.height < max(240, areaFrame.height * 0.6) || onlyText(current), frame.insetBy(dx: -4, dy: -4).contains(point),
-              !isContainer(current, frame: frame), hasText(current, area: area) else { return nil }
-        return Block(pid: pid, element: current, frame: frame, start: nil, viewport: areaFrame)
+              !isContainer(current, frame: frame), hasText(current, area: area), inChat(current, pid: pid, area: area) else { return nil }
+        var block = Block(pid: pid, element: current, frame: frame, start: nil, viewport: areaFrame)
+        block.line = firstLine(of: current)
+        return block
     }
 
     /// The deepest descendant of `element` (itself when none) whose frame holds the point; ten levels, 200 children each.
@@ -140,6 +145,50 @@ enum PointerCapture {
             best = current
         }
         return best
+    }
+
+    /// The frame of the first drawn text run under `element` (document order, four levels, 60 children each, 200 nodes).
+    private static func firstLine(of element: AXUIElement) -> CGRect? {
+        var stack = [(element, 0)], visited = 0
+        while let (node, depth) = stack.popLast(), visited < 200 {
+            visited += 1
+            if (axAttribute(node, kAXRoleAttribute) as? String) == "AXStaticText", let f = axFrame(node), !f.isEmpty, f.height >= 6 { return f }
+            guard depth < 4 else { continue }
+            let kids = (axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+            stack.append(contentsOf: kids.prefix(60).reversed().map { ($0, depth + 1) })
+        }
+        return nil
+    }
+
+    /// In T3 Code only the chat's timeline is read: the thread sidebar, the composer and the footer never get a glyph
+    /// (Junior, 1 Nov). Elsewhere every paragraph counts.
+    private static func inChat(_ element: AXUIElement, pid: pid_t, area: AXUIElement) -> Bool {
+        guard NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.t3tools.t3code" else { return true }
+        var current = element
+        for _ in 0..<40 {
+            if ((axAttribute(current, "AXDOMClassList") as? [String]) ?? []).contains(where: { $0.hasPrefix("messages-timeline-scroll") }) { return true }
+            guard let parent = axElement(current, kAXParentAttribute), !CFEqual(parent, area) else { return false }
+            current = parent
+        }
+        return false
+    }
+
+    /// In T3 Code the timeline item holding `element` (a reply, a user message, an agent card, a tool row: the items
+    /// of `messages-timeline-scroll` > list > item), so a read ends with that item rather than running on through later
+    /// messages, the composer and the footer (model, machine, project buttons) (Junior, 1 Nov). nil elsewhere.
+    // shortcut: T3 Code's own class name, which a T3 update may rename; a generic "message row" rule if a second chat
+    // app needs the same.
+    private static func message(of element: AXUIElement, pid: pid_t, area: AXUIElement) -> AXUIElement? {
+        guard NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.t3tools.t3code" else { return nil }
+        var current = element, below: [AXUIElement] = []   // the chain from the element up, so the item can be named
+        for _ in 0..<30 {
+            let classes = (axAttribute(current, "AXDOMClassList") as? [String]) ?? []
+            if classes.contains(where: { $0.hasPrefix("messages-timeline-scroll") }) { return below.count >= 2 ? below[below.count - 2] : nil }
+            guard let parent = axElement(current, kAXParentAttribute), !CFEqual(parent, area) else { return nil }
+            below.append(current)
+            current = parent
+        }
+        return nil
     }
 
     /// `element` and its following siblings in the same column: a sibling beside the run (a sidebar: no horizontal
@@ -280,7 +329,8 @@ enum PointerCapture {
         // it and the blocks after it in its column, up to one beside it (a sidebar). Elsewhere the column's own later
         // siblings are not read: in the Claude and Codex apps they are the message box (with any draft) and its footer.
         let direct = axElement(block.element, kAXParentAttribute).map { CFEqual($0, area) } == true
-        let run = direct ? sameColumn(from: block.element, in: area) : [column(of: block.element, frame: block.frame, area: area)]
+        let message = message(of: block.element, pid: block.pid, area: area)
+        let run = message.map { [$0] } ?? (direct ? sameColumn(from: block.element, in: area) : [column(of: block.element, frame: block.frame, area: area)])
         let end = run.last ?? block.element
         if let own = markerRange(of: block.element, in: area), let page = markerRange(of: end, in: area),
            let range = axParameterizedAttribute(area, "AXTextMarkerRangeForUnorderedTextMarkers",
@@ -296,7 +346,9 @@ enum PointerCapture {
                 return TextCapture.withoutHiddenText(Capture(text: head, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer),
                                                      root: area, selection: nil)
             }
-            return TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
+            var cut = TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
+            if message != nil { cut.text = ReadHere.withoutTrailingTimestamp(cut.text) }   // the T3 message's time under it ("22:48")
+            return cut
         }
         // No text markers: the page's text nodes from the block on, in document order.
         let nodes = run.enumerated().flatMap { i, root in textNodes(under: root, from: i == 0 ? block.element : nil, limit: 6000) }
@@ -305,8 +357,8 @@ enum PointerCapture {
             return (node.text, f.map { Double($0.minY) }, f.map { Double($0.maxY) }, f.map { Double($0.minX) }, f.map { Double($0.maxX) })
         })
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        let ns = text as NSString
-        let clipped = ns.length > maxText ? ns.substring(with: ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: maxText))) : text
+        let ns = (message != nil ? ReadHere.withoutTrailingTimestamp(text) : text) as NSString
+        let clipped = ns.length > maxText ? ns.substring(with: ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: maxText))) : ns as String
         // No markers to place hidden nodes with: in Claude's chat the text-only net still drops its headings.
         return TextCapture.withoutHiddenText(Capture(text: clipped, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer),
                                              root: area, selection: nil)

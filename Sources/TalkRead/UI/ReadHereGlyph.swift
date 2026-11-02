@@ -30,13 +30,16 @@ import TalkReadCore
     /// Apps this reveal woke (E8); put back when the glyph hides, unless a read on them is running.
     private var woken = Set<pid_t>()
     private var hoverTimer: Timer?
+    private var hoverTicks = 0
+    /// The element under the pointer that the last hover lookup found no paragraph in.
+    private var lastMiss: AXUIElement?
     /// Where the pointer last stopped, since when, and whether that place was looked at.
     private var rest: (point: CGPoint, since: Double, looked: Bool)?
     /// Apps hover mode asked to build their tree (AXManualAccessibility: harmless, and it stays set).
     private var asked = Set<pid_t>()
     private var settingsWatch: AnyCancellable?
     private var spaceWatch: NSObjectProtocol?
-    static let restDelay = 0.3
+    static let restDelay = 0.05   // was 0.3; Junior (1 Nov) wants the glyph at once
 
     final class Panel: NSPanel {
         override var canBecomeKey: Bool { false }
@@ -45,7 +48,7 @@ import TalkReadCore
 
     func attach(_ model: AppModel) {
         self.model = model
-        settingsWatch = model.$settings.map(\.readHereHover).removeDuplicates().sink { [weak self] in self?.setHover($0) }
+        settingsWatch = model.$settings.map { ($0.readHereHover, $0.readHereHoverApps) }.removeDuplicates(by: ==).sink { [weak self] in self?.setHover($0.0) }
         // Another Space shows other windows: a hover glyph would read a paragraph no longer on screen (the panel joins every Space).
         spaceWatch = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.spaceChanged() }
@@ -213,12 +216,10 @@ import TalkReadCore
         hoverTimer?.invalidate()
         hoverTimer = nil
         rest = nil
-        if !on {
-            if timer == nil { hidePanel(); block = nil }
-            return
-        }
-        let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.hoverTick() } }
-        t.tolerance = 0.05
+        if timer == nil { hidePanel(); block = nil }   // a hover glyph up under the old settings (the app list changed)
+        guard on else { return }
+        let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.hoverTick() } }
+        t.tolerance = 0.02
         RunLoop.main.add(t, forMode: .common)
         hoverTimer = t
     }
@@ -226,7 +227,9 @@ import TalkReadCore
     private func hoverTick() {
         guard timer == nil, !looking else { return }   // the held key has the glyph
         let point = Self.pointer(), now = ProcessInfo.processInfo.systemUptime
-        if let block, !Self.band(block).contains(point) || moved(block) || hidden(block) { hidePanel(); self.block = nil; rest = nil }   // left, scrolled or covered
+        // Left, scrolled or covered: the scroll and cover checks ask the app, so every third tick (150 ms) as before.
+        hoverTicks += 1
+        if let block, !Self.band(block).contains(point) || hoverTicks % 3 == 0 && (moved(block) || hidden(block)) { hidePanel(); self.block = nil; rest = nil }
         guard NSEvent.pressedMouseButtons == 0 else { rest = nil; return }   // a drag or a click in progress
         guard NSEvent.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty else { return }   // a shortcut on its way
         guard let r = rest, hypot(r.point.x - point.x, r.point.y - point.y) < 3 else {
@@ -237,6 +240,8 @@ import TalkReadCore
         rest?.looked = true
         if let block, Self.band(block).contains(point) { return }
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid(), let hit = PointerCapture.hit(point) else { return }
+        if let apps = model?.settings.readHereHoverApps, !apps.isEmpty,
+           !apps.contains(NSRunningApplication(processIdentifier: hit.pid)?.bundleIdentifier ?? "") { return }   // hover is limited to listed apps
         if !asked.contains(hit.pid) {
             asked.insert(hit.pid)
             hoverColdUntil = now + 1.5
@@ -244,11 +249,16 @@ import TalkReadCore
                 AXUIElementSetAttributeValue(AXUIElementCreateApplication(hit.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
             }
         }
+        // A slow drift stops every few ticks: the element already found empty is not asked again until the pointer
+        // reaches another one (or the tree was cold).
+        if let miss = lastMiss, CFEqual(miss, hit.element), now >= hoverColdUntil { return }
         // Web pages only: in native text views the glyph would follow every click and caret.
         guard let found = PointerCapture.block(from: hit.element, pid: hit.pid, point: point), found.start == nil else {
             if now < hoverColdUntil { rest?.looked = false }   // a cold tree: a fresh hit test on the next tick
+            lastMiss = hit.element
             return
         }
+        lastMiss = nil
         show(found)
     }
 
@@ -260,9 +270,11 @@ import TalkReadCore
 
     /// The glyph's frame in AX (top-left) coordinates: left of the paragraph, centred on its first line, kept on screen.
     static func glyphFrame(_ block: PointerCapture.Block) -> CGRect {
-        let line = min(block.frame.height, 26)
+        // Centred on the first line of text where the paragraph's first text run is known (its block may carry padding).
+        let top = block.line?.minY ?? block.frame.minY
+        let line = min(block.line?.height ?? block.frame.height, 26)
         var x = block.frame.minX - size - gap
-        var y = block.frame.minY + (line - size) / 2
+        var y = top + (line - size) / 2
         if let view = block.viewport, y < view.minY + 2 { y = min(view.minY + 2, block.frame.maxY - size) }   // first line scrolled away
         let screen = NSScreen.screens.map { Locator.convert(topLeftScreenRect: $0.frame) }.first { $0.contains(CGPoint(x: block.frame.minX, y: y)) }
         if let screen { x = max(screen.minX + 2, x) }
@@ -299,7 +311,7 @@ import TalkReadCore
         p.contentView = view
         p.alphaValue = 0
         p.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { $0.duration = 0.12; p.animator().alphaValue = 1 }
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.05; p.animator().alphaValue = 1 }
         panel = p
     }
 

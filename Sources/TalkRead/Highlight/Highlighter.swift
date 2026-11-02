@@ -21,6 +21,9 @@ import TalkReadCore
     private var ticks = 0
     private var stateObserver: AnyCancellable?
     private var scrollMonitor: Any?
+    private var clickMonitor: Any?
+    /// Where a plain single click went down, until it is released or dragged.
+    private var clickDown: CGPoint?
     private var activationObserver: NSObjectProtocol?
     private var sentenceCache: (sentence: Int, rects: [CGRect], anchor: Range<Int>, anchorRect: CGRect?)?
     private lazy var sentenceTokens: [Int: Range<Int>] = {
@@ -57,6 +60,24 @@ import TalkReadCore
             let (phase, momentum) = (event.phase, event.momentumPhase)
             MainActor.assumeIsolated { self?.scrolled(phase: phase, momentum: momentum) }
         }
+        // A plain click on a word of the text being read jumps the read there, forwards or back (Speechify's way; Junior,
+        // 1 Nov). The app still gets its click. Only while playing: a paused read leaves clicks alone (copying, selecting).
+        // The seek happens on the mouse-up of a single plain click that did not drag (a drag is a selection).
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            let location = NSEvent.mouseLocation, type = event.type, count = event.clickCount
+            let plain = event.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                switch type {
+                case .leftMouseDown: self.clickDown = plain && count == 1 ? location : nil
+                case .leftMouseDragged: self.clickDown = nil
+                case .leftMouseUp:
+                    if let down = self.clickDown, count == 1, hypot(down.x - location.x, down.y - location.y) < 3 { self.clicked(at: down) }
+                    self.clickDown = nil
+                default: break
+                }
+            }
+        }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] _ in MainActor.assumeIsolated { self?.invalidate(); self?.overlay.follow() } }   // its windows rise over the box
@@ -66,6 +87,7 @@ import TalkReadCore
     }
 
     func stop() {
+        if let locator { Log.write("highlight ended: path=\(locator.pathUsed.rawValue), node map \(locator.nodeMapSummary), OCR \(locator.ocrSummary)") }
         timer?.invalidate()
         timer = nil
         pausedTimer?.invalidate()
@@ -73,6 +95,8 @@ import TalkReadCore
         stateObserver = nil
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
         scrollMonitor = nil
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        clickMonitor = nil
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
         activationObserver = nil
         if let spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver) }
@@ -132,6 +156,15 @@ import TalkReadCore
                 self.tick()
             }
         }
+    }
+
+    /// A clean click on a word of the text being read (Cocoa screen point): the read jumps there, unless it is the
+    /// word being spoken (a restart would only stutter).
+    private func clicked(at point: CGPoint) {
+        guard session.state == .playing, let locator, pointerOverSource(),
+              let range = locator.wordRange(at: point),
+              let token = session.tokens.firstIndex(where: { $0.range == range }), token != session.currentToken else { return }
+        session.seek(token: token)
     }
 
     /// The window under the pointer, looking through our own click-through panel, is the source window.

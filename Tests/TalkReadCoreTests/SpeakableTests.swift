@@ -288,6 +288,10 @@ final class SpeakableTests: XCTestCase {
         XCTAssertEqual(origin(sp, "percent", s, occurrence: 1), "%")
     }
 
+    func testIconGlyphsAndPlaceholdersAreRemoved() {
+        XCTAssertEqual(make("Done\u{FFFC}\u{FFFC} \u{E0B0}22:30 Scroll\u{FFFD}").text, "Done 22:30 Scroll")
+    }
+
     func testEmojiAndPictographsAreRemoved() {
         let s = "Hello 😀 world 👍🏽 ❤️ 🇬🇧 done ✨"
         let sp = make(s)
