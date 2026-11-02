@@ -87,6 +87,7 @@ import TalkReadCore
     }
 
     func stop() {
+        if let locator { Log.write("highlight ended: path=\(locator.pathUsed.rawValue), node map \(locator.nodeMapSummary), OCR \(locator.ocrSummary)") }
         timer?.invalidate()
         timer = nil
         pausedTimer?.invalidate()

@@ -62,7 +62,11 @@ import TalkReadCore
         case .stale, .noEntry: break
         }
         if let rect = rectViaPDF(index) { return succeed(.pdf, rect) }
-        if (nodeMap ?? [:]).isEmpty, (pdfLocator ?? nil)?.isEmpty ?? true, let ocr = ocr() {   // no AX geometry at all
+        // No AX geometry at all, or none usable: a page that names its words but draws them on a canvas (Google Docs)
+        // fills the node map with nodes whose bounds never place a word, so after three words without a box OCR is
+        // tried as it is for an app with no text nodes (Junior, 2 Nov: Docs read but never highlighted).
+        let noGeometry = (nodeMap ?? [:]).isEmpty && ((pdfLocator ?? nil)?.isEmpty ?? true)
+        if noGeometry || consecutiveFailures >= 2 && failedRange != range, let ocr = ocr() {
             if let rect = ocr.rect(forTokenIndex: index) { return succeed(.ocr, rect) }
             if ocr.isPending { return nil }   // first recognition still running: not a failure
         }
