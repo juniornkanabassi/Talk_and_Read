@@ -18,7 +18,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(s.speed, 2.5)
         XCTAssertEqual(s.highlightHex, "#FFD21F")
         XCTAssertEqual(s.opacity, 0.85)
-        XCTAssertEqual(s.miniPlayerAutoHideSeconds, 3)
+        XCTAssertEqual(s.miniPlayerAutoHideSeconds, 0.5)
         XCTAssertNil(s.miniPlayerOrigin)
         XCTAssertEqual(s.unloadAfterMinutes, 10)
         XCTAssertEqual(s.historyLimit, 200)

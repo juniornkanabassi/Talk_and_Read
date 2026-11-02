@@ -115,7 +115,7 @@ public struct Settings: Codable, Equatable, Sendable {
     public var tintHex: String?
     public var opacity = 0.85
     public var showMiniPlayer = true
-    public var miniPlayerAutoHideSeconds = 3.0     // 0 = never
+    public var miniPlayerAutoHideSeconds = 0.5     // 0 = never
     public var miniPlayerOrigin: CGPoint?
     public var subtitlesExpanded = false
     public var useOCRFallback = true
@@ -218,7 +218,7 @@ public struct Settings: Codable, Equatable, Sendable {
         var s = self
         s.speed = min(Self.speedRange.upperBound, max(Self.speedRange.lowerBound, ((speed.isFinite ? speed : 2.5) * 20).rounded() / 20)) // 0.05 steps
         s.opacity = opacity.isFinite ? min(1.0, max(0.1, opacity)) : 0.85
-        s.miniPlayerAutoHideSeconds = miniPlayerAutoHideSeconds.isFinite ? min(60, max(0, miniPlayerAutoHideSeconds)) : 3
+        s.miniPlayerAutoHideSeconds = miniPlayerAutoHideSeconds.isFinite ? min(60, max(0, miniPlayerAutoHideSeconds)) : 0.5
         s.unloadAfterMinutes = min(240, max(1, unloadAfterMinutes))
         s.historyLimit = min(5000, max(10, historyLimit))
         let d = Settings()

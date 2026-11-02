@@ -1,5 +1,5 @@
 // Floating mini player: a non-activating glass panel with transport controls and a karaoke line (or three-line
-// subtitles). Shows when a read starts, hides a few seconds after it ends, remembers where it was dragged. Owned by WP6.
+// subtitles). Shows when a read starts, hides half a second after it ends or pauses, remembers where it was dragged. Owned by WP6.
 // A dictation while it is on screen docks into it: one card, dictation on top, the read underneath (Junior, 25 Oct).
 import AppKit
 import Combine
@@ -148,7 +148,10 @@ import TalkReadCore
         message = nil
         stateWatch = session?.$state.removeDuplicates().sink { [weak self] state in
             switch state {
-            case .finished, .failed: self?.hideLater()
+            case .finished, .failed, .paused: self?.hideLater()   // a pause hides too; resuming brings it back (Junior, 2 Nov)
+            case .playing:
+                self?.hideTask?.cancel()
+                if self?.isShowing == false, self?.model?.settings.showMiniPlayer == true { self?.show() }
             default: self?.hideTask?.cancel()
             }
         }
@@ -162,8 +165,9 @@ import TalkReadCore
     /// over the card holds it too, as over the pill.
     private func hideLater() {
         hideTask?.cancel()
-        let seconds = Double(model?.settings.miniPlayerAutoHideSeconds ?? 3)
+        var seconds = model?.settings.miniPlayerAutoHideSeconds ?? 0.5
         guard seconds > 0 else { return }
+        if message != nil { seconds = max(seconds, 3) }   // a status line ("Select some text first") needs time to be read
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
             while !Task.isCancelled, self?.docked != nil || self?.containsPointer == true || SpeedControl.SpeedButton.panelShown {
