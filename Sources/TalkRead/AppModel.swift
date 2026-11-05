@@ -803,6 +803,8 @@ extension EngineKind {
         libraryStore.remove(item, undoManager: undoManager)
     }
 
+    func removePersisted(_ item: LibraryItem) async throws { try await libraryStore.removePersisted(item) }
+
     private func store(_ text: String, for item: LibraryItem) throws { try libraryStore.store(text, for: item) }
     private func add(_ item: LibraryItem) -> LibraryItem { libraryStore.add(item) }
     private func setPosition(_ id: UUID, _ token: Int) { libraryStore.setPosition(id, token) }

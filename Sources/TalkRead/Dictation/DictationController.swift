@@ -339,8 +339,12 @@ enum DictationError: LocalizedError, Equatable {
         // Re-checked inside the pasteboard transaction right before the paste: a cancelled utterance is never typed.
         let result = insertOnStop ? await insert(text, nil, true, { [weak self] in self?.generation == gen }) : .inserted(confirmed: false)
         guard gen == generation else { return nil }
+        if result != .refusedSecure {
+            remember(text, app: app, bundleID: bundleID)   // never keep what was said into a password field
+            await flushHistoryInBackground()
+            guard gen == generation else { return nil }
+        }
         owner = nil
-        if result != .refusedSecure { remember(text, app: app, bundleID: bundleID) }   // never keep what was said into a password field
         if case .inserted(let confirmed) = result { show(done: text, confirmed: confirmed) } else { show(failure: result, text: text) }
         if result.landed, insertOnStop, learnCorrections {
             watcher = Task { [weak self] in
@@ -516,7 +520,7 @@ enum DictationError: LocalizedError, Equatable {
         saveHistory()
     }
 
-    private func saveHistory() { historyWriter.save(history, to: Paths.history) }
+    private func saveHistory() { historyWriter.save(history, to: Paths.history, immediately: true) }
 
     // MARK: Pill and sounds
 

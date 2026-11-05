@@ -333,11 +333,10 @@ extension AppModel {
             let item = try libraryItem(a["id"])
             try confirmed(a, "“\(item.title)” from the Library, with its saved copy and text")
             if liveSession != nil, sessionInfo.item == item.id { try checkOwner(r.caller, force: r.force) }   // never under another caller's read
-            WindowRouter.shared.libraryPath.removeAll { $0.id == item.id }   // the reader would show a missing file
-            remove(item)
-            guard await flushLibraryChanges() else {
-                throw AppError(code: "failed", message: "Could not finish removing the document. Its saved files have been kept for recovery.")
+            do { try await removePersisted(item) } catch {
+                throw AppError(code: "failed", message: "Could not remove the document: \(error.localizedDescription)")
             }
+            WindowRouter.shared.libraryPath.removeAll { $0.id == item.id }
             return ["removed": .string(item.id.uuidString), "title": .string(item.title)]
 
         case "settings-get":

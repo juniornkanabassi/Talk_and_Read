@@ -14,13 +14,14 @@ public final class PersistenceQueue: @unchecked Sendable {
         self.report = report
     }
 
-    public func save<T: Encodable & Sendable>(_ value: T, to url: URL) {
+    public func save<T: Encodable & Sendable>(_ value: T, to url: URL, immediately: Bool = false) {
         queue.async { [self] in
             pending[url] = {
                 try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try JSONEncoder().encode(value).write(to: url, options: .atomic)
             }
             scheduled?.cancel()
+            if immediately { writePending(); return }
             let work = DispatchWorkItem { [self] in writePending() }
             scheduled = work
             queue.asyncAfter(deadline: .now() + delay, execute: work)
@@ -36,6 +37,16 @@ public final class PersistenceQueue: @unchecked Sendable {
         }
     }
 
+    /// An operation with its own result must not poison unrelated later saves.
+    public func performAndWait(_ work: @escaping @Sendable () throws -> Void) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                do { try work(); continuation.resume() }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
     /// Used at shutdown and in tests, after all producers have stopped. Dispatch synchronously
     /// can borrow the caller's thread, so enqueue the work and wait only for its result.
     @discardableResult public func flush() -> Bool {
@@ -45,6 +56,7 @@ public final class PersistenceQueue: @unchecked Sendable {
             scheduled?.cancel()
             writePending()
             result.succeeded = pending.isEmpty && !fileOperationFailed
+            fileOperationFailed = false
             completed.signal()
         }
         completed.wait()
@@ -78,12 +90,29 @@ public struct DocumentHoldingArea: Sendable {
     public init(documents: URL, holding: URL) { self.documents = documents; self.holding = holding }
 
     public func hold(_ names: [String]) throws {
+        let unique = Set(names)
+        // Validate every destination before moving anything, then roll back a partial move.
+        for name in unique { try validate(name) }
         try FileManager.default.createDirectory(at: holding, withIntermediateDirectories: true)
-        for name in Set(names) {
-            try validate(name)
-            let source = documents.appendingPathComponent(name)
-            let target = holding.appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: source.path) { try FileManager.default.moveItem(at: source, to: target) }
+        for name in unique where FileManager.default.fileExists(atPath: documents.appendingPathComponent(name).path) {
+            guard !FileManager.default.fileExists(atPath: holding.appendingPathComponent(name).path) else {
+                throw CocoaError(.fileWriteFileExists)
+            }
+        }
+        var moved: [String] = []
+        do {
+            for name in unique {
+                let source = documents.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: source.path) {
+                    try FileManager.default.moveItem(at: source, to: holding.appendingPathComponent(name))
+                    moved.append(name)
+                }
+            }
+        } catch {
+            for name in moved {
+                try? FileManager.default.moveItem(at: holding.appendingPathComponent(name), to: documents.appendingPathComponent(name))
+            }
+            throw error
         }
     }
 

@@ -88,11 +88,31 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: docs.appendingPathComponent("id.txt"), encoding: .utf8), "new")
     }
 
-    func testFileOperationFailureBlocksDestructiveShutdownCleanup() {
+    func testFileOperationFailureIsReportedOnceWithoutPoisoningLaterSaves() throws {
         let writer = PersistenceQueue(delay: 60, report: { _ in })
         writer.perform { throw CocoaError(.fileWriteNoPermission) }
         XCTAssertFalse(writer.flush())
-        XCTAssertFalse(writer.flush())
+        let file = try fixture().appendingPathComponent("later.json")
+        writer.save(["later"], to: file)
+        XCTAssertTrue(writer.flush())
+        XCTAssertEqual(try JSONDecoder().decode([String].self, from: Data(contentsOf: file)), ["later"])
+    }
+
+    func testImmediateSaveDoesNotWaitForDebounce() throws {
+        let file = try fixture().appendingPathComponent("history.json")
+        let writer = PersistenceQueue(delay: 60)
+        writer.save(["finished"], to: file, immediately: true)
+        let saved = try writer.read { try Data(contentsOf: file) }
+        XCTAssertEqual(try JSONDecoder().decode([String].self, from: saved), ["finished"])
+    }
+
+    func testAwaitedOperationFailureDoesNotPoisonFlush() async throws {
+        let writer = PersistenceQueue(delay: 60, report: { _ in })
+        do {
+            try await writer.performAndWait { throw CocoaError(.fileWriteNoPermission) }
+            XCTFail("expected a file operation error")
+        } catch {}
+        XCTAssertTrue(writer.flush())
     }
 
     func testHoldingFailurePreservesOriginalAndExistingHeldCopy() throws {
@@ -105,6 +125,22 @@ final class PersistenceTests: XCTestCase {
         XCTAssertThrowsError(try files.hold(["id.txt"]))
         XCTAssertEqual(try String(contentsOf: docs.appendingPathComponent("id.txt"), encoding: .utf8), "original")
         XCTAssertEqual(try String(contentsOf: held.appendingPathComponent("id.txt"), encoding: .utf8), "held")
+    }
+
+    func testHoldingPreflightsEveryFileBeforeMovingAny() throws {
+        let root = try fixture(), docs = root.appendingPathComponent("Documents"), held = root.appendingPathComponent("Removed")
+        try FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: held, withIntermediateDirectories: true)
+        for name in ["original.pdf", "extracted.txt"] {
+            try Data(name.utf8).write(to: docs.appendingPathComponent(name))
+        }
+        try Data("conflict".utf8).write(to: held.appendingPathComponent("extracted.txt"))
+        let files = DocumentHoldingArea(documents: docs, holding: held)
+        XCTAssertThrowsError(try files.hold(["original.pdf", "extracted.txt"]))
+        for name in ["original.pdf", "extracted.txt"] {
+            XCTAssertEqual(try Data(contentsOf: docs.appendingPathComponent(name)), Data(name.utf8))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: held.appendingPathComponent("original.pdf").path))
     }
 
     private final class Marker: @unchecked Sendable {

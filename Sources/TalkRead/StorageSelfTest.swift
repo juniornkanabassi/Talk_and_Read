@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import TalkReadCore
 
@@ -70,6 +71,27 @@ import TalkReadCore
             store.discardRemovedFiles()
             check(try store.text(original) == "Original extracted text", "cleanup leaves restored documents intact")
 
+            let retry = LibraryItem(id: UUID(), title: "Retry removal", kind: "text", fileName: "retry.txt", added: Date(), position: 12)
+            try store.store("Retry text", for: retry)
+            try Data("source".utf8).write(to: Paths.documents.appendingPathComponent(retry.fileName))
+            _ = store.add(retry)
+            let heldRetry = Paths.dataRoot.appendingPathComponent("Removed documents/\(retry.fileName)")
+            try FileManager.default.createDirectory(at: heldRetry.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("conflict".utf8).write(to: heldRetry)
+            do {
+                try await store.removePersisted(retry)
+                check(false, "failed hold rejects removal")
+            } catch {
+                check(store.items.contains(where: { $0.id == retry.id }), "failed hold retains the library item")
+                let savedItems: [LibraryItem]? = AppModel.loadJSON(Paths.library)
+                check(savedItems?.contains(where: { $0.id == retry.id }) == true, "failed hold retains the persisted item")
+                check(try store.text(retry) == "Retry text", "failed hold keeps extracted text available")
+            }
+            try FileManager.default.removeItem(at: heldRetry)
+            try await store.removePersisted(retry)
+            check(!store.items.contains(where: { $0.id == retry.id }), "removal succeeds after a failed hold is corrected")
+            check(store.flush(), "failed removal does not poison later persistence")
+
             // Hold the writer so finish must suspend with its metadata snapshot taken.
             // Real Undo and late import callbacks then run during that suspension.
             let readUndo = UndoManager(), redoUndo = UndoManager()
@@ -103,6 +125,45 @@ import TalkReadCore
             check(finishedItems?.map(\.id) == [neighbour.id], "shutdown persists frozen library without a dangling restored record")
             check(!FileManager.default.fileExists(atPath: LibraryStore.textURL(original).path),
                   "shutdown discards removed text only after metadata is frozen")
+
+            let racingStore = LibraryStore()
+            let racingItem = LibraryItem(id: UUID(), title: "Rollback during quit", kind: "text", fileName: "rollback.txt", added: Date(), position: 7)
+            try racingStore.store("Keep this text after rollback", for: racingItem)
+            try Data("Keep these original bytes".utf8).write(to: Paths.documents.appendingPathComponent(racingItem.fileName))
+            _ = racingStore.add(racingItem)
+            check(racingStore.flush(), "rollback fixture is persisted")
+            let removalGate = DispatchSemaphore(value: 0)
+            // Queue a failure immediately before the removal save, after its file hold succeeded.
+            let observation = racingStore.objectWillChange.prefix(1).sink {
+                racingStore.writer.perform {
+                    removalGate.wait()
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+            }
+            let removing = Task { () -> Bool in
+                do { try await racingStore.removePersisted(racingItem); return false }
+                catch { return true }
+            }
+            while racingStore.items.contains(where: { $0.id == racingItem.id }) { await Task.yield() }
+            let quitting = Task { await racingStore.finish() }
+            while !racingStore.isFinishing { await Task.yield() }
+            // Give the shutdown worker a turn while the removal writer is blocked, then let the writer finish
+            // before either main-actor continuation. Cleanup must still wait for the pending rollback.
+            try? await Task.sleep(for: .milliseconds(30))
+            removalGate.signal()
+            _ = DispatchSemaphore(value: 0).wait(timeout: .now() + 0.1)
+            let rejected = await removing.value
+            await quitting.value
+            withExtendedLifetime(observation) {}
+            check(rejected && racingStore.items.contains(where: { $0.id == racingItem.id }),
+                  "shutdown waits for a failed removal to restore its record")
+            check(try racingStore.text(racingItem) == "Keep this text after rollback",
+                  "shutdown preserves extracted text restored by an in-flight rollback")
+            check(try Data(contentsOf: Paths.documents.appendingPathComponent(racingItem.fileName)) == Data("Keep these original bytes".utf8),
+                  "shutdown preserves original bytes restored by an in-flight rollback")
+            let rollbackItems: [LibraryItem]? = AppModel.loadJSON(Paths.library)
+            check(rollbackItems?.contains(where: { $0.id == racingItem.id }) == true,
+                  "shutdown persists the final rolled-back library")
         } catch {
             failed += 1
             print("FAIL storage self-test threw \(error)")
