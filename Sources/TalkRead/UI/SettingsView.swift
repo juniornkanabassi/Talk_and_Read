@@ -1,5 +1,5 @@
 // Settings: General, Shortcuts, Highlight, Dictation, Pronunciations, Permissions, Models, About. Used by the Settings
-// window (⌘,) and the main window's Settings pane. Owned by WP6.
+// window (⌘,) only. Owned by WP6.
 import AppKit
 import SwiftUI
 import TalkReadCore
@@ -7,9 +7,10 @@ import TalkReadCore
 /// Root for the Settings window. Its permission ticks stay current through AppDelegate's 2 s poll while it is open.
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject private var router = WindowRouter.shared
 
     var body: some View {
-        SettingsContent(model: model, data: model.viewData)
+        SettingsContent(model: model, data: model.viewData, tab: router.settingsTab, requestedTab: router.settingsTab)
             .frame(minWidth: 720, minHeight: 500)
     }
 }
@@ -36,33 +37,29 @@ struct SettingsContent: View {
     @ObservedObject var model: AppModel
     let data: ViewData
     @State var tab: Tab = .general
+    var requestedTab: Tab? = nil
+    @Environment(\.offscreenRender) private var offscreen
 
-    /// A category column rather than a TabView: eight toolbar tabs overflow on macOS 26 and fight the main window's toolbar.
+    /// Nine categories use the standard selectable sidebar, including arrow-key navigation.
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(Tab.allCases, id: \.self) { t in
-                    Button { tab = t } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: t.symbol).frame(width: 22).foregroundStyle(.secondary)
-                            Text(t.title)
-                        }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(tab == t ? Theme.accent.opacity(0.24) : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(tab == t ? [.isSelected] : [])
+            List(selection: Binding<Tab?>(get: { tab }, set: { if let value = $0 { tab = value } })) {
+                ForEach(Tab.allCases, id: \.self) { category in
+                    Label(category.title, systemImage: category.symbol).tag(category)
                 }
-                Spacer()
             }
-            .padding(10)
-            .frame(width: 190)
+            .listStyle(.sidebar)
+            .frame(width: 200)
             Divider()
             page.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .tint(Theme.accent)
+        .navigationTitle(tab.title)
+        .onChange(of: tab) { _, value in
+            if !offscreen { WindowRouter.shared.settingsTab = value }
+        }
+        .onChange(of: requestedTab) { _, value in
+            if !offscreen, let value, tab != value { tab = value }
+        }
     }
 
     @ViewBuilder private var page: some View {
@@ -110,18 +107,7 @@ struct SettingsContent: View {
     // MARK: Voices
 
     private var voices: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Voices").font(.title2.weight(.bold))
-                    Text("Choose a model, then one of its voices. French text gets its own voice.").foregroundStyle(.secondary)
-                }
-                VoicePickers(model: model, data: data)
-            }
-            .frame(maxWidth: 620)
-            .padding(24)
-            .frame(maxWidth: .infinity)
-        }
+        VoicesPane(model: model, data: data)
     }
 
     // MARK: Highlight
@@ -156,7 +142,7 @@ struct SettingsContent: View {
                 Picker("Style", selection: $model.settings.highlightStyle) {
                     Text("Box").tag("box"); Text("Outline").tag("outline"); Text("Underline").tag("underline")
                 }
-                .pickerStyle(.segmented).frame(width: 300)
+                .pickerStyle(.radioGroup)
                 Toggle("Tint the sentence being read", isOn: $model.settings.tintEnabled)
                 if model.settings.tintEnabled {
                     Toggle("Tint in the word colour", isOn: tintFollowsWord)
@@ -316,7 +302,7 @@ struct SettingsContent: View {
     // MARK: About
 
     private var about: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: Space.md) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 96, height: 96).accessibilityHidden(true)
             Text("Talk & Read").font(.title2.weight(.semibold))
             Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")")
@@ -365,8 +351,8 @@ struct ShortcutsPage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Space.md) {
+                VStack(alignment: .leading, spacing: Space.xs) {
                     Text("Shortcuts").font(.title2.weight(.bold))
                     Text("Keys that work in every app. Click a shortcut to change it.").foregroundStyle(.secondary)
                 }
@@ -391,7 +377,7 @@ struct ShortcutsPage: View {
                     Divider()
                     row("Cancel dictation", "Stops recording; nothing is typed") { KeyCaps(display: "esc") }
                 }
-                section("Text to Speech") {
+                section("Text to speech") {
                     row("Play button", "Hold the key on its own, then click ▶ beside a paragraph") {
                         Picker("Show the play button", selection: $model.settings.readHereKey) {
                             Text("Hold left Option").tag(TalkReadCore.Settings.RevealKey.leftOption)
@@ -413,47 +399,47 @@ struct ShortcutsPage: View {
                     Button("Reset") { model.settings.resetShortcuts() }
                 }
                 .card(padding: 0)
-                .padding(.top, 14)
+                .padding(.top, Space.lg)
             }
             .frame(maxWidth: 620)
-            .padding(24)
+            .padding(Space.xxl)
             .frame(maxWidth: .infinity)
         }
         .onAppear { speechifyOpen = speechifyRunning() }
     }
 
     private var speechifyNotice: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.accent).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .top, spacing: Space.md) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: Space.xs) {
                 Text("Speechify is open").font(.body.weight(.semibold))
                 Text("It answers the same keys as the defaults here, so one press can reach both apps. Quit Speechify, or give Talk & Read different keys below.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
-        .card(padding: 14)
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.accent.opacity(0.6)))
+        .card(padding: Space.lg)
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.warning.opacity(0.6)))
         .accessibilityElement(children: .combine)
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.headline).padding(.leading, 4).padding(.top, 12)
+        VStack(alignment: .leading, spacing: Space.sm) {
+            Text(title).font(.headline).padding(.leading, Space.xs).padding(.top, Space.md)
             VStack(spacing: 0) { content() }.card(padding: 0)
         }
     }
 
     private func row<Trailing: View>(_ title: String, _ detail: String, @ViewBuilder trailing: () -> Trailing) -> some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: Space.md) {
+            VStack(alignment: .leading, spacing: Space.xs) {
                 Text(title).font(.body.weight(.semibold))
-                Text(detail).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                Text(detail).font(.callout).foregroundStyle(.secondary).lineLimit(1).help(detail)
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Space.md)
             trailing()
         }
-        .padding(.horizontal, 16).padding(.vertical, 11)
+        .padding(.horizontal, Space.lg).padding(.vertical, Space.md)
         .accessibilityElement(children: .contain)
     }
 
@@ -477,15 +463,15 @@ private struct HighlightPreview: View {
     var body: some View {
         HStack(spacing: 0) {
             Text("The ferry leaves at ")
-            Text("half").foregroundStyle(Theme.onAccent).padding(.horizontal, 3)
+            Text("half").foregroundStyle(Theme.onAccent).padding(.horizontal, Space.xs)
                 .background(Color(nsColor: colour), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             Text(" past six.")
         }
-        .font(.system(size: 17))
-        .padding(.vertical, 4).padding(.horizontal, 6)
+        .font(TypeStyle.body)
+        .padding(.vertical, Space.xs).padding(.horizontal, Space.sm)
         .background(tint ? Color(nsColor: tintColour ?? colour).opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
+        .padding(.vertical, Space.sm)
         .accessibilityLabel("Highlight preview")
     }
 }
@@ -513,13 +499,14 @@ struct WordMapEditor: View {
 
     var body: some View {
         ForEach($rows) { $row in
-            HStack(spacing: 10) {
+            HStack(spacing: Space.md) {
                 TextField(keyPrompt, text: $row.key, prompt: Text(keyPrompt)).labelsHidden()
                 Image(systemName: "arrow.right").foregroundStyle(.tertiary).accessibilityHidden(true)
                 TextField(valuePrompt, text: $row.value, prompt: Text(valuePrompt)).labelsHidden()
                 Button { rows.removeAll { $0.id == row.id } } label: { Image(systemName: "minus.circle") }
                     .buttonStyle(.borderless)
                     .accessibilityLabel("Remove \(row.key)")
+                    .help("Remove \(row.key)")
             }
         }
         Button { rows.append(Row(key: "", value: "")) } label: { Label("Add", systemImage: "plus") }

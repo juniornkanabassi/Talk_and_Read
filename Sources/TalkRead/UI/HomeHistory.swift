@@ -122,7 +122,7 @@ struct HomeHistory: View {
         let everything = History.merge(data.recentReads.map(\.historyItem) + data.dictations.map(\.historyItem))
         let matches = History.filter(everything, kind: filter.kind, search: search)
         let sections = History.sections(matches, limit: shown, now: Date(), calendar: .current)
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Space.lg) {
             header
             if everything.isEmpty {
                 EmptyNote(text: Self.emptyText(model.settings)).card(padding: 0)
@@ -130,15 +130,15 @@ struct HomeHistory: View {
                 EmptyNote(text: "No matching history").card(padding: 0)
             } else {
                 // Lazy, so a long history only builds the rows on screen. The id rebuilds them when the day or the clock changes.
-                LazyVStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: Space.xl) {
                     ForEach(sections) { section in
-                        VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: Space.sm) {
                             Text(section.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                                .padding(.leading, 4).accessibilityAddTraits(.isHeader)
+                                .padding(.leading, Space.xs).accessibilityAddTraits(.isHeader)
                             LazyVStack(spacing: 0) {
                                 ForEach(section.items) { item in
                                     HistoryRow(model: model, item: item, forceActions: item.uuid == hoveredID)
-                                    if item.id != section.items.last?.id { Divider().padding(.leading, 14) }
+                                    if item.id != section.items.last?.id { Divider().padding(.leading, Space.lg) }
                                 }
                             }
                             .card(padding: 0)
@@ -162,14 +162,14 @@ struct HomeHistory: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Space.md) {
             Text("History").font(.headline)
-            Spacer(minLength: 8)
+            Spacer(minLength: Space.sm)
             Picker("Show", selection: $filter) {
                 ForEach(HistoryFilter.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden().frame(width: 230)
-            HStack(spacing: 6) {
+            HStack(spacing: Space.sm) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
                 TextField("Search history", text: $search).textFieldStyle(.plain)
                     .accessibilityLabel("Search history")
@@ -178,7 +178,7 @@ struct HomeHistory: View {
                         .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Clear search")
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 5)
+            .padding(.horizontal, Space.md).padding(.vertical, Space.xs)
             .frame(width: 210)
             .background(Color.primary.opacity(0.06), in: Capsule())
         }
@@ -200,7 +200,8 @@ struct HistoryRow: View {
     var forceActions = false
     @State private var hovering = false
     @State private var expanded = false
-    @State private var confirmingDelete = false
+    @Environment(\.undoManager) private var undoManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var fullHeight: CGFloat = 0
     @State private var threeLines: CGFloat = 0
     @FocusState private var focus: Action?
@@ -218,25 +219,25 @@ struct HistoryRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: Space.sm) {
                 Text(verb).foregroundStyle(.secondary)
                 if let app = item.app {
                     AppIconView(name: app, bundleID: item.bundleID)
                     Text(app).fontWeight(.medium).lineLimit(1)
                 }
-                Text(History.time(item.date)).monospacedDigit().foregroundStyle(.secondary).padding(.leading, 4)
-                Spacer(minLength: 8)
+                Text(History.time(item.date)).monospacedDigit().foregroundStyle(.secondary).padding(.leading, Space.xs)
+                Spacer(minLength: Space.sm)
                 actions.opacity(showActions ? 1 : 0)
             }
             .font(.callout)
             text
             if canExpand {
-                Button(expanded ? "Show less" : "Show more") { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } }
+                Button(expanded ? "Show less" : "Show more") { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { expanded.toggle() } }
                     .buttonStyle(.plain).font(.callout.weight(.medium)).foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 11)
+        .padding(.horizontal, Space.lg).padding(.vertical, Space.md)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -244,13 +245,7 @@ struct HistoryRow: View {
             if item.kind == .read { Button("Read again", action: readAgain) }
             Button("Copy", action: copy)
             Divider()
-            Button("Delete…", role: .destructive) { confirmingDelete = true }
-        }
-        .alert("Delete this entry?", isPresented: $confirmingDelete) {
-            Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive, action: delete)
-        } message: {
-            Text("It is removed from this Mac and cannot be undone.")
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(verb) \(item.app ?? ""), \(History.time(item.date))")
@@ -273,13 +268,13 @@ struct HistoryRow: View {
     }
 
     private var actions: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Space.md) {
             if item.kind == .read {
                 Button(action: readAgain) { Image(systemName: "play.circle") }
                     .help("Read again").accessibilityLabel("Read again").focused($focus, equals: .again)
             }
             CopyButton(text: item.text).focused($focus, equals: .copy)
-            Button { confirmingDelete = true } label: { Image(systemName: "trash") }
+            Button(action: delete) { Image(systemName: "trash") }
                 .help("Delete").accessibilityLabel("Delete").focused($focus, equals: .delete)
         }
         .buttonStyle(.borderless).foregroundStyle(.secondary)
@@ -293,6 +288,6 @@ struct HistoryRow: View {
     }
 
     private func delete() {
-        if item.kind == .read { model.deleteRead(item.uuid) } else { model.deleteDictation(item.uuid) }
+        if item.kind == .read { model.deleteRead(item.uuid, undoManager: undoManager) } else { model.deleteDictation(item.uuid, undoManager: undoManager) }
     }
 }

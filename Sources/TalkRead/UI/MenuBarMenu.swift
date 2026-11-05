@@ -65,8 +65,8 @@ import TalkReadCore
 
         add("Open Talk & Read…", action: openMain)
         add("Settings…", key: ",", action: openSettings)
-        if model.needsSetup { add("⚠︎ Finish setup…", action: openOnboarding) }
-        if Updates.shared.isEnabled { add("Check for Updates…", enabled: Updates.shared.canCheck) { _ = try? Updates.shared.check() } }
+        if model.needsSetup { add("Finish setup…", action: openOnboarding) }
+        if Updates.shared.isEnabled { add("Check for updates…", enabled: Updates.shared.canCheck) { _ = try? Updates.shared.check() } }
         menu.addItem(.separator())
         add("Quit Talk & Read", key: "q") { NSApp.terminate(nil) }
     }
@@ -98,7 +98,7 @@ import TalkReadCore
             for g in frenchGroups { for v in g.voices { list(v, "\(v.name) (\(g.model.modelName))", on: v.id == french) } }
         }
         sub.addItem(.separator())
-        add("More voices…", to: sub) { [openMain] in WindowRouter.shared.pane = .voices; openMain() }
+        add("More voices…", to: sub) { WindowRouter.shared.show(.voices) }
         return sub
     }
 

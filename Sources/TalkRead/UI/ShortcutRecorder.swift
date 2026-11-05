@@ -39,12 +39,12 @@ struct ShortcutRecorder: View {
     private var recording: Bool { focus.active == key }
 
     var body: some View {
-        VStack(alignment: .trailing, spacing: 4) {
+        VStack(alignment: .trailing, spacing: Space.xs) {
             Button { recording ? focus.end(key) : focus.begin(key) } label: {
                 Group {
                     if recording {
                         Text("Press the new keys…").font(.callout).foregroundStyle(.secondary)
-                            .padding(.horizontal, 10).frame(minHeight: 24)
+                            .padding(.horizontal, Space.md).frame(minHeight: 24)
                             .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.accent, lineWidth: 1.5))
                     } else if shortcut.isOff {
                         Text("Record shortcut").font(.callout).foregroundStyle(.secondary).frame(minHeight: 24)

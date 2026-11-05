@@ -37,8 +37,8 @@ struct OnboardingContent: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(.horizontal, 40).padding(.top, 36)
             Divider()
-            HStack(spacing: 12) {
-                HStack(spacing: 6) {
+            HStack(spacing: Space.md) {
+                HStack(spacing: Space.sm) {
                     ForEach(0..<4, id: \.self) { i in
                         Capsule().fill(i == step ? Theme.accent : Color.primary.opacity(0.15)).frame(width: i == step ? 18 : 7, height: 7)
                     }
@@ -50,7 +50,7 @@ struct OnboardingContent: View {
                     .buttonStyle(AccentButtonStyle())
                     .keyboardShortcut(.defaultAction)
             }
-            .padding(.horizontal, 24).padding(.vertical, 16)
+            .padding(.horizontal, Space.xxl).padding(.vertical, Space.lg)
         }
         .frame(width: 600, height: 540)
         .background(Theme.surface)
@@ -64,22 +64,22 @@ struct OnboardingContent: View {
     }
 
     private var welcome: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: Space.xl) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 116, height: 116).accessibilityHidden(true)
             Text("Welcome to Talk & Read").font(.largeTitle.weight(.semibold))
-            VStack(spacing: 8) {
+            VStack(spacing: Space.sm) {
                 Text("Select text anywhere and hear it read aloud, each word highlighted as it is spoken.")
                 Text("Hold a key, speak, and your words are typed where your cursor is.")
             }
             .font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Label("Everything runs on this Mac. Nothing you read or say leaves it.", systemImage: "lock")
-                .font(.callout).foregroundStyle(.secondary).padding(.top, 6)
+                .font(.callout).foregroundStyle(.secondary).padding(.top, Space.sm)
         }
-        .padding(.top, 12)
+        .padding(.top, Space.md)
     }
 
     private func header(_ title: String, _ detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Space.sm) {
             Text(title).font(.title.weight(.semibold))
             Text(detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
@@ -87,7 +87,7 @@ struct OnboardingContent: View {
     }
 
     private var permissions: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: Space.xl) {
             header("Allow access", "macOS asks you to approve each of these once. The ticks appear as soon as you allow them.")
             VStack(spacing: 0) {
                 PermissionRow(symbol: "accessibility", title: "Accessibility", detail: "Needed to read selected text, highlight words and type dictation.",
@@ -108,7 +108,7 @@ struct OnboardingContent: View {
         let total = ModelStatusRow.megabytes(.voice, data.voiceModel) + ModelStatusRow.megabytes(.dictation, data.dictationModel)
         let busy = [data.voiceModel, data.dictationModel].contains { if case .downloading = $0 { true } else { false } }
         let done = data.voiceModel == .ready && data.dictationModel == .ready
-        return VStack(alignment: .leading, spacing: 20) {
+        return VStack(alignment: .leading, spacing: Space.xl) {
             header("Download the voices", "A natural voice and a dictation model. They download once, then work offline.")
             VStack(spacing: 0) {
                 ModelStatusRow(kind: .voice, state: data.voiceModel)
@@ -116,7 +116,7 @@ struct OnboardingContent: View {
                 ModelStatusRow(kind: .dictation, state: data.dictationModel)
             }
             .card(padding: 0)
-            HStack(spacing: 16) {
+            HStack(spacing: Space.lg) {
                 if !done {
                     Button(busy ? "Downloading…" : "Download both, \(total) MB") { model.downloadModels() }
                         .buttonStyle(AccentButtonStyle()).disabled(busy)
@@ -128,19 +128,19 @@ struct OnboardingContent: View {
     }
 
     private var tryIt: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: Space.xl) {
             header("Try it", "Press play to hear the sample. Then click in the box and dictate something.")
-            HStack(alignment: .top, spacing: 16) {
-                Text(Self.sample).font(.system(size: 17)).lineSpacing(5).fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top, spacing: Space.lg) {
+                Text(Self.sample).font(TypeStyle.body).lineSpacing(Space.xs).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 PlayButton(size: 44) { try? model.speak(Self.sample, title: "Welcome", caller: "user") }
             }
             .card()
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: Space.sm) {
                 TextField("Dictation test", text: $tryText, prompt: Text(holdHint(model.settings)), axis: .vertical)
                     .lineLimit(3...5)
                     .textFieldStyle(.roundedBorder)
-                HStack(spacing: 6) {
+                HStack(spacing: Space.sm) {
                     Text("Anywhere on your Mac, select text and press").foregroundStyle(.secondary)
                     KeyCaps(display: model.settings.readShortcut.display)
                     Text("to hear it.").foregroundStyle(.secondary)

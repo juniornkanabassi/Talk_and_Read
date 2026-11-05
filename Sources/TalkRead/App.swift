@@ -20,6 +20,9 @@ enum TalkReadMain {
         if args.contains("--selftest-window") { exit(SelfTestWindow.run()) }
         if let dir = value(after: "--selftest-import") { exitAfter { await Importer.selfTest(directory: dir) } }
         if args.contains("--selftest-ui-snapshots") { exit(MainActor.assumeIsolated { UISnapshots.run() }) }
+        if args.contains("--selftest-ui-commands") { exit(MainActor.assumeIsolated { MenuSelfTest.run() }) }
+        if args.contains("--selftest-reader-performance") { exitAfter { await ReaderPerformanceSelfTest.run() } }
+        if args.contains("--selftest-storage") { exitAfter { await StorageSelfTest.run() } }
         if args.contains("--selftest-control") { exitAfter { await ControlSelfTest.run(clip: value(after: "--selftest-control")) } }
         if let feed = value(after: "--selftest-update") { exitAfter { await UpdateSelfTest.run(feed: feed, args: args) } }
 
@@ -41,7 +44,7 @@ enum TalkReadMain {
     }
 }
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
     private let model = AppModel.shared
     private var statusItem: NSStatusItem?
     private var statusMenu: MenuBarMenu?
@@ -56,11 +59,26 @@ enum TalkReadMain {
     /// S3: the speed and skip keys act, and are swallowed, only while a read is playing or paused; Esc only while recording.
     private var reading = false { didSet { hotkeys?.reading = reading } }
     private var recording = false { didSet { hotkeys?.recording = recording } }
+    private var openSettingsScene: (() -> Void)?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        let scenes = NSHostingSceneRepresentation {
+            SwiftUI.Settings {
+                SettingsView(model: model)
+                    .background(SettingsWindowRegistration { [weak self] window in
+                        self?.windows["settings"] = window
+                        window.delegate = self
+                    })
+            }
+        }
+        NSApp.addSceneRepresentation(scenes)
+        openSettingsScene = { scenes.environment.openSettings() }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Sparkle: checks at launch and daily; installs only after the user agrees in its window. Off without SUFeedURL.
         Updates.shared.start()
-        NSApp.mainMenu = Self.mainMenu()
+        NSApp.mainMenu = Self.mainMenu(delegate: self)
         let menu = MenuBarMenu(model: model, openMain: { [weak self] in self?.show("main") },
                                openSettings: { [weak self] in self?.show("settings") },
                                openOnboarding: { [weak self] in self?.show("onboarding") })
@@ -74,6 +92,10 @@ enum TalkReadMain {
         ReadHereGlyph.shared.attach(model)
         WindowRouter.shared.showMainWindow = { [weak self] in self?.show("main") }
         WindowRouter.shared.openOnboarding = { [weak self] in self?.show("onboarding") }
+        WindowRouter.shared.openSettings = { [weak self] tab in
+            WindowRouter.shared.settingsTab = tab
+            self?.show("settings")
+        }
         Task {
             await model.loadVoices()
             model.warmUp()
@@ -107,8 +129,11 @@ enum TalkReadMain {
     /// Sol #4, #20: a quit during a copy or paste closes the pasteboard gate (queued pastes change nothing) and waits
     /// until the user's clipboard is back; a hung transaction is force-restored after 3 s.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        controlServer?.stop()
+        model.stopReading()
         Task {
             await PasteboardGate.shared.shutdown(grace: 3)
+            await model.flushPersistence()
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -204,7 +229,7 @@ enum TalkReadMain {
             keys.start()
             hotkeys = keys
         }
-        if hotkeys != nil, windows.isEmpty {
+        if hotkeys != nil, !windows.values.contains(where: \.isVisible) {
             pollTimer?.invalidate()
             pollTimer = nil
         }
@@ -260,6 +285,13 @@ enum TalkReadMain {
 
     /// Opening a window is always the user's own request, so the app comes forward with a Dock icon.
     private func show(_ kind: String) {
+        if kind == "settings" {
+            NSApp.setActivationPolicy(.regular)
+            openSettingsScene?()
+            NSApp.activate()
+            startPolling()
+            return
+        }
         let window = windows[kind] ?? makeWindow(kind)
         windows[kind] = window
         NSApp.setActivationPolicy(.regular)
@@ -274,8 +306,6 @@ enum TalkReadMain {
         case "onboarding":
             let done: () -> Void = { [weak self] in self?.windows["onboarding"]?.close() }
             (title, view, size) = ("Welcome to Talk & Read", AnyView(OnboardingView(model: model, onFinish: done)), NSSize(width: 600, height: 540))
-        case "settings":
-            (title, view, size) = ("Settings", AnyView(SettingsView(model: model)), NSSize(width: 720, height: 520))
         default:
             (title, view, size) = ("Talk & Read", AnyView(MainWindowView(model: model)), NSSize(width: 980, height: 680))
         }
@@ -294,37 +324,28 @@ enum TalkReadMain {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow,
               let kind = windows.first(where: { $0.value === window })?.key else { return }
-        windows[kind] = nil
-        if windows.isEmpty { NSApp.setActivationPolicy(.accessory) }
+        // SwiftUI owns its Settings window and can reuse it when opened again.
+        if kind != "settings" { windows[kind] = nil }
+        if !windows.values.contains(where: { $0 !== window && $0.isVisible }) { NSApp.setActivationPolicy(.accessory) }
     }
 
-    // MARK: Main menu (shown while a window is open; gives text fields Cut, Copy, Paste and ⌘, for Settings)
+}
 
-    private static func mainMenu() -> NSMenu {
-        let main = NSMenu()
-        func item(_ title: String, _ action: Selector, _ key: String, _ mods: NSEvent.ModifierFlags = .command) -> NSMenuItem {
-            let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
-            i.keyEquivalentModifierMask = mods
-            return i
+private struct SettingsWindowRegistration: NSViewRepresentable {
+    let register: (NSWindow) -> Void
+    func makeNSView(context: Context) -> WindowView { WindowView(register: register) }
+    func updateNSView(_ nsView: WindowView, context: Context) {}
+
+    final class WindowView: NSView {
+        let register: (NSWindow) -> Void
+        init(register: @escaping (NSWindow) -> Void) {
+            self.register = register
+            super.init(frame: .zero)
         }
-        func add(_ title: String, _ items: [NSMenuItem]) {
-            let menu = NSMenu(title: title)
-            items.forEach(menu.addItem)
-            let holder = NSMenuItem()
-            holder.submenu = menu
-            main.addItem(holder)
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { register(window) }
         }
-        let update = item("Check for Updates…", #selector(Updates.checkForUpdates(_:)), "")
-        update.target = Updates.shared   // enabled only while a check can start; absent when updates are off
-        add("Talk & Read", [item("About Talk & Read", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), "")]
-                            + (Updates.shared.isEnabled ? [update] : []) + [.separator(),
-                              item("Settings…", #selector(AppDelegate.openSettings(_:)), ","), .separator(),
-                              item("Hide Talk & Read", #selector(NSApplication.hide(_:)), "h"),
-                              item("Quit Talk & Read", #selector(NSApplication.terminate(_:)), "q")])
-        add("Edit", [item("Undo", Selector(("undo:")), "z"), item("Redo", Selector(("redo:")), "z", [.command, .shift]), .separator(),
-                     item("Cut", #selector(NSText.cut(_:)), "x"), item("Copy", #selector(NSText.copy(_:)), "c"),
-                     item("Paste", #selector(NSText.paste(_:)), "v"), item("Select All", #selector(NSText.selectAll(_:)), "a")])
-        add("Window", [item("Close", #selector(NSWindow.performClose(_:)), "w"), item("Minimise", #selector(NSWindow.performMiniaturize(_:)), "m")])
-        return main
     }
 }
