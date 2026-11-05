@@ -1,6 +1,7 @@
 // `TalkRead --selftest-window` (R4, R5, R6, R7, R7c, R7d, R12, E8, H1, H2, H3). Headless first: PasteboardGate, the
 // coordinate flip, screenshot OCR and the OCR selection-colour anchor on rendered bitmaps, the overlay pin on recorded
-// window-server snapshots and on live windows placed off every display. Then, on the Prompter XL screen only, one test
+// window-server snapshots and on live windows placed off every display. With --headless, stop before any display or live-app probes.
+// Otherwise, on the Prompter XL screen only, one test
 // window (NSTextView, WKWebView, PDFView, rendered-text NSImageView, a terminal-style text view) shown without activating
 // the app or becoming key.
 // Each pane is read by a child process of this binary through the real TextCapture and Locator: AX calls into one's own
@@ -97,14 +98,21 @@ enum SelfTestWindow {
         await pinnedOverlayCheck()
         await screenshotTextCheck()
         await ocrHighlightCheck()
-        if let screen = NSScreen.screens.first(where: { $0.localizedName.contains("Prompter") }) {
-            await windowChecks(on: screen)
+        if CommandLine.arguments.contains("--headless") {
+            record("Test window panes", nil, "--headless: visible Prompter window tests not run")
+            record("R5 node map", nil, "--headless: live Chromium/Electron app probe not run")
+            record("Hidden text (Claude chat)", nil, "--headless: live Claude chat probe not run")
+            record("Hidden text walk cost", nil, "--headless: live Claude, Chrome and Safari probe not run")
         } else {
-            record("Test window panes", nil, "not run: no screen named Prompter (Elgato Prompter XL) connected")
+            if let screen = NSScreen.screens.first(where: { $0.localizedName.contains("Prompter") }) {
+                await windowChecks(on: screen)
+            } else {
+                record("Test window panes", nil, "not run: no screen named Prompter (Elgato Prompter XL) connected")
+            }
+            await chromiumProbe()
+            hiddenTextProbe()
+            hiddenTextCost()
         }
-        await chromiumProbe()
-        hiddenTextProbe()
-        hiddenTextCost()
         let frontAfter = NSWorkspace.shared.frontmostApplication?.processIdentifier
         record("No focus change", frontAfter == frontBefore && !NSApp.isActive, "frontmost pid \(frontBefore.map(String.init) ?? "-") -> \(frontAfter.map(String.init) ?? "-"), our app active: \(NSApp.isActive)")
         NSPasteboard(name: NSPasteboard.Name(pasteboardName)).releaseGlobally()
@@ -1312,7 +1320,11 @@ enum SelfTestClient {
             w.isReleasedWhenClosed = false
             return w
         }
-        let frame = NSRect(x: 30_000, y: 30_000, width: 600, height: 400)
+        // Derive the fixture position from every connected screen, including screens placed at negative coordinates.
+        let screens = NSScreen.screens.map(\.frame)
+        let frame = NSRect(x: (screens.map(\.maxX).max() ?? 0) + 10_000,
+                           y: (screens.map(\.maxY).max() ?? 0) + 10_000, width: 600, height: 400)
+        guard screens.allSatisfy({ !$0.intersects(frame.insetBy(dx: -200, dy: -200)) }) else { return 1 }
         let source = window(frame)
         source.orderFrontRegardless()
         var cover: NSPanel?
