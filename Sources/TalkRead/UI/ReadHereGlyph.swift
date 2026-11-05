@@ -25,6 +25,7 @@ import TalkReadCore
     private var looking = false
     private var generation = 0
     private var clickGeneration = 0
+    private var wakeLeases = WakeLeases()
     /// Until when hover keeps asking about a still pointer: an app just asked to build its tree is still filling it in.
     private var hoverColdUntil = 0.0
     /// Until when a woken app's tree may still be filling in: a still pointer is looked at again each tick until then.
@@ -127,8 +128,8 @@ import TalkReadCore
         hidePanel()
         (block, lastPoint) = (nil, nil)
         let reading = model?.highlightedPID
-        for pid in woken where pid != reading { AXWake.restore(pid) }
-        woken = []
+        for pid in wakeLeases.restorableAfterStop(woken, highlighted: reading) { AXWake.restore(pid) }
+        woken = wakeLeases.retainedAfterStop(woken)
     }
 
     private func look() {
@@ -370,10 +371,38 @@ import TalkReadCore
         }
     }
 
-    func beginClick(readRevision: UInt64) -> ClickRequest {
+    /// Pending AX validation owns its app's wake independently of the reveal key.
+    /// This value type keeps stop/release decisions testable without querying Accessibility.
+    struct WakeLeases {
+        private var pending: [Int: pid_t] = [:]
+
+        mutating func acquire(_ request: Int, pid: pid_t) { pending[request] = pid }
+        func contains(_ pid: pid_t) -> Bool { pending.values.contains(pid) }
+        func retainedAfterStop(_ woken: Set<pid_t>) -> Set<pid_t> { woken.filter { contains($0) } }
+        func restorableAfterStop(_ woken: Set<pid_t>, highlighted: pid_t?) -> Set<pid_t> {
+            woken.filter { !contains($0) && $0 != highlighted }
+        }
+        mutating func release(_ request: Int, highlighted: pid_t?) -> (pid: pid_t, restore: Bool)? {
+            guard let pid = pending.removeValue(forKey: request) else { return nil }
+            return (pid, !contains(pid) && pid != highlighted)
+        }
+    }
+
+    func beginClick(readRevision: UInt64, pid: pid_t? = nil) -> ClickRequest {
         generation += 1
         clickGeneration += 1
+        if let pid {
+            wakeLeases.acquire(clickGeneration, pid: pid)
+            AXWake.retainForClick(pid)
+            woken.insert(pid)
+        }
         return ClickRequest(generation: clickGeneration, readRevision: readRevision)
+    }
+
+    private func releaseWake(_ request: ClickRequest) {
+        guard let released = wakeLeases.release(request.generation, highlighted: model?.highlightedPID) else { return }
+        AXWake.releaseForClick(released.pid, keepAwake: !released.restore)
+        if !wakeLeases.contains(released.pid) { woken.remove(released.pid) }
     }
 
     func accepts(_ request: ClickRequest, readRevision: UInt64) -> Bool {
@@ -382,18 +411,18 @@ import TalkReadCore
 
     private func play() {
         guard let block, let model else { return }
-        let request = beginClick(readRevision: model.readRevision)
+        let request = beginClick(readRevision: model.readRevision, pid: block.pid)
         self.block = nil
         // Leave mouseDown before closing its window. Keep the current read alive during validation,
         // but never let its delayed result replace a newer read or survive a reset or Space change.
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        Task { @MainActor [self] in
+            defer { releaseWake(request) }
             hidePanel()
             let point = CGPoint(x: block.frame.minX + min(8, block.frame.width / 2), y: Self.glyphFrame(block).midY)
             let covered = await PointerCapture.onWorker { Self.moved(block) || Self.covered(block, at: point) }
             guard accepts(request, readRevision: model.readRevision), !covered else { return }
-            woken.remove(block.pid)   // the read's Highlighter puts the app back when it ends (E8)
-            model.readHere(block: block)
+            let reservation = model.reserve("user")
+            await model.captureHereAndRead(id: reservation, point: point, block: block)
         }
     }
 

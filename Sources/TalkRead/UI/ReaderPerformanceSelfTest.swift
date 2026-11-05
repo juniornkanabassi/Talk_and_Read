@@ -71,6 +71,35 @@ import TalkReadCore
         _ = glyph.beginClick(readRevision: 12)
         check(!glyph.accepts(olderClick, readRevision: 12), "newer glyph click cancels delayed click")
 
+        var leases = ReadHereGlyph.WakeLeases()
+        let wakePID: pid_t = 42
+        leases.acquire(1, pid: wakePID)
+        check(leases.retainedAfterStop([wakePID]) == [wakePID] && leases.restorableAfterStop([wakePID], highlighted: nil).isEmpty,
+              "reveal key release retains a pending click's wake")
+        leases.acquire(2, pid: wakePID)
+        let firstRelease = leases.release(1, highlighted: nil)
+        check(firstRelease?.restore == false && leases.contains(wakePID), "overlapping click keeps wake until last lease ends")
+        let rejectedRelease = leases.release(2, highlighted: nil)
+        check(rejectedRelease?.restore == true && !leases.contains(wakePID), "last rejected click releases its wake")
+        leases.acquire(3, pid: wakePID)
+        let transferred = leases.release(3, highlighted: wakePID)
+        check(transferred?.restore == false && !leases.contains(wakePID), "successful click transfers wake to live highlighter")
+
+        var centralLeases = AXWake.ClickLeaseState()
+        centralLeases.retain(wakePID)
+        centralLeases.retain(wakePID)
+        check(!centralLeases.release(wakePID, keepAwake: false) && centralLeases.contains(wakePID),
+              "central wake lease blocks restoration while another click remains")
+        check(centralLeases.release(wakePID, keepAwake: false) && !centralLeases.contains(wakePID),
+              "last central lease restores a rejected click")
+        centralLeases.retain(wakePID)
+        check(!centralLeases.release(wakePID, keepAwake: true) && !centralLeases.contains(wakePID),
+              "central lease transfers awake state to live highlighter")
+        centralLeases.retain(wakePID)
+        centralLeases.clear()
+        check(!centralLeases.contains(wakePID) && !centralLeases.release(wakePID, keepAwake: false),
+              "quit clears central leases and ignores a later stale release")
+
         let probe = WorkerProbe()
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<12 {

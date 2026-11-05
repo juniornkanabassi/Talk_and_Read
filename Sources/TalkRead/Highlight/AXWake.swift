@@ -13,6 +13,28 @@ import ApplicationServices
     /// on is never touched, so it never enters the ledger.
     private static var ledger = Set<pid_t>()
 
+    /// A click may be validating geometry while another read ends. All restoration paths
+    /// share these counts so the paragraph stays exposed until the last pending click finishes.
+    struct ClickLeaseState {
+        private var counts: [pid_t: Int] = [:]
+        func contains(_ pid: pid_t) -> Bool { counts[pid, default: 0] > 0 }
+        mutating func retain(_ pid: pid_t) { counts[pid, default: 0] += 1 }
+        /// True when the last lease ended and no live highlighter took ownership.
+        mutating func release(_ pid: pid_t, keepAwake: Bool) -> Bool {
+            guard let count = counts[pid] else { return false }
+            if count > 1 { counts[pid] = count - 1; return false }
+            counts.removeValue(forKey: pid)
+            return !keepAwake
+        }
+        mutating func clear() { counts.removeAll() }
+    }
+    private static var clickLeases = ClickLeaseState()
+
+    static func retainForClick(_ pid: pid_t) { clickLeases.retain(pid) }
+    static func releaseForClick(_ pid: pid_t, keepAwake: Bool) {
+        if clickLeases.release(pid, keepAwake: keepAwake) { restore(pid) }
+    }
+
     static func isWoken(_ pid: pid_t) -> Bool { ledger.contains(pid) }
 
     static func wake(_ caller: AXUIElement, pid: pid_t) async {
@@ -45,6 +67,7 @@ import ApplicationServices
 
     /// The read on `pid` ended (or never started): put AXEnhancedUserInterface back. A no-op for an app never woken.
     static func restore(_ pid: pid_t) {
+        guard !clickLeases.contains(pid) else { return }
         prune()
         guard ledger.contains(pid) else { return }
         let app = AXUIElementCreateApplication(pid)
@@ -55,7 +78,10 @@ import ApplicationServices
     }
 
     /// Every app we woke, for a caller that has no pid (app quit).
-    static func restoreAll() { for pid in ledger { restore(pid) } }   // iterates a copy: restore removes from the ledger
+    static func restoreAll() {
+        clickLeases.clear()   // quitting ends every pending click before restoring the ledger
+        for pid in ledger { restore(pid) }   // iterates a copy: restore removes from the ledger
+    }
 
     /// A process that has exited has nothing left to restore.
     private static func prune() {
