@@ -223,7 +223,7 @@ extension EngineKind {
         if v.engine == .neural { warm(v) }
     }
 
-    /// Prepare the selected installed recogniser without opening the microphone. The normal idle timer still frees it.
+    /// Prepare the selected installed recogniser without opening the microphone. The idle timer keeps it loaded.
     func warmDictation() {
         Task { await dictation.warmUpIfInstalled() }
     }
@@ -760,11 +760,11 @@ extension EngineKind {
                     guard !Task.isCancelled, let self else { return }
                     // Busy without telling us, or the recogniser refused (still loading or draining, Sol #24): wait
                     // another period rather than give up.
-                    guard !busy, !engines.isBusy, dictation.unloadModel() else { continue }
+                    guard !busy, !engines.isBusy, dictation.unloadModel(keepSelected: true) else { continue }
                     engines.unloadAll(keepKokoro: true)
                     modelsWarm = false
                     unloadTask = nil
-                    Log.write("speech models unloaded after \(delay) idle (Kokoro kept warm)")
+                    Log.write("speech models unloaded after \(delay) idle (Kokoro and the dictation model kept warm)")
                     return
                 }
             }

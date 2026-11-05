@@ -1,4 +1,5 @@
 // Headless timing through the production file-transcription path. Uses only disposable data and cached models.
+import AppKit
 import AVFoundation
 import Darwin
 import FluidAudio
@@ -23,7 +24,9 @@ import TalkReadCore
         guard engine.isDownloaded else { print("cold-start: model is not cached; refusing a download"); return 1 }
         let measured = MeasuredASR(engine)
         let decodeMs = NSLockingValue()
-        let controller = DictationController(audio: NoAudio(), asr: measured, multilingual: measured,
+        let live = CommandLine.arguments.contains("--cold-start-live")
+        let paced = PacedAudio()
+        let controller = DictationController(audio: live ? paced : NoAudio(), asr: measured, multilingual: measured,
             insert: { _, _, _, _ in .inserted(confirmed: true) }, decode: { url in
                 let start = ProcessInfo.processInfo.systemUptime
                 let samples = try Transcriber.samples(of: url)
@@ -39,6 +42,7 @@ import TalkReadCore
             emit(["event": "configuration", "engine": multilingual ? "multilingual" : "unified",
                   "fixture": url.lastPathComponent, "audioSeconds": Double(samples.count) / 16_000,
                   "pid": getpid(), "memory": usage()])
+            if live { return try await runLive(controller, measured, paced, samples) }
             if CommandLine.arguments.contains("--cold-start-prewarm") {
                 let started = ProcessInfo.processInfo.systemUptime
                 await active { await controller.warmUpIfInstalled() }
@@ -92,6 +96,58 @@ import TalkReadCore
         } catch { print("cold-start: FAIL \(error)"); return 1 }
     }
 
+    /// The live path: start (the hotkey), the clip fed at speaking pace, stop, then the wait for the text. Each stage
+    /// reproduces what the idle timer leaves behind, with this throwaway process's own Core ML cache deleted to stand in
+    /// for macOS purging caches under low disk space.
+    private static func runLive(_ controller: DictationController, _ measured: MeasuredASR, _ paced: PacedAudio,
+                                _ samples: [Float]) async throws -> Int32 {
+        let name = ProcessInfo.processInfo.processName
+        guard name.hasPrefix("TalkRead-cold-") else { print("cold-start: --cold-start-live needs a TalkRead-cold-* copy of the binary"); return 1 }
+        let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(name).appendingPathComponent("com.apple.e5rt.e5bundlecache")
+        func purge() { try? FileManager.default.removeItem(at: cache) }
+        for cue in ["Tink", "Pop"] {   // constructed only, never played
+            let started = ProcessInfo.processInfo.systemUptime
+            let sound = NSSound(named: cue)
+            emit(["event": "cue", "name": cue, "found": sound != nil, "initMs": elapsed(started)])
+        }
+        paced.samples = samples
+        purge()
+        let stages: [(String, () -> Bool)] = [
+            ("purged_unloaded", { true }),
+            ("warm", { true }),
+            ("old_idle_unload", { controller.unloadModel() }),
+            ("old_idle_unload_then_purge", { let ok = controller.unloadModel(); purge(); return ok }),
+            ("new_idle_keep_then_purge", { let ok = controller.unloadModel(keepSelected: true); purge(); return ok }),
+        ]
+        for (label, prepare) in stages {
+            guard prepare() else { print("cold-start: unload refused before \(label)"); return 1 }
+            if label != "purged_unloaded", label != "warm" { try await Task.sleep(for: .seconds(2)) }
+            emit(["event": "before_utterance", "stage": label, "loaded": measured.isLoaded, "memory": usage()])
+            paced.delivered = false
+            measured.loadDone = nil
+            let pressed = ProcessInfo.processInfo.systemUptime
+            measured.started = pressed
+            measured.firstPartialMs = nil
+            let text: String? = try await active {
+                try controller.start(caller: "cold-start-bench")
+                while !paced.delivered { try await Task.sleep(for: .milliseconds(5)) }
+                let speechMs = elapsed(pressed), loadedAtStop = measured.isLoaded
+                let stopped = ProcessInfo.processInfo.systemUptime
+                try controller.stop(insert: true, caller: "cold-start-bench")
+                let text = await controller.result()
+                emit(["event": "utterance", "stage": label, "speechMs": speechMs, "stopToTextMs": elapsed(stopped),
+                      "loadedAtStop": loadedAtStop, "loadDoneMs": measured.loadDone.map { ($0 - pressed) * 1000 } as Any? ?? NSNull(),
+                      "firstPartialMs": measured.firstPartialMs as Any? ?? NSNull(), "text": text ?? NSNull(), "memory": usage()])
+                return text
+            }
+            guard let text, !text.isEmpty else { print("cold-start: empty transcript at \(label)"); return 1 }
+        }
+        guard controller.unloadModel() else { print("cold-start: final unload refused"); return 1 }
+        purge()
+        return 0
+    }
+
     private static func isDisposableHome(_ path: String) -> Bool {
         var isDirectory: ObjCBool = false
         guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
@@ -136,7 +192,11 @@ import TalkReadCore
             get { engine.onLoadingChange }
             set { engine.onLoadingChange = newValue }
         }
-        func load(progress: ((Double) -> Void)?) async throws { try await engine.load(progress: progress) }
+        var loadDone: Double?
+        func load(progress: ((Double) -> Void)?) async throws {
+            try await engine.load(progress: progress)
+            if loadDone == nil { loadDone = ProcessInfo.processInfo.systemUptime }
+        }
         func unload() -> Bool { engine.unload() }
         func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> Transcript {
             try await engine.run(audio, partial: { [self] text in
@@ -151,6 +211,27 @@ import TalkReadCore
         var fallbackNotice: String? { nil }
         func start() async throws { throw RecorderError.noDevice }
         func stop() -> [Float] { [] }
+    }
+    /// Feeds the clip in 100 ms buffers at speaking pace, as the microphone would, from `start()` until `stop()`.
+    private final class PacedAudio: DictationAudio {
+        var onBuffer: ((AVAudioPCMBuffer) -> Void)?
+        var onLevel: ((Float) -> Void)?
+        var fallbackNotice: String? { nil }
+        var samples: [Float] = []
+        var delivered = false
+        private var feeder: Task<Void, Never>?
+        func start() async throws {
+            let samples = samples, onBuffer = onBuffer, begin = ContinuousClock.now
+            feeder = Task { [weak self] in
+                for (i, start) in stride(from: 0, to: samples.count, by: 1_600).enumerated() {
+                    guard !Task.isCancelled else { return }
+                    onBuffer?(Transcriber.buffer(samples[start..<min(start + 1_600, samples.count)]))
+                    try? await Task.sleep(until: begin + .milliseconds(100 * (i + 1)), clock: .continuous)
+                }
+                self?.delivered = true
+            }
+        }
+        func stop() -> [Float] { feeder?.cancel(); feeder = nil; return [] }
     }
     private final class NSLockingValue: @unchecked Sendable {
         private let lock = NSLock()

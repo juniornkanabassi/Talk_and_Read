@@ -138,12 +138,17 @@ enum DictationError: LocalizedError, Equatable {
         return apple
     }
 
+    /// The Parakeet model the next dictation uses, as `recogniser()` picks it; nil when Apple's is preferred for English.
+    private var selectedModel: DictationASR? {
+        if languages != ["en"], multilingual.isLoaded || multilingual.isLoading || multilingual.isDownloaded { return multilingual }
+        return preferApple ? nil : asr
+    }
+
     /// Prepare model loading and first inference before dictation, without audio input or history changes.
     /// A user request shares loading; priming already in progress finishes on the normal recogniser queue.
     func warmUpIfInstalled() async {
-        guard !isBusy, !(preferApple && languages == ["en"]) else { return }
-        let selected = languages == ["en"] ? asr : multilingual
-        guard !(selected is AppleTranscriber), selected.isDownloaded, !selected.isLoading else { return }
+        guard !isBusy, let selected = selectedModel, !(selected is AppleTranscriber), selected.isDownloaded,
+              !selected.isLoading else { return }
         warming = true
         updateBusy()
         defer { warming = false; updateBusy() }
@@ -312,10 +317,12 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     /// Frees the recogniser. False, freeing nothing, while dictation, a file, a drain or the model load still runs: the
-    /// caller keeps its idle timer and tries again later (Sol #24).
-    @discardableResult func unloadModel() -> Bool {
+    /// caller keeps its idle timer and tries again later (Sol #24). `keepSelected` (the idle timer) leaves the chosen
+    /// languages' model loaded: once freed, a purged Core ML cache makes the next load recompile for 13 to 29 s.
+    @discardableResult func unloadModel(keepSelected: Bool = false) -> Bool {
         guard !isBusy else { return false }
-        let english = asr.unload(), other = multilingual.unload()
+        let keep = keepSelected ? selectedModel : nil
+        let english = keep === asr || asr.unload(), other = keep === multilingual || multilingual.unload()
         return english && other
     }
 

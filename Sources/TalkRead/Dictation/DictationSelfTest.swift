@@ -629,13 +629,31 @@ import WebKit
         expect("active file request skips preparation", busyOther.loads == 0)
         _ = await file.value
 
+        // The idle timer keeps the chosen languages' model and frees the other; an explicit unload frees both.
+        let (keepController, keepEnglish, keepOther, _) = make()
+        keepEnglish.isLoaded = true
+        keepOther.isLoaded = true
+        expect("idle unload keeps the English model only", keepController.unloadModel(keepSelected: true) && keepEnglish.isLoaded && !keepOther.isLoaded)
+        keepController.languages = ["en", "fr"]
+        keepEnglish.isLoaded = true
+        keepOther.isLoaded = true
+        expect("idle unload keeps the multilingual model only", keepController.unloadModel(keepSelected: true) && !keepEnglish.isLoaded && keepOther.isLoaded)
+        keepOther.isDownloaded = false
+        keepOther.isLoaded = false
+        keepEnglish.isLoaded = true
+        expect("idle unload keeps the English fallback while the multilingual model is missing", keepController.unloadModel(keepSelected: true) && keepEnglish.isLoaded)
+        keepController.languages = ["en"]
+        keepController.preferApple = true
+        keepEnglish.isLoaded = true
+        expect("idle unload with Apple preferred frees both", keepController.unloadModel(keepSelected: true) && !keepEnglish.isLoaded && !keepOther.isLoaded)
+
         let (retryController, retry, _, _) = make()
         retry.failNextLoad = true
         await retryController.warmUpIfInstalled()
         expect("failed warm-up leaves controller available", !retryController.isBusy && !retry.isLoaded)
         let result = try? await retryController.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "warm-test")
         expect("user request retries failed preparation", result != nil && retry.loads == 2)
-        print("warm-up: \(failures.isEmpty ? "PASS" : "FAIL \(failures)") (installed selection, no audio, shared load, cancellation, retry and idle unload)")
+        print("warm-up: \(failures.isEmpty ? "PASS" : "FAIL \(failures)") (installed selection, no audio, shared load, cancellation, retry, idle unload keeps the chosen model)")
         return failures.isEmpty
     }
 
