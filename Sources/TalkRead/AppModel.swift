@@ -2,7 +2,6 @@
 import AppKit
 import Combine
 import Foundation
-import PDFKit
 import TalkReadCore
 
 /// Reads started inside Talk & Read (the Home editor) carry no app name; the history shows these.
@@ -478,17 +477,31 @@ extension EngineKind {
     private weak var previewSession: ReadSession?
     /// Furniture ranges per PDF document, found once (`furniture`).
     private var furnitureCache: [UUID: [Range<Int>]] = [:]
+    private var pendingDocument: (id: UUID, item: UUID, token: Int?, paused: Bool)?
+    private var documentTask: Task<Void, Never>?
 
-    func read(_ item: LibraryItem, fromToken: Int?) {
-        let id = reserve("user")
-        Task {
+    func read(_ item: LibraryItem, fromToken: Int?, readText: (@Sendable () throws -> String)? = nil) {
+        if pendingDocument?.item == item.id, pendingDocument?.token == fromToken {
+            pendingDocument?.paused.toggle()
+            return
+        }
+        documentTask?.cancel()
+        readRevision &+= 1
+        let revision = readRevision, request = UUID()
+        pendingDocument = (request, item.id, fromToken, false)
+        documentTask = Task {
             do {
-                let text = try await Task.detached { [libraryStore] in try libraryStore.text(item) }.value
-                guard owner?.sessionID == id else { return }
-                await startDocument(item, text: text, fromToken: fromToken, id: id)
+                let text = try await Task.detached { [libraryStore] in try readText?() ?? libraryStore.text(item) }.value
+                let skip = if let known = knownFurniture(item) { known } else { await furniture(item, text: text) }
+                guard !Task.isCancelled, readRevision == revision, pendingDocument?.id == request else { return }
+                let paused = pendingDocument?.paused == true
+                let id = reserve("user")
+                let session = beginDocument(item, text: text, fromToken: fromToken, id: id, skip: skip)
+                if paused { session.pause() }
             } catch {
-                guard owner?.sessionID == id else { return }
-                owner = nil
+                guard !Task.isCancelled, readRevision == revision, pendingDocument?.id == request else { return }
+                pendingDocument = nil
+                documentTask = nil
                 MiniPlayer.shared.flash("Could not open “\(item.title)”")
             }
         }
@@ -517,21 +530,12 @@ extension EngineKind {
     /// importer joined them; a stored text that no longer matches its PDF unit for unit skips nothing. Found once per
     /// document (the reader fills it in when it opens the PDF), since extracting a long PDF's text takes a while.
     private func furniture(_ item: LibraryItem, text: String) async -> [Range<Int>] {
-        let url = Paths.documents.appendingPathComponent(item.fileName)
         // Off the main actor: extracting every page of a long PDF must not freeze the UI.
         let found = await Task.detached(priority: .userInitiated) { () -> [Range<Int>] in
-            guard let pdf = PDFDocument(url: url) else { return [] }
-            let joined = Importer.pdfText(pdf)
-            return joined.text.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: joined.pageStarts) : []
+            ReaderDocument.loadPDF(item, text: text).furniture
         }.value
         furnitureCache[item.id] = found
         return found
-    }
-
-    /// `joined`: the PDF's text as `Importer.pdfText` joins it; `text`: the stored document text a read speaks.
-    func rememberFurniture(_ item: LibraryItem, text: String, joined: String, pageStarts: [Int]) {
-        guard settings.skipHeadersAndFooters else { return }
-        furnitureCache[item.id] = joined.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: pageStarts) : []
     }
 
     /// The reader already measured PDF furniture off the main thread.
@@ -583,6 +587,9 @@ extension EngineKind {
 
     /// Stops the current read, if any, and releases its ownership.
     func stopSession() {
+        documentTask?.cancel()
+        documentTask = nil
+        pendingDocument = nil
         readRevision &+= 1
         rememberPosition()
         sessionWatch = nil
@@ -595,6 +602,7 @@ extension EngineKind {
     }
 
     func togglePause() {
+        if pendingDocument != nil { pendingDocument?.paused.toggle(); return }
         guard let s = liveSession else { return }
         owner?.caller = "user"
         if s.state == .paused { s.resume() } else { s.pause() }

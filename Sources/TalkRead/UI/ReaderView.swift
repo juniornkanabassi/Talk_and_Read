@@ -68,6 +68,13 @@ struct ReaderDocument: @unchecked Sendable {
     let pageStarts: [Int]
     let furniture: [Range<Int>]
 
+    nonisolated static func loadPDF(_ item: LibraryItem, text: String) -> (pdf: PDFDocument?, pageStarts: [Int], furniture: [Range<Int>]) {
+        let pdf = item.kind == "pdf" ? PDFDocument(url: Paths.documents.appendingPathComponent(item.fileName)) : nil
+        let joined = pdf.map(Importer.pdfText)
+        let furniture = joined.map { $0.text.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: $0.pageStarts) : [] } ?? []
+        return (pdf, joined?.pageStarts ?? [], furniture)
+    }
+
     /// The PDF is created and read on one worker, then handed to PDFView on the main actor.
     nonisolated static func load(_ item: LibraryItem, textOverride: String? = nil,
                                  readText: (@Sendable () throws -> String)? = nil) async throws -> ReaderDocument {
@@ -75,12 +82,10 @@ struct ReaderDocument: @unchecked Sendable {
             try Task.checkCancellation()
             let text = try textOverride ?? readText?() ?? String(contentsOf: Paths.documents.appendingPathComponent("\(item.id.uuidString).txt"), encoding: .utf8)
             let tokens = TextKit.tokenize(text)
-            let pdf = item.kind == "pdf" ? PDFDocument(url: Paths.documents.appendingPathComponent(item.fileName)) : nil
-            let joined = pdf.map(Importer.pdfText)
-            let furniture = joined.map { $0.text.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: $0.pageStarts) : [] } ?? []
+            let pdf = loadPDF(item, text: text)
             try Task.checkCancellation()
             return ReaderDocument(text: text, tokens: tokens, sentences: ReadingText.sentenceRanges(tokens),
-                                  pdf: pdf, pageStarts: joined?.pageStarts ?? [], furniture: furniture)
+                                  pdf: pdf.pdf, pageStarts: pdf.pageStarts, furniture: pdf.furniture)
         }
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }

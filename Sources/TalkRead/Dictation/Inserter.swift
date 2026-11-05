@@ -64,13 +64,14 @@ enum Inserter {
             return (own.secure, own.previous, false, own.singleLine, editor.isEditable)
         }
         let root = pid.map { AXUIElementCreateApplication($0) } ?? AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(root, 0.25)
         guard let element: AXUIElement = attribute(root, kAXFocusedUIElementAttribute) else { return (false, nil, false, false, nil) }
         let role: String? = attribute(element, kAXRoleAttribute), subrole: String? = attribute(element, kAXSubroleAttribute)
         let secure = role == kAXSecureTextFieldSubrole || subrole == kAXSecureTextFieldSubrole
         let terminal = isTerminal(element)
         var settable: DarwinBoolean = false
-        _ = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        _ = PointerCapture.bounded(0.25) {
+            PointerCapture.axCall { AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) }
+        }
         let single = isSingleLine(role: role, subrole: subrole, editable: settable.boolValue)
         let rangeValue: AXValue? = attribute(element, kAXSelectedTextRangeAttribute)
         var takes = takesText(role: role, subrole: subrole, editable: settable.boolValue, caret: rangeValue != nil, terminal: terminal)
@@ -203,13 +204,17 @@ enum Inserter {
 
     private static func attribute<T>(_ element: AXUIElement, _ name: String) -> T? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+        guard PointerCapture.bounded(0.25, {
+            PointerCapture.axCall { AXUIElementCopyAttributeValue(element, name as CFString, &value) }
+        }) == .success else { return nil }
         return value as? T
     }
 
     private static func parameterized<T>(_ element: AXUIElement, _ name: String, _ parameter: CFTypeRef) -> T? {
         var value: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(element, name as CFString, parameter, &value) == .success else { return nil }
+        guard PointerCapture.bounded(0.25, {
+            PointerCapture.axCall { AXUIElementCopyParameterizedAttributeValue(element, name as CFString, parameter, &value) }
+        }) == .success else { return nil }
         return value as? T
     }
 }

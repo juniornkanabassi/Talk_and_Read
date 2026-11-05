@@ -60,14 +60,14 @@ enum TalkReadMain {
     private var reading = false { didSet { hotkeys?.reading = reading } }
     private var recording = false { didSet { hotkeys?.recording = recording } }
     private var openSettingsScene: (() -> Void)?
+    private var settingsCloseObserver: NSObjectProtocol?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let scenes = NSHostingSceneRepresentation {
             SwiftUI.Settings {
                 SettingsView(model: model)
                     .background(SettingsWindowRegistration { [weak self] window in
-                        self?.windows["settings"] = window
-                        window.delegate = self
+                        self?.registerSettingsWindow(window)
                     })
             }
         }
@@ -229,7 +229,7 @@ enum TalkReadMain {
             keys.start()
             hotkeys = keys
         }
-        if hotkeys != nil, !windows.values.contains(where: \.isVisible) {
+        if hotkeys != nil, !windows.values.contains(where: Self.windowIsOpen) {
             pollTimer?.invalidate()
             pollTimer = nil
         }
@@ -320,13 +320,25 @@ enum TalkReadMain {
         return window
     }
 
+    /// SwiftUI keeps its own delegate; only observe the lifecycle event we need.
+    func registerSettingsWindow(_ window: NSWindow) {
+        if let settingsCloseObserver { NotificationCenter.default.removeObserver(settingsCloseObserver) }
+        windows["settings"] = window
+        settingsCloseObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+                                                                        object: window, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated { self?.windowWillClose(note) }
+        }
+    }
+
+    static func windowIsOpen(_ window: NSWindow) -> Bool { window.isVisible || window.isMiniaturized }
+
     /// Closed windows are dropped (their views stop updating); the Dock icon goes with the last one.
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow,
               let kind = windows.first(where: { $0.value === window })?.key else { return }
         // SwiftUI owns its Settings window and can reuse it when opened again.
         if kind != "settings" { windows[kind] = nil }
-        if !windows.values.contains(where: { $0 !== window && $0.isVisible }) { NSApp.setActivationPolicy(.accessory) }
+        if !windows.values.contains(where: { $0 !== window && Self.windowIsOpen($0) }) { NSApp.setActivationPolicy(.accessory) }
     }
 
 }

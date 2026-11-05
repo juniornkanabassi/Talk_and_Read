@@ -24,7 +24,32 @@ enum MenuSelfTest {
             check(items.contains { $0.title == title && $0.action != nil }, "\(title) command")
         }
         check(NSApp.windowsMenu?.title == "Window" && NSApp.helpMenu?.title == "Help", "system Window and Help registration")
+        let window = WindowState(contentRect: .zero, styleMask: [], backing: .buffered, defer: true)
+        check(!AppDelegate.windowIsOpen(window), "closed window does not retain Dock icon")
+        window.minimised = true
+        check(AppDelegate.windowIsOpen(window), "minimised window retains Dock icon and permission polling")
+        window.minimised = false
+        window.testVisible = true
+        check(AppDelegate.windowIsOpen(window), "visible window retains Dock icon")
+        let settingsDelegate = SettingsDelegate()
+        window.delegate = settingsDelegate
+        let appDelegate = AppDelegate()
+        appDelegate.registerSettingsWindow(window)
+        check(window.delegate === settingsDelegate, "Settings registration preserves SwiftUI window delegate")
+        check(MiniPlayer.autoHideDelay(setting: 0.5, hasMessage: true) == 3, "error toast remains readable for three seconds")
+        check(MiniPlayer.autoHideDelay(setting: 0, hasMessage: true) == 3, "error toast hides with ordinary auto-hide disabled")
+        check(MiniPlayer.autoHideDelay(setting: 10, hasMessage: true) == 10, "error toast honours longer configured delay")
+        check(MiniPlayer.autoHideDelay(setting: 0, hasMessage: false) == nil, "ordinary player honours never hide")
         print("menu self-test: \(failed == 0 ? "PASS" : "FAIL"), \(failed) failures")
         return failed == 0 ? 0 : 1
     }
 }
+
+@MainActor private final class WindowState: NSWindow {
+    var testVisible = false
+    var minimised = false
+    override var isVisible: Bool { testVisible }
+    override var isMiniaturized: Bool { minimised }
+}
+
+@MainActor private final class SettingsDelegate: NSObject, NSWindowDelegate {}

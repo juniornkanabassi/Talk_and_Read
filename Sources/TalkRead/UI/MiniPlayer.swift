@@ -104,14 +104,14 @@ import TalkReadCore
 
     func toggle() { isVisible ? hide() : show() }
 
-    /// A readable, announced status retained until dismissed or another read begins.
+    /// Announce errors even when the player is disabled; visible status stays readable for at least three seconds.
     func flash(_ text: String) {
-        message = text
         AccessibilityNotification.Announcement(text).post()
+        guard model?.settings.showMiniPlayer == true else { return }
+        message = text
         resize()
         show()
-        // A failed action stays readable until dismissed or the next read begins.
-        hideTask?.cancel()
+        hideLater(status: true)
     }
 
     /// Close button and Esc: stop reading and hide.
@@ -153,30 +153,36 @@ import TalkReadCore
             case .failed(let reason): self?.flash(reason)
             case .finished, .paused: self?.hideLater()   // a pause hides too; resuming brings it back (Junior, 2 Nov)
             case .playing:
-                self?.hideTask?.cancel()
+                if self?.message == nil { self?.hideTask?.cancel() }
                 if self?.isShowing == false, self?.model?.settings.showMiniPlayer == true { self?.show() }
-            default: self?.hideTask?.cancel()
+            default: if self?.message == nil { self?.hideTask?.cancel() }
             }
         }
         noticeWatch = session?.$fallbackReason.map { $0 != nil }.removeDuplicates().sink { [weak self] _ in
             self?.resizeAfterLayout()   // delivered before the new value is stored
         }
-        if session != nil, model?.settings.showMiniPlayer == true { show() }
+        if session != nil, message == nil, model?.settings.showMiniPlayer == true { show() }
     }
 
     /// A docked dictation holds the player until it has gone, so the card never splits in two mid-sentence; the pointer
     /// over the card holds it too, as over the pill.
-    private func hideLater() {
+    static func autoHideDelay(setting: Double, hasMessage: Bool) -> Double? {
+        if hasMessage { return max(setting, 3) }
+        return setting > 0 ? setting : nil
+    }
+
+    private func hideLater(status: Bool = false) {
+        // A later pause must not cancel or restart a status message's existing timer.
+        guard message == nil || status else { return }
         hideTask?.cancel()
-        guard message == nil else { return }
-        let seconds = model?.settings.miniPlayerAutoHideSeconds ?? 0.5
-        guard seconds > 0 else { return }
+        guard let seconds = Self.autoHideDelay(setting: model?.settings.miniPlayerAutoHideSeconds ?? 0.5,
+                                               hasMessage: message != nil) else { return }
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
             while !Task.isCancelled, self?.docked != nil || self?.containsPointer == true || SpeedControl.SpeedButton.panelShown {
                 try? await Task.sleep(for: .seconds(0.5))
             }
-            if !Task.isCancelled, self?.message == nil { self?.hide() }
+            if !Task.isCancelled { self?.hide() }
         }
     }
 

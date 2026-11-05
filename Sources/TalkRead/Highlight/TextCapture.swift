@@ -288,7 +288,7 @@ enum TextCapture {
         let gate = gate
         return await gate.transaction {
             guard let item = copyMenuItem(appElement), let before = gate.prepareToChange() else { return .nothing }
-            AXUIElementPerformAction(item, kAXPressAction as CFString)
+            _ = PointerCapture.axCall { AXUIElementPerformAction(item, kAXPressAction as CFString) }
             return await readCopy(gate: gate, before: before)
         }
     }
@@ -366,7 +366,7 @@ enum TextCapture {
 /// Copies an AX attribute, returning nil on any error (no attribute, unsupported, etc).
 func axAttribute(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
     var value: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+    guard PointerCapture.axCall({ AXUIElementCopyAttributeValue(element, attribute as CFString, &value) }) == .success else { return nil }
     return value
 }
 
@@ -378,7 +378,7 @@ func axElement(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
 /// Copies a parameterised AX attribute, returning nil on any error.
 func axParameterizedAttribute(_ element: AXUIElement, _ attribute: String, parameter: CFTypeRef) -> CFTypeRef? {
     var value: CFTypeRef?
-    guard AXUIElementCopyParameterizedAttributeValue(element, attribute as CFString, parameter, &value) == .success else { return nil }
+    guard PointerCapture.axCall({ AXUIElementCopyParameterizedAttributeValue(element, attribute as CFString, parameter, &value) }) == .success else { return nil }
     return value
 }
 

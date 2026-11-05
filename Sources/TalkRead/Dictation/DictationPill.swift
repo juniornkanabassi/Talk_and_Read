@@ -134,7 +134,7 @@ struct DictationPillView: View {
     private func suggestion(_ offer: AutoLearn.Correction) -> some View {
         HStack(spacing: Space.sm) {
             Text("Always type “\(offer.typed)” for “\(offer.heard)”?")
-                .font(TypeStyle.small.weight(.medium))
+                .font(TypeStyle.caption.weight(.medium))
                 .lineLimit(2)
                 .minimumScaleFactor(0.8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -143,12 +143,12 @@ struct DictationPillView: View {
                 catch let error as AppError { MiniPlayer.shared.flash(error.message) }
                 catch { MiniPlayer.shared.flash(error.localizedDescription) }
             } label: {
-                Image(systemName: "checkmark").font(TypeStyle.small.weight(.bold)).frame(width: 22, height: 22)
+                Image(systemName: "checkmark").font(TypeStyle.caption.weight(.bold)).frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Add to vocabulary")
             Button { dictation.dismissSuggestion(offer) } label: {
-                Image(systemName: "xmark").font(TypeStyle.small.weight(.bold)).frame(width: 22, height: 22)
+                Image(systemName: "xmark").font(TypeStyle.caption.weight(.bold)).frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Not now")
@@ -235,13 +235,13 @@ struct DictationPillStatus: View {
                         .truncationMode(words ? .head : .tail)
                         .accessibilityLabel("Dictation: \(message)")
                     if let tip {
-                        Text(tip).font(TypeStyle.small).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+                        Text(tip).font(TypeStyle.caption).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if let copy {
                     Button(action: copy) {
-                        Text(copied ? "Copied" : "Copy").font(TypeStyle.small.weight(.semibold))
+                        Text(copied ? "Copied" : "Copy").font(TypeStyle.caption.weight(.semibold))
                             .padding(.horizontal, Space.sm).frame(height: 22)
                             .background(.quaternary, in: Capsule())
                     }
@@ -249,7 +249,7 @@ struct DictationPillStatus: View {
                     .accessibilityLabel(copied ? "Copied" : "Copy the dictation")
                 }
                 Button(action: cancel) {
-                    Image(systemName: "xmark").font(TypeStyle.small.weight(.bold)).frame(width: 22, height: 22)
+                    Image(systemName: "xmark").font(TypeStyle.caption.weight(.bold)).frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(closes ? "Close" : "Cancel dictation")

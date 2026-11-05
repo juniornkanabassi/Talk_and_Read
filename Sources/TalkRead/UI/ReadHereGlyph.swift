@@ -246,12 +246,14 @@ import TalkReadCore
     }
 
     private func hoverTick() {
-        guard timer == nil, !looking else { return }
+        guard timer == nil else { return }
         let point = Self.pointer(), now = ProcessInfo.processInfo.systemUptime
         hoverTicks += 1
         if let block, !Self.band(block).contains(point) {
+            generation += 1   // a pending result must not put the old paragraph back
             hidePanel(); self.block = nil; rest = nil
         }
+        guard !looking else { return }
         guard NSEvent.pressedMouseButtons == 0 else { rest = nil; return }
         guard NSEvent.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty else { return }
         if rest.map({ hypot($0.point.x - point.x, $0.point.y - point.y) >= 3 }) ?? true {
@@ -282,7 +284,9 @@ import TalkReadCore
                 hoverColdUntil = now + 1.5
                 _ = await PointerCapture.onWorker {
                     PointerCapture.bounded {
-                        AXUIElementSetAttributeValue(AXUIElementCreateApplication(hit.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+                        PointerCapture.axCall {
+                            AXUIElementSetAttributeValue(AXUIElementCreateApplication(hit.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+                        }
                     }
                 }
                 guard request == generation, timer == nil else { return }

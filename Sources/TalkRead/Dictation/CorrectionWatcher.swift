@@ -29,7 +29,6 @@ import TalkReadCore
     private static func snapshot() -> Snapshot? {
         guard !IsSecureEventInputEnabled() else { return nil }
         let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 0.25)
         guard let element: AXUIElement = attribute(system, kAXFocusedUIElementAttribute) else { return nil }
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success, pid != getpid() else { return nil }
@@ -53,7 +52,9 @@ import TalkReadCore
 
     private static func attribute<T>(_ element: AXUIElement, _ name: String) -> T? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+        guard PointerCapture.bounded(0.25, {
+            PointerCapture.axCall { AXUIElementCopyAttributeValue(element, name as CFString, &value) }
+        }) == .success else { return nil }
         return value as? T
     }
 }

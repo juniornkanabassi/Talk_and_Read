@@ -43,10 +43,10 @@ enum PointerCapture {
     /// The element under `point` (AX top-left coordinates) and its app; nil over our own windows or nothing.
     static func hit(_ point: CGPoint) -> (element: AXUIElement, pid: pid_t)? {
         let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 0.1)   // a hung app costs one tenth of a second, not six, for this call only
         var found: AXUIElement?
-        let result = AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &found)
-        AXUIElementSetMessagingTimeout(system, 0)   // the system-wide timeout is every element's: put the default back
+        let result = bounded(0.1) {
+            axCall { AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &found) }
+        }
         guard result == .success, let found else { return nil }
         var pid: pid_t = 0
         guard AXUIElementGetPid(found, &pid) == .success, pid != getpid() else { return nil }
@@ -70,14 +70,15 @@ enum PointerCapture {
         return nil
     }
 
-    /// Bounds each AX call. Hover callers use the serial worker so a stalled app never blocks the UI.
-    /// The system-wide timeout is reset after the operation.
-    static func bounded<T>(_ seconds: Float = 0.25, _ body: () -> T) -> T {
-        let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, seconds)
-        defer { AXUIElementSetMessagingTimeout(system, 0) }
-        return body()
+    private static let calls = AXCallCoordinator { seconds in
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), seconds)
     }
+
+    /// Scope a timeout to this thread's calls, without holding the lock over an entire tree walk.
+    static func bounded<T>(_ seconds: Float = 0.25, _ body: () -> T) -> T { calls.bounded(seconds, body) }
+
+    /// Apply and restore the process-wide timeout atomically around one AX request.
+    static func axCall<T>(_ body: () -> T) -> T { calls.call(body) }
 
     static func block(from element: AXUIElement, pid: pid_t, point: CGPoint) -> Block? {
         bounded { lookup(from: element, pid: pid, point: point) }
@@ -229,7 +230,7 @@ enum PointerCapture {
     /// The element answers AXRangeForPosition, so the native path can place a point in its text.
     private static func positions(_ element: AXUIElement) -> Bool {
         var names: CFArray?
-        guard AXUIElementCopyParameterizedAttributeNames(element, &names) == .success else { return false }
+        guard axCall({ AXUIElementCopyParameterizedAttributeNames(element, &names) }) == .success else { return false }
         return ((names as? [String]) ?? []).contains("AXRangeForPosition")
     }
 
@@ -415,5 +416,37 @@ enum PointerCapture {
             current = axElement(e, kAXParentAttribute)
         }
         return nil
+    }
+}
+
+/// AX's system-wide timeout is process state. Threads keep their intended bound locally and hold this
+/// lock only while making one request, so a hover walk cannot reset a reader's timeout or monopolise it.
+final class AXCallCoordinator: @unchecked Sendable {
+    private let lock = NSRecursiveLock()
+    private let timeoutKey = "TalkRead.AXTimeout.\(UUID().uuidString)"
+    private let setTimeout: (Float) -> Void
+    private var activeTimeout: Float = 0
+
+    init(setTimeout: @escaping (Float) -> Void) { self.setTimeout = setTimeout }
+
+    func bounded<T>(_ seconds: Float, _ body: () -> T) -> T {
+        let dictionary = Thread.current.threadDictionary
+        let previous = dictionary[timeoutKey]
+        dictionary[timeoutKey] = seconds
+        defer {
+            if let previous { dictionary[timeoutKey] = previous }
+            else { dictionary.removeObject(forKey: timeoutKey) }
+        }
+        return body()
+    }
+
+    func call<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        let previous = activeTimeout
+        activeTimeout = (Thread.current.threadDictionary[timeoutKey] as? NSNumber)?.floatValue ?? 0
+        setTimeout(activeTimeout)
+        defer { activeTimeout = previous; setTimeout(previous) }
+        return body()
     }
 }

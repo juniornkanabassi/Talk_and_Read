@@ -13,15 +13,12 @@ enum Space {
     static let xxl: CGFloat = 24
     static let spacious: CGFloat = 28
     static let section: CGFloat = 32
-    static let margin = xl
 }
 
 enum TypeStyle {
     static let caption = Font.system(size: 12)
-    static let small = Font.system(size: 12)
     static let label = Font.system(size: 16)
     static let body = Font.system(size: 16)
-    static let title = Font.system(size: 20)
     static let metric = Font.system(size: 24, weight: .semibold, design: .rounded)
     static let display = Font.system(size: 40, weight: .bold, design: .rounded)
 }

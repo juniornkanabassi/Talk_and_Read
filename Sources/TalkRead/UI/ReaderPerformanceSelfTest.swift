@@ -58,6 +58,46 @@ import TalkReadCore
             catch { check(true, "missing document reports an error") }
         } catch { check(false, "fixture setup/load: \(error)") }
 
+        let model = AppModel.shared
+        model.settings.showMiniPlayer = false
+        model.engines = Engines(neural: SilentEngine(kind: .neural), system: SilentEngine(kind: .system))
+        await model.loadVoices()
+        let pendingItem = LibraryItem(id: UUID(), title: "Pending read", kind: "text", fileName: "unused.txt", added: Date(), position: 0)
+        let previous = model.startSession("The current read continues while another document opens.", capture: nil, id: model.reserve("user"))
+        previous.pause()
+        let previousOwner = model.owner?.sessionID
+        let failedLoad = DocumentLoadProbe()
+        model.read(pendingItem, fromToken: nil, readText: { try failedLoad.load(failing: true) })
+        await wait { failedLoad.started }
+        check(model.session === previous && model.owner?.sessionID == previousOwner && previous.state == .paused,
+              "pending file load preserves the current session and ownership")
+        failedLoad.release()
+        await wait { failedLoad.finished }
+        // Allow the waiting main-actor continuation to receive the failure.
+        try? await Task.sleep(for: .milliseconds(30))
+        check(model.session === previous && model.owner?.sessionID == previousOwner && previous.state == .paused,
+              "failed file load preserves the current session and ownership")
+
+        let repeatLoad = DocumentLoadProbe()
+        model.read(pendingItem, fromToken: nil, readText: { try repeatLoad.load() })
+        await wait { repeatLoad.started }
+        model.read(pendingItem, fromToken: nil, readText: { try repeatLoad.load() })
+        repeatLoad.release()
+        await wait { model.session !== previous }
+        check(repeatLoad.calls == 1 && model.session !== previous && model.session?.state == .paused,
+              "repeated Play while loading pauses the one pending read")
+
+        let cancelledSession = model.session
+        let stoppedLoad = DocumentLoadProbe()
+        model.read(pendingItem, fromToken: 1, readText: { try stoppedLoad.load() })
+        await wait { stoppedLoad.started }
+        model.stopReading()
+        stoppedLoad.release()
+        await wait { stoppedLoad.finished }
+        try? await Task.sleep(for: .milliseconds(30))
+        check(model.session === cancelledSession && model.owner == nil && model.liveSession == nil,
+              "explicit Stop prevents a pending load from starting later")
+
         let glyph = ReadHereGlyph()
         let click = glyph.beginClick(readRevision: 12)
         check(glyph.accepts(click, readRevision: 12), "unchanged delayed glyph click may start")
@@ -100,6 +140,48 @@ import TalkReadCore
         check(!centralLeases.contains(wakePID) && !centralLeases.release(wakePID, keepAwake: false),
               "quit clears central leases and ignores a later stale release")
 
+        let timeoutProbe = TimeoutProbe()
+        let calls = AXCallCoordinator { timeoutProbe.set($0) }
+        calls.bounded(0.25) {
+            calls.call {
+                timeoutProbe.expect(0.25)
+                calls.bounded(0.1) { calls.call { timeoutProbe.expect(0.1) } }
+                timeoutProbe.expect(0.25)
+            }
+            calls.call { timeoutProbe.expect(0.25) }
+        }
+        calls.call { timeoutProbe.expect(0) }
+        check(timeoutProbe.passed && timeoutProbe.current == 0, "nested AX request bounds restore outer timeout and default")
+
+        let waiting = DispatchSemaphore(value: 0)
+        let foregroundDone = DispatchSemaphore(value: 0)
+        let concurrent = DispatchGroup()
+        concurrent.enter()
+        DispatchQueue.global().async {
+            calls.bounded(0.1) {
+                calls.call { timeoutProbe.expect(0.1) }
+                waiting.signal()
+                // The foreground must be able to run while this walk is between requests.
+                timeoutProbe.recordProgress(foregroundDone.wait(timeout: .now() + 2) == .success)
+                calls.call { timeoutProbe.expect(0.1) }
+            }
+            concurrent.leave()
+        }
+        concurrent.enter()
+        DispatchQueue.global().async {
+            calls.bounded(0.25) {
+                timeoutProbe.recordProgress(waiting.wait(timeout: .now() + 2) == .success)
+                calls.call { timeoutProbe.expect(0.25) }
+                foregroundDone.signal()
+            }
+            concurrent.leave()
+        }
+        await withCheckedContinuation { continuation in
+            concurrent.notify(queue: .global()) { continuation.resume() }
+        }
+        check(timeoutProbe.passed && timeoutProbe.current == 0, "concurrent AX callers retain their own bounds")
+        check(timeoutProbe.progressed, "foreground AX request runs between worker tree-walk requests")
+
         let probe = WorkerProbe()
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<12 {
@@ -111,6 +193,31 @@ import TalkReadCore
         check(probe.calls == 12 && probe.peak == 1 && !probe.usedMainThread, "AX worker is serial and never executes work on the main thread")
         print("reader-performance: \(checks - failures)/\(checks) passed")
         return failures == 0 ? 0 : 1
+    }
+
+    private static func wait(_ condition: () -> Bool) async {
+        for _ in 0..<500 {
+            if condition() { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    private final class DocumentLoadProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private let gate = DispatchSemaphore(value: 0)
+        private var count = 0
+        private var done = false
+        var calls: Int { lock.withLock { count } }
+        var started: Bool { calls > 0 }
+        var finished: Bool { lock.withLock { done } }
+        func release() { gate.signal() }
+        func load(failing: Bool = false) throws -> String {
+            lock.withLock { count += 1 }
+            _ = gate.wait(timeout: .now() + 5)
+            defer { lock.withLock { done = true } }
+            if failing { throw CocoaError(.fileNoSuchFile) }
+            return "One pending document read, held until the test releases it."
+        }
     }
 
     /// A main-queue acknowledgement while the loader is still on its worker.
@@ -129,6 +236,19 @@ import TalkReadCore
             }
             responded = gate.wait(timeout: .now() + 3) == .success
         }
+    }
+
+    private final class TimeoutProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var timeout: Float = 0
+        private var valid = true
+        private var progress = true
+        var current: Float { lock.withLock { timeout } }
+        var passed: Bool { lock.withLock { valid } }
+        var progressed: Bool { lock.withLock { progress } }
+        func set(_ value: Float) { lock.withLock { timeout = value } }
+        func expect(_ value: Float) { lock.withLock { valid = valid && timeout == value } }
+        func recordProgress(_ value: Bool) { lock.withLock { progress = progress && value } }
     }
 
     private final class WorkerProbe: @unchecked Sendable {
