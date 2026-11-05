@@ -5,28 +5,6 @@ import Foundation
 import PDFKit
 import TalkReadCore
 
-struct LibraryItem: Codable, Identifiable, Hashable {
-    let id: UUID
-    var title: String
-    /// pdf|text|markdown|rtf|docx|html|epub|web|pasted
-    var kind: String
-    /// Copy under Documents/.
-    var fileName: String
-    var added: Date
-    /// Token index of the reading position.
-    var position: Int
-}
-
-struct ReadEntry: Codable, Identifiable {
-    let id: UUID
-    let date: Date
-    let app: String?
-    /// First 5,000 characters.
-    let text: String
-    /// The app's bundle identifier when it was read (nil in older histories and for reads started inside Talk & Read).
-    var bundleID: String? = nil
-}
-
 /// Reads started inside Talk & Read (the Home editor) carry no app name; the history shows these.
 let ownAppName = "Talk & Read"
 
@@ -80,8 +58,10 @@ extension EngineKind {
     @Published private(set) var voices: [Voice] = []
     @Published private(set) var session: ReadSession?
     let dictation = DictationController()
-    @Published private(set) var library: [LibraryItem]
-    @Published private(set) var recentReads: [ReadEntry]
+    nonisolated private let libraryStore: LibraryStore
+    var library: [LibraryItem] { libraryStore.items }
+    var recentReads: [ReadEntry] { libraryStore.reads }
+    private var libraryWatch: AnyCancellable?
     @Published private(set) var permissions = Permissions.current()
     @Published private(set) var voiceModel: ModelState = .missing(megabytes: AppModel.voiceMegabytes)
     @Published private(set) var dictationModel: ModelState = .missing(megabytes: AppModel.dictationMegabytes)
@@ -104,6 +84,8 @@ extension EngineKind {
     /// PLAN decision 16: who owns the current read. Reserved synchronously when a read is requested, held through
     /// preparing, playing and paused, released at finished, failed or stopped.
     var owner: (caller: String, sessionID: UUID)?
+    /// Explicit read/stop requests invalidate a pending glyph click; natural completion does not.
+    private(set) var readRevision: UInt64 = 0
     /// What the status command reports about the current read (the voice is the session's `effectiveVoice`).
     /// Published so a speed shown from `activeSpeed` refreshes when only the live read's rate changes (a paused preview).
     @Published private(set) var sessionInfo = (source: "", rate: Float(1), item: UUID?.none)
@@ -135,9 +117,9 @@ extension EngineKind {
         .appendingPathComponent(".cache/fluidaudio/Models/kokoro-82m-coreml", isDirectory: true)
 
     private init() {
+        libraryStore = LibraryStore()
         settings = Settings.load()
-        library = Self.loadJSON(Paths.library) ?? []
-        recentReads = Self.loadJSON(Paths.reads) ?? []
+        libraryWatch = libraryStore.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         refreshModelStates()
         applyDictationSettings()
         // Recording, transcribing (live or a file) or typing: one flag from the dictation's admission slot (Sol #16).
@@ -498,11 +480,18 @@ extension EngineKind {
     private var furnitureCache: [UUID: [Range<Int>]] = [:]
 
     func read(_ item: LibraryItem, fromToken: Int?) {
-        guard let text = try? documentText(item) else { MiniPlayer.shared.flash("Could not open “\(item.title)”"); return }
         let id = reserve("user")
-        // At once unless a PDF's furniture still has to be found.
-        if let skip = knownFurniture(item) { beginDocument(item, text: text, fromToken: fromToken, id: id, skip: skip); return }
-        Task { await startDocument(item, text: text, fromToken: fromToken, id: id) }
+        Task {
+            do {
+                let text = try await Task.detached { [libraryStore] in try libraryStore.text(item) }.value
+                guard owner?.sessionID == id else { return }
+                await startDocument(item, text: text, fromToken: fromToken, id: id)
+            } catch {
+                guard owner?.sessionID == id else { return }
+                owner = nil
+                MiniPlayer.shared.flash("Could not open “\(item.title)”")
+            }
+        }
     }
 
     /// Starts at `fromToken`, else at the saved position. nil when another read took over while a PDF's furniture was found.
@@ -543,6 +532,12 @@ extension EngineKind {
     func rememberFurniture(_ item: LibraryItem, text: String, joined: String, pageStarts: [Int]) {
         guard settings.skipHeadersAndFooters else { return }
         furnitureCache[item.id] = joined.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: pageStarts) : []
+    }
+
+    /// The reader already measured PDF furniture off the main thread.
+    func rememberFurniture(_ item: LibraryItem, ranges: [Range<Int>]) {
+        guard settings.skipHeadersAndFooters else { return }
+        furnitureCache[item.id] = ranges
     }
 
     @discardableResult
@@ -588,6 +583,7 @@ extension EngineKind {
 
     /// Stops the current read, if any, and releases its ownership.
     func stopSession() {
+        readRevision &+= 1
         rememberPosition()
         sessionWatch = nil
         highlighter?.stop()
@@ -668,7 +664,7 @@ extension EngineKind {
     }
 
     /// Additive: the Dictation pane's delete. The history belongs to DictationController (WP5).
-    func deleteDictation(_ id: UUID) { dictation.delete(id) }
+    func deleteDictation(_ id: UUID, undoManager: UndoManager? = nil) { dictation.delete(id, undoManager: undoManager) }
 
     /// Additive: the Dictation history's "Insert again" (Sol #17). Hides Talk & Read so the app the user came from is
     /// frontmost again, then types the entry there through the guarded Inserter (secure fields refused, clipboard restored).
@@ -773,9 +769,11 @@ extension EngineKind {
         let id = UUID()
         let item = LibraryItem(id: id, title: doc.title, kind: doc.kind, fileName: "\(id.uuidString).\(ext.isEmpty ? "txt" : ext)",
                                added: Date(), position: 0)
-        try FileManager.default.createDirectory(at: Paths.documents, withIntermediateDirectories: true)
-        try FileManager.default.copyItem(at: url, to: Paths.documents.appendingPathComponent(item.fileName))
-        try store(doc.text, for: item)
+        try await Task.detached { [libraryStore] in
+            try FileManager.default.createDirectory(at: Paths.documents, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: url, to: Paths.documents.appendingPathComponent(item.fileName))
+            try libraryStore.store(doc.text, for: item)
+        }.value
         return add(item)
     }
 
@@ -783,7 +781,7 @@ extension EngineKind {
         let doc = try await Task.detached { try await Importer.load(web: url) }.value
         let id = UUID()
         let item = LibraryItem(id: id, title: doc.title, kind: "web", fileName: "\(id.uuidString).txt", added: Date(), position: 0)
-        try store(doc.text, for: item)
+        try await Task.detached { [libraryStore] in try libraryStore.store(doc.text, for: item) }.value
         return add(item)
     }
 
@@ -795,44 +793,27 @@ extension EngineKind {
     }
 
     /// Every item keeps its extracted text as `<uuid>.txt` beside the copy, so reading never re-parses the original.
-    func documentText(_ item: LibraryItem) throws -> String {
-        try String(contentsOf: Self.textURL(item), encoding: .utf8)
+    nonisolated func documentText(_ item: LibraryItem) throws -> String {
+        try libraryStore.text(item)
     }
 
     func savePosition(_ item: LibraryItem, token: Int) { setPosition(item.id, token) }
 
-    func remove(_ item: LibraryItem) {
-        library.removeAll { $0.id == item.id }
-        Self.saveJSON(library, to: Paths.library)
-        try? FileManager.default.removeItem(at: Paths.documents.appendingPathComponent(item.fileName))
-        try? FileManager.default.removeItem(at: Self.textURL(item))
+    func remove(_ item: LibraryItem, undoManager: UndoManager? = nil) {
+        libraryStore.remove(item, undoManager: undoManager)
     }
 
-    private func store(_ text: String, for item: LibraryItem) throws {
-        try FileManager.default.createDirectory(at: Paths.documents, withIntermediateDirectories: true)
-        try text.write(to: Self.textURL(item), atomically: true, encoding: .utf8)
-    }
-
-    private func add(_ item: LibraryItem) -> LibraryItem {
-        library.insert(item, at: 0)
-        Self.saveJSON(library, to: Paths.library)
-        return item
-    }
-
-    private func setPosition(_ id: UUID, _ token: Int) {
-        guard let i = library.firstIndex(where: { $0.id == id }), library[i].position != token else { return }
-        library[i].position = token
-        Self.saveJSON(library, to: Paths.library)
-    }
+    private func store(_ text: String, for item: LibraryItem) throws { try libraryStore.store(text, for: item) }
+    private func add(_ item: LibraryItem) -> LibraryItem { libraryStore.add(item) }
+    private func setPosition(_ id: UUID, _ token: Int) { libraryStore.setPosition(id, token) }
 
     private func rememberPosition() {
         if let item = sessionInfo.item, let token = liveSession?.currentToken { setPosition(item, token) }
     }
 
     private func appendRead(_ text: String, app: String?, bundleID: String?) {
-        recentReads.insert(ReadEntry(id: UUID(), date: Date(), app: app, text: String(text.prefix(5000)), bundleID: bundleID), at: 0)
-        if recentReads.count > settings.historyLimit { recentReads.removeLast(recentReads.count - settings.historyLimit) }   // as for dictations
-        Self.saveJSON(recentReads, to: Paths.reads)
+        libraryStore.appendRead(ReadEntry(id: UUID(), date: Date(), app: app, text: String(text.prefix(5000)), bundleID: bundleID),
+                                limit: settings.historyLimit)
     }
 
     /// Home's "paste and listen": text typed into Talk & Read itself, kept in the history as read in Talk & Read.
@@ -864,13 +845,18 @@ extension EngineKind {
     }
 
     /// The Home history's Delete.
-    func deleteRead(_ id: UUID) {
-        recentReads.removeAll { $0.id == id }
-        Self.saveJSON(recentReads, to: Paths.reads)
+    func deleteRead(_ id: UUID, undoManager: UndoManager? = nil) { libraryStore.deleteRead(id, undoManager: undoManager) }
+
+    /// A CLI mutation acknowledges success only once its document moves and metadata are durable.
+    func flushLibraryChanges() async -> Bool {
+        let writer = libraryStore.writer
+        return await Task.detached(priority: .utility) { writer.flush() }.value
     }
 
-    nonisolated private static func textURL(_ item: LibraryItem) -> URL {
-        Paths.documents.appendingPathComponent("\(item.id.uuidString).txt")
+    /// Flush after producers stop and before the process exits, then discard files whose removal was saved.
+    func flushPersistence() async {
+        await libraryStore.finish()
+        await dictation.flushHistoryInBackground()
     }
 
     // MARK: Permissions

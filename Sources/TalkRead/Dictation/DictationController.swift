@@ -10,7 +10,7 @@ extension DictationController.State {
     var showsResult: Bool { if case .done = self { true } else if case .failed = self { true } else { false } }
 }
 
-struct DictationEntry: Codable, Identifiable {
+struct DictationEntry: Codable, Identifiable, Sendable {
     let id: UUID
     let date: Date
     let text: String
@@ -484,10 +484,30 @@ enum DictationError: LocalizedError, Equatable {
         state = .recording(level: level ?? l, partial: partial ?? p)
     }
 
-    /// Removes one history entry and rewrites the history file.
-    func delete(_ id: UUID) {
-        history.removeAll { $0.id == id }
+    private let historyWriter = PersistenceQueue()
+
+    /// Removal is reversible from the window's standard Edit > Undo command.
+    func delete(_ id: UUID, undoManager: UndoManager? = nil) {
+        guard let index = history.firstIndex(where: { $0.id == id }) else { return }
+        let entry = history.remove(at: index)
         saveHistory()
+        undoManager?.registerUndo(withTarget: self) { [weak undoManager] controller in
+            controller.restore(entry, at: index, undoManager: undoManager)
+        }
+        undoManager?.setActionName("Delete dictation")
+    }
+
+    private func restore(_ entry: DictationEntry, at index: Int, undoManager: UndoManager?) {
+        guard !history.contains(where: { $0.id == entry.id }) else { return }
+        history.insert(entry, at: min(index, history.count))
+        saveHistory()
+        undoManager?.registerUndo(withTarget: self) { [weak undoManager] controller in controller.delete(entry.id, undoManager: undoManager) }
+        undoManager?.setActionName("Delete dictation")
+    }
+
+    func flushHistory() { historyWriter.flush() }
+    func flushHistoryInBackground() async {
+        await Task.detached(priority: .utility) { [historyWriter] in historyWriter.flush() }.value
     }
 
     private func remember(_ text: String, app: String?, bundleID: String?) {
@@ -496,10 +516,7 @@ enum DictationError: LocalizedError, Equatable {
         saveHistory()
     }
 
-    private func saveHistory() {
-        try? FileManager.default.createDirectory(at: Paths.history.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(history).write(to: Paths.history, options: .atomic)
-    }
+    private func saveHistory() { historyWriter.save(history, to: Paths.history) }
 
     // MARK: Pill and sounds
 
