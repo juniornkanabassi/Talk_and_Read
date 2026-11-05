@@ -64,11 +64,19 @@ import TalkReadCore
             ("main-reader-pdf", main, true, AnyView(MainWindowContent(model: model, data: pdfData, router: router(.library, [data.library[0]])))),
             ("main-dictation", main, true, AnyView(MainWindowContent(model: model, data: data, router: router(.dictation)))),
             ("main-dictation-vocabulary", main, true, AnyView(DictationPane(model: model, data: data, showVocabulary: true).frame(width: 760, height: 620))),
-            ("main-voices", main, true, AnyView(MainWindowContent(model: model, data: data, router: router(.voices)))),
-            ("main-settings", main, true, AnyView(MainWindowContent(model: model, data: data, router: router(.settings)))),
+            ("main-voices", CGSize(width: 980, height: 1120), true, AnyView(SettingsContent(model: model, data: data, tab: .voices))),
+            ("main-settings", main, true, AnyView(SettingsContent(model: model, data: data, tab: .general))),
+            ("open-web-page", CGSize(width: 480, height: 240), true, AnyView(WebPageSheet(model: model, router: router(.library)))),
         ]
         for tab in SettingsContent.Tab.allCases {
-            shots.append(("settings-\(tab.rawValue)", CGSize(width: 760, height: 560), true, AnyView(SettingsContent(model: model, data: data, tab: tab))))
+            let height: CGFloat
+            switch tab {
+            case .voices: height = 1120
+            case .shortcuts: height = 1180
+            case .models: height = 900
+            default: height = 560
+            }
+            shots.append(("settings-\(tab.rawValue)", CGSize(width: 760, height: height), true, AnyView(SettingsContent(model: model, data: data, tab: tab))))
         }
         // D8: the Home history. The whole page, then the section alone in each state (hover, filters, search, paging, empty).
         let history = historySample(base: data)
@@ -162,6 +170,14 @@ import TalkReadCore
         ]
 
         var failures = 0
+        let required = Set(["main-home", "main-library", "main-reader-text", "main-reader-pdf", "main-dictation", "open-web-page"]
+            + SettingsContent.Tab.allCases.map { "settings-" + $0.rawValue }
+            + (1...4).map { "onboarding-\($0)" })
+        let names = shots.map(\.0)
+        if !required.isSubset(of: Set(names)) || Set(names).count != names.count {
+            failures += 1
+            print("FAIL snapshot coverage: missing or duplicate surfaces")
+        } else { print("ok   snapshot coverage: every page, Settings category, onboarding and web sheet") }
         var written = 0
         for (name, size, titled, view) in shots {
             for dark in [false, true] {
@@ -186,7 +202,7 @@ import TalkReadCore
                 setUp()
                 let url = output.appendingPathComponent("\(name)-\(dark ? "dark" : "light").png")
                 let page = AnyView(ShortcutsPage(model: model, speechifyRunning: { speechify }))
-                if render(page, size: CGSize(width: 680, height: speechify ? 1080 : 1000), titled: true, dark: dark, to: url) { written += 1 } else { failures += 1; print("FAIL render \(url.lastPathComponent)") }
+                if render(page, size: CGSize(width: 680, height: speechify ? 1400 : 1320), titled: true, dark: dark, to: url) { written += 1 } else { failures += 1; print("FAIL render \(url.lastPathComponent)") }
                 if let key = focus.active { focus.end(key) }
             }
         }
@@ -245,8 +261,22 @@ import TalkReadCore
         guard let rep = target.bitmapImageRepForCachingDisplay(in: target.bounds) else { return false }
         target.cacheDisplay(in: target.bounds, to: rep)
         window.close()
-        guard let png = rep.representation(using: .png, properties: [:]) else { return false }
+        guard hasVisibleContent(rep), let png = rep.representation(using: .png, properties: [:]) else { return false }
         return (try? png.write(to: url)) != nil
+    }
+
+    /// A written PNG alone can still be blank; inspect a grid of RGB samples for variation.
+    static func hasVisibleContent(_ bitmap: NSBitmapImageRep) -> Bool {
+        guard bitmap.pixelsWide > 0, bitmap.pixelsHigh > 0 else { return false }
+        var colours = Set<Int>()
+        for y in stride(from: 0, to: bitmap.pixelsHigh, by: max(1, bitmap.pixelsHigh / 64)) {
+            for x in stride(from: 0, to: bitmap.pixelsWide, by: max(1, bitmap.pixelsWide / 64)) {
+                guard let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                colours.insert((Int(colour.redComponent * 31) << 10) | (Int(colour.greenComponent * 31) << 5) | Int(colour.blueComponent * 31))
+                if colours.count > 8 { return true }
+            }
+        }
+        return false
     }
 
     // MARK: Logic checks (no windows, no input events)
@@ -258,6 +288,28 @@ import TalkReadCore
             if !ok { failures += 1 }
         }
 
+        let blank = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 64, bitsPerSample: 8,
+                                     samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        for x in 0..<64 { for y in 0..<64 { blank.setColor(.white, atX: x, y: y) } }
+        check(!hasVisibleContent(blank), "blank snapshot rejected", "solid bitmap")
+        func luminance(_ colour: NSColor) -> Double {
+            let c = colour.usingColorSpace(.sRGB)!
+            func linear(_ v: CGFloat) -> Double {
+                let d = Double(v)
+                return d <= 0.04045 ? d / 12.92 : pow((d + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linear(c.redComponent) + 0.7152 * linear(c.greenComponent) + 0.0722 * linear(c.blueComponent)
+        }
+        for (name, background) in [(NSAppearance.Name.aqua, "#F7F7F4"), (.darkAqua, "#16181D")] {
+            NSAppearance(named: name)!.performAsCurrentDrawingAppearance {
+                let bg = luminance(NSColor(hex: background)!)
+                let fg = luminance(Theme.accentTextNS)
+                let ratio = (max(bg, fg) + 0.05) / (min(bg, fg) + 0.05)
+                check(ratio >= 4.5, "accent text contrast \(name.rawValue)", String(format: "%.2f:1", ratio))
+            }
+        }
+        check([Space.xs, Space.sm, Space.md, Space.lg, Space.xl, Space.xxl, Space.spacious, Space.section].allSatisfy { $0.truncatingRemainder(dividingBy: 4) == 0 },
+              "spacing scale", "every spacing token is a multiple of 4 pt")
         // Text reader: the centre of each word's drawn box maps back to that word (click → read from it), and the box is
         // glyph-tight (not the 1.5× line height).
         let view = ReaderTextView.make()

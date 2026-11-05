@@ -18,7 +18,7 @@ zmodload zsh/datetime
 PROJECT="${TALKREAD_PROJECT:-$HOME/Documents/JuniorOS/02 Projects/Development/Talk & Read}"
 SRC="$PROJECT/Source"
 CHECKLIST="${TALKREAD_CHECKLIST:-$PROJECT/00 Project State/Acceptance checklist.md}"
-ROOT=/private/tmp/talkread-checker
+ROOT="${TALKREAD_CHECK_ROOT:-/private/tmp/talkread-checker}"
 EXPECT_VERSION="${TALKREAD_EXPECT_VERSION:-$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$SRC/Resources/Info.plist")}"   # the source's version (also from a copy of this script)
 BATCH_DIR=/private/tmp/talkread-b-a
 BATCH_LOG=$BATCH_DIR/final/BATCH-runner.txt

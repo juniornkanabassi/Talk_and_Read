@@ -27,9 +27,10 @@ ACCOUNT=${2:-tr-sparkle-test}
 BUILD_ROOT="${TALKREAD_BUILD_ROOT:-$HOME/Library/Caches/TalkRead-release-cache}"
 BIN="$BUILD_ROOT/artifacts/sparkle/Sparkle/bin"
 DEV_ID_SHA=C297CD17464A0EF6C93704A59BC2E1D4D1759400
-E2E=$(mktemp -d /private/tmp/talkread-update-e2e.XXXXXX)
+E2E=$(mktemp -d "${TALKREAD_TEST_ROOT:-/private/tmp}/talkread-update-e2e.XXXXXX")
+TEST_USER_HOME="${CFFIXED_USER_HOME:-$HOME}"
 TEST_ID="com.juniornkanabassi.TalkAndRead.updatetest.${E2E:e}"
-EVIDENCE=/private/tmp/talkread-checker/update-e2e
+EVIDENCE="${TALKREAD_UPDATE_EVIDENCE_ROOT:-/private/tmp/talkread-checker/update-e2e}"
 info() { /usr/libexec/PlistBuddy -c "Print $2" "$1/Contents/Info.plist"; }
 cdhash() { /usr/bin/codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p'; }
 V=$(info "$APP_IN" CFBundleShortVersionString) B=$(info "$APP_IN" CFBundleVersion)
@@ -42,7 +43,7 @@ cleanup() {
   [[ -z $SERVER ]] || kill $SERVER 2>/dev/null || true
   [[ -z $SILENT ]] || kill $SILENT 2>/dev/null || true
   /usr/bin/defaults delete "$TEST_ID" 2>/dev/null || true
-  rm -rf "$HOME/Library/Preferences/$TEST_ID.plist" "$HOME/Library/Caches/$TEST_ID" "$HOME/Library/HTTPStorages/$TEST_ID" \
+  rm -rf "$TEST_USER_HOME/Library/Preferences/$TEST_ID.plist" "$TEST_USER_HOME/Library/Caches/$TEST_ID" "$TEST_USER_HOME/Library/HTTPStorages/$TEST_ID" \
          "$E2E"/{install,new,down} "$E2E"/site/*.{zip,dmg}(N)
 }
 trap cleanup EXIT
@@ -169,7 +170,7 @@ sleep 2
 ok "no relaunch: nothing runs from the test bundle"
 
 # What the update itself leaves (Sparkle cleans up after installing; this app adds no deletion of its own).
-CACHE="$HOME/Library/Caches/$TEST_ID/org.sparkle-project.Sparkle"
+CACHE="$TEST_USER_HOME/Library/Caches/$TEST_ID/org.sparkle-project.Sparkle"
 if [[ -d $CACHE ]]; then
   STATE="$(du -sk "$CACHE" | cut -f1) KB in $(find "$CACHE" -mindepth 1 | wc -l | tr -d ' ') entries"
   find "$CACHE" -type f -exec stat -f '  left: %z bytes %N' {} + >> "$E2E/e2e.log"
@@ -182,7 +183,7 @@ ok "after the update: Sparkle's cache holds no update archive or extracted app (
 
 kill $SERVER $SILENT 2>/dev/null || true; SERVER="" SILENT=""
 cleanup
-for f in "$HOME/Library/Caches/$TEST_ID" "$HOME/Library/Preferences/$TEST_ID.plist" "$HOME/Library/HTTPStorages/$TEST_ID" "$E2E"/{install,new,down}; do
+for f in "$TEST_USER_HOME/Library/Caches/$TEST_ID" "$TEST_USER_HOME/Library/Preferences/$TEST_ID.plist" "$TEST_USER_HOME/Library/HTTPStorages/$TEST_ID" "$E2E"/{install,new,down}; do
   [[ ! -e $f ]] || no "the test's own $f is still there after its clean-up"
 done
 ok "the test's own bundles, defaults and caches removed (logs kept in $E2E)"

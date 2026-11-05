@@ -97,14 +97,21 @@ enum SelfTestWindow {
         await pinnedOverlayCheck()
         await screenshotTextCheck()
         await ocrHighlightCheck()
-        if let screen = NSScreen.screens.first(where: { $0.localizedName.contains("Prompter") }) {
+        let headless = CommandLine.arguments.contains("--headless")
+        if headless {
+            record("Test window panes", nil, "headless run: visible test windows disabled")
+        } else if let screen = NSScreen.screens.first(where: { $0.localizedName.contains("Prompter") }) {
             await windowChecks(on: screen)
         } else {
             record("Test window panes", nil, "not run: no screen named Prompter (Elgato Prompter XL) connected")
         }
-        await chromiumProbe()
-        hiddenTextProbe()
-        hiddenTextCost()
+        if headless {
+            record("Live app probes", nil, "headless run: other apps are left alone")
+        } else {
+            await chromiumProbe()
+            hiddenTextProbe()
+            hiddenTextCost()
+        }
         let frontAfter = NSWorkspace.shared.frontmostApplication?.processIdentifier
         record("No focus change", frontAfter == frontBefore && !NSApp.isActive, "frontmost pid \(frontBefore.map(String.init) ?? "-") -> \(frontAfter.map(String.init) ?? "-"), our app active: \(NSApp.isActive)")
         NSPasteboard(name: NSPasteboard.Name(pasteboardName)).releaseGlobally()

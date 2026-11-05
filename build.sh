@@ -7,7 +7,8 @@ VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$ROOT/R
 ARCHIVE="$OUTPUT_ROOT/Talk & Read $VERSION.zip"
 DMG="$OUTPUT_ROOT/Talk & Read $VERSION.dmg"   # the website download; the zip is what Sparkle updates use
 for f in "$ARCHIVE" "$DMG"; do [[ ! -e "$f" ]] || { print -u2 "Refusing to overwrite $f"; exit 1; }; done
-WORK=$(mktemp -d /private/tmp/talkread-package.XXXXXX)
+mkdir -p "$BUILD_ROOT"
+WORK=$(mktemp -d "$BUILD_ROOT/package.XXXXXX")
 APP="$WORK/Talk & Read.app"
 TMP_ARCHIVE="$WORK/Talk & Read $VERSION.zip"
 OUTPUT_TMP="$OUTPUT_ROOT/.Talk & Read $VERSION.zip.$$"
