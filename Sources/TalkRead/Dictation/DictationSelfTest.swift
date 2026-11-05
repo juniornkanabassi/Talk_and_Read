@@ -15,6 +15,11 @@ import WebKit
         if ProcessInfo.processInfo.environment["TALKREAD_HOME"] == nil {
             setenv("TALKREAD_HOME", "/private/tmp/talkread-selftest-home", 1)
         }
+        if CommandLine.arguments.contains("--warm-up-only") {
+            let path = Paths.dataRoot.resolvingSymlinksInPath().path
+            guard path.hasPrefix("/tmp/") || path.hasPrefix("/private/tmp/") else { return 1 }
+            return await checkWarmUp() ? 0 : 1
+        }
         if CommandLine.arguments.contains("--bench") { return await DictationBench.run(dir: URL(fileURLWithPath: dir)) }
         if CommandLine.arguments.contains("--paragraphs") {       // just the paragraph check
             let transcriber = Transcriber()
@@ -32,6 +37,7 @@ import WebKit
             ok = await checkMicFallback() && ok
             ok = await checkOwnership(fixture: URL(fileURLWithPath: dir)) && ok
             ok = await checkDrain(fixture: URL(fileURLWithPath: dir)) && ok
+            ok = await checkWarmUp() && ok
         } else {
             print("ownership: NOT RUN (data root \(Paths.dataRoot.path) is not a scratch folder)")
             ok = false
@@ -479,17 +485,23 @@ import WebKit
     private final class FakeASR: DictationASR {
         private let queue = RecogniserQueue()
         var isLoaded = true
+        var isDownloaded = true
+        var failNextLoad = false
+        private(set) var loads = 0
         private(set) var isLoading = false { didSet { onLoadingChange?() } }
         var onLoadingChange: (() -> Void)?
         var loadTime = Duration.zero
         var work = Duration.milliseconds(50)
         var log: ((String) -> Void)?                              // "enter" and "exit" of recognition
         private(set) var entered = 0
+        private(set) var completedFrames: [Int] = []
         private var count = 0
 
         func load(progress: ((Double) -> Void)?) async throws {
             if isLoaded { return }
             if !isLoading {
+                loads += 1
+                if failNextLoad { failNextLoad = false; throw ASRError.notInitialized }
                 isLoading = true
                 let loadTime = loadTime
                 Task { await Self.uninterruptible(loadTime); isLoaded = true; isLoading = false }
@@ -509,17 +521,122 @@ import WebKit
                 entered += 1
                 log?("enter")
                 defer { log?("exit") }
-                for await _ in audio {
+                var frames = 0
+                for await buffer in audio {
                     try Task.checkCancellation()
+                    frames += Int(buffer.frameLength)
                     await Self.uninterruptible(work)
                 }
                 try Task.checkCancellation()
+                completedFrames.append(frames)
                 count += 1
                 return Transcript(text: "utterance \(count)")
             }
         }
 
         static func uninterruptible(_ d: Duration) async { await Task.detached { try? await Task.sleep(for: d) }.value }
+    }
+
+    /// Launch/wake preparation silently primes inference while preserving user priority and idle unload.
+    private static func checkWarmUp() async -> Bool {
+        var failures: [String] = []
+        func expect(_ name: String, _ condition: Bool) { if !condition { failures.append(name) } }
+        func make() -> (DictationController, FakeASR, FakeASR, FakeAudio) {
+            let english = FakeASR(), other = FakeASR(), audio = FakeAudio()
+            english.isLoaded = false
+            other.isLoaded = false
+            let c = DictationController(audio: audio, asr: english, multilingual: other,
+                                       insert: { _, _, _, _ in .inserted(confirmed: true) },
+                                       decode: { _ in [Float](repeating: 0, count: 1600) })
+            c.quiet = true
+            return (c, english, other, audio)
+        }
+        let (englishController, english, unused, audio) = make()
+        let history = englishController.history.map(\.id)
+        await englishController.warmUpIfInstalled()
+        expect("English model only", english.isLoaded && english.loads == 1 && unused.loads == 0)
+        expect("one second of silent inference, no microphone, owner or history", audio.starts == 0 && english.completedFrames == [16_000]
+               && englishController.owner == nil && englishController.history.map(\.id) == history && !englishController.isBusy)
+        await englishController.warmUpIfInstalled()
+        expect("loaded model primed without reload", english.loads == 1 && english.completedFrames == [16_000, 16_000])
+
+        let (multilingualController, unchosenEnglish, other, _) = make()
+        multilingualController.languages = ["en", "fr"]
+        multilingualController.preferApple = true // Apple preference applies only to English dictation.
+        await multilingualController.warmUpIfInstalled()
+        expect("multilingual model selected", other.loads == 1 && other.completedFrames == [16_000] && unchosenEnglish.loads == 0)
+
+        let (appleController, appleUnused, _, _) = make()
+        appleController.preferApple = true
+        await appleController.warmUpIfInstalled()
+        expect("Apple preference skipped", appleUnused.loads == 0 && !appleController.apple.isLoaded)
+        let apple = AppleTranscriber()
+        let injectedApple = DictationController(audio: FakeAudio(), asr: apple, multilingual: FakeASR())
+        await injectedApple.warmUpIfInstalled()
+        expect("Apple backend skipped", !apple.isLoaded)
+
+        let (missingController, missing, missingOther, _) = make()
+        missing.isDownloaded = false
+        await missingController.warmUpIfInstalled()
+        missingController.languages = ["en", "fr"]
+        missingOther.isDownloaded = false
+        await missingController.warmUpIfInstalled()
+        expect("missing models skipped", missing.loads == 0 && missingOther.loads == 0)
+
+        let (loadingController, loading, _, _) = make()
+        loading.loadTime = .milliseconds(300)
+        let warm = Task { await loadingController.warmUpIfInstalled() }
+        for _ in 0..<100 where !loading.isLoading { try? await Task.sleep(for: .milliseconds(2)) }
+        expect("loading marks busy and blocks unload", loadingController.isBusy && !loadingController.unloadModel())
+        await loadingController.warmUpIfInstalled()
+        expect("busy preparation skipped", loading.loads == 1)
+        warm.cancel()
+        await warm.value
+        expect("cancelled waiter leaves shared load busy", loading.isLoading && loadingController.isBusy)
+        let joined = try? await loadingController.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "warm-test")
+        expect("user request shares load", joined != nil && loading.loads == 1 && !loadingController.isBusy)
+        expect("idle unload preserved", loadingController.unloadModel() && !loading.isLoaded)
+
+        let (arrivalController, arrival, _, _) = make()
+        arrival.loadTime = .milliseconds(150)
+        let initialWarm = Task { await arrivalController.warmUpIfInstalled() }
+        for _ in 0..<100 where !arrival.isLoading { try? await Task.sleep(for: .milliseconds(2)) }
+        let arrivalFile = Task { try? await arrivalController.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "warm-test") }
+        _ = await arrivalFile.value
+        await initialWarm.value
+        expect("request during load skips priming", arrival.loads == 1 && arrival.completedFrames == [1600])
+
+        let (primeController, prime, _, _) = make()
+        prime.isLoaded = true
+        prime.work = .milliseconds(150)
+        let priming = Task { await primeController.warmUpIfInstalled() }
+        for _ in 0..<100 where prime.entered == 0 { try? await Task.sleep(for: .milliseconds(2)) }
+        expect("priming holds busy and blocks unload", primeController.isBusy && primeController.preparing && !primeController.unloadModel())
+        await primeController.warmUpIfInstalled()
+        expect("concurrent prime skipped", prime.entered == 1)
+        let primeFile = Task { try? await primeController.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "warm-test") }
+        await priming.value
+        _ = await primeFile.value
+        expect("request during priming follows on queue", prime.loads == 0 && prime.completedFrames == [16_000, 1600] && !primeController.isBusy)
+        expect("idle unload after priming", primeController.unloadModel() && !prime.isLoaded)
+
+        let (busyController, busyEnglish, busyOther, _) = make()
+        busyEnglish.loadTime = .milliseconds(100)
+        let file = Task { try? await busyController.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "warm-test") }
+        for _ in 0..<100 where busyController.owner == nil { try? await Task.sleep(for: .milliseconds(2)) }
+        busyController.languages = ["en", "fr"]
+        await busyController.warmUpIfInstalled()
+        expect("active file request skips preparation", busyOther.loads == 0)
+        _ = await file.value
+
+        let (retryController, retry, _, _) = make()
+        retry.failNextLoad = true
+        await retryController.warmUpIfInstalled()
+        expect("failed warm-up leaves controller available", !retryController.isBusy && !retry.isLoaded)
+        let result = try? await retryController.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "warm-test")
+        expect("user request retries failed preparation", result != nil && retry.loads == 2)
+        print("warm-up: \(failures.isEmpty ? "PASS" : "FAIL \(failures)") (installed selection, no audio, shared load, cancellation, retry and idle unload)")
+        return failures.isEmpty
     }
 
     /// Sol 0.5.0 #2: the chosen mic is unplugged between the controller resolving it and the Recorder opening it. With an

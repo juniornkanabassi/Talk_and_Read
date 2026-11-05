@@ -218,8 +218,14 @@ extension EngineKind {
     // ponytail: Qwen3 is not loaded at login (4–5 GB); it loads when picked or at its first read.
     func warmUp() {
         Player.warmOutput()
+        warmDictation()
         let v = voice(for: settings.voiceID)
         if v.engine == .neural { warm(v) }
+    }
+
+    /// Prepare the selected installed recogniser without opening the microphone. The normal idle timer still frees it.
+    func warmDictation() {
+        Task { await dictation.warmUpIfInstalled() }
     }
 
     /// Loads a chosen voice ahead of its first read (PLAN 0.3.0 decision 3); the idle timer frees it again.

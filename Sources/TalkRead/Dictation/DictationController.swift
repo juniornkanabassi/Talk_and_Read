@@ -103,6 +103,7 @@ enum DictationError: LocalizedError, Equatable {
     /// Cancelled transcripts and file jobs still running; the next recording starts only after them (Sol #23).
     private var draining: Task<Void, Never>? { didSet { updateBusy() } }
     private var drains = 0
+    private var warming = false
     private let decode: @Sendable (URL) throws -> [Float]
     private var pill: DictationPill?
 
@@ -135,6 +136,27 @@ enum DictationError: LocalizedError, Equatable {
         guard preferApple || !parakeetReady else { return asr }
         apple.contextualStrings = Cleanup.terms(vocabulary())
         return apple
+    }
+
+    /// Prepare model loading and first inference before dictation, without audio input or history changes.
+    /// A user request shares loading; priming already in progress finishes on the normal recogniser queue.
+    func warmUpIfInstalled() async {
+        guard !isBusy, !(preferApple && languages == ["en"]) else { return }
+        let selected = languages == ["en"] ? asr : multilingual
+        guard !(selected is AppleTranscriber), selected.isDownloaded, !selected.isLoading else { return }
+        warming = true
+        updateBusy()
+        defer { warming = false; updateBusy() }
+        do {
+            try await selected.load(progress: nil)
+            try Task.checkCancellation()
+            guard owner == nil else { return }
+            _ = try await selected.transcribe(samples: [Float](repeating: 0, count: 16_000))
+        } catch is CancellationError {
+            // The backend keeps its shared load alive for another caller.
+        } catch {
+            Log.write("dictation warm-up failed: \(error)")
+        }
     }
 
     // MARK: Control (CLI/MCP pass their caller and force; hotkeys and the GUI pass "user")
@@ -471,7 +493,7 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     private func updateBusy() {
-        let preparing = draining != nil || asr.isLoading || multilingual.isLoading
+        let preparing = warming || draining != nil || asr.isLoading || multilingual.isLoading
         if self.preparing != preparing { self.preparing = preparing }
         let busy = owner != nil || inserting > 0 || preparing
         if isBusy != busy { isBusy = busy }
