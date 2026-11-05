@@ -637,6 +637,7 @@ import WebKit
         expect("history newest first", c.history.first?.text == human)
         if let id = c.history.first?.id {
             c.delete(id)
+            await c.flushHistoryInBackground()
             let onDisk = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
             expect("delete", !c.history.contains { $0.id == id } && onDisk.map(\.id) == c.history.map(\.id))
         }

@@ -226,7 +226,15 @@ extension AppModel {
                 kind = isRead ? .read : .dictated
             default: throw AppError.badArgs("kind must be read or dictated.")
             }
-            if kind == .read { deleteRead(id) } else { deleteDictation(id) }
+            let saved: Bool
+            if kind == .read {
+                deleteRead(id)
+                saved = await flushLibraryChanges()
+            } else {
+                deleteDictation(id)
+                saved = await dictation.flushHistoryInBackground()
+            }
+            guard saved else { throw AppError(code: "failed", message: "Could not save the updated history.") }
             return ["deleted": .string(id.uuidString), "kind": .string(kind.rawValue)]
 
         case "read-again":

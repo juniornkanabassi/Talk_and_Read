@@ -506,7 +506,7 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     func flushHistory() { historyWriter.flush() }
-    func flushHistoryInBackground() async {
+    @discardableResult func flushHistoryInBackground() async -> Bool {
         await Task.detached(priority: .utility) { [historyWriter] in historyWriter.flush() }.value
     }
 
