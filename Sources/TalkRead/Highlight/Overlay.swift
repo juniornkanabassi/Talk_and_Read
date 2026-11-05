@@ -31,7 +31,9 @@ import TalkReadCore
             shape = Shape(rawValue: settings.highlightStyle) ?? .box
         }
     }
-    var style: Style
+    var style: Style {
+        didSet { layout(animated: false) }
+    }
 
     /// Never key or main, whatever AppKit asks.
     final class Panel: NSPanel {
@@ -183,7 +185,7 @@ import TalkReadCore
             wordLayer.backgroundColor = stroke
         }
         CATransaction.begin()
-        if !animated || wordLayer.isHidden {
+        if !animated || wordLayer.isHidden || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             CATransaction.setDisableActions(true)   // first appearance or a window move: snap, don't slide
         } else {
             CATransaction.setAnimationDuration(0.12)

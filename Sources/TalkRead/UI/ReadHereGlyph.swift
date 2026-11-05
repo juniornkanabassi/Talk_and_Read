@@ -23,6 +23,8 @@ import TalkReadCore
     private(set) var block: PointerCapture.Block?
     private var lastPoint: CGPoint?
     private var looking = false
+    private var generation = 0
+    private var clickGeneration = 0
     /// Until when hover keeps asking about a still pointer: an app just asked to build its tree is still filling it in.
     private var hoverColdUntil = 0.0
     /// Until when a woken app's tree may still be filling in: a still pointer is looked at again each tick until then.
@@ -61,7 +63,7 @@ import TalkReadCore
     func key(_ type: CGEventType, keyCode: UInt16, flags: UInt64, at time: Double, settings: Settings) {
         let event = Self.revealEvent(type, keyCode: keyCode, flags: flags, settings: settings)
         // Any key or modifier but the reveal key itself puts a hover glyph away, whatever the reveal key is set to.
-        if timer == nil, block != nil, type == .keyDown || (type == .flagsChanged && event != .keyDown && event != .keyUp) { hidePanel(); block = nil }
+        if timer == nil, block != nil, type == .keyDown || (type == .flagsChanged && event != .keyDown && event != .keyUp) { generation += 1; hidePanel(); block = nil }
         guard let event else { return }
         apply(state.handle(event, at: time))
         if event == .keyDown {
@@ -73,6 +75,8 @@ import TalkReadCore
     }
 
     func reset() {
+        clickGeneration += 1
+        generation += 1
         apply(state.reset())
         if timer == nil { hidePanel(); block = nil }   // a hover glyph has no held key for reset() to see
     }
@@ -116,7 +120,8 @@ import TalkReadCore
         look()
     }
 
-    private func stop() {
+    func stop() {
+        generation += 1
         timer?.invalidate()
         timer = nil
         hidePanel()
@@ -128,21 +133,30 @@ import TalkReadCore
 
     private func look() {
         // A key-up the tap missed (it was switched off a moment) must not leave the glyph and this timer running.
-        guard revealKeyIsDown() else { reset(); return }
+        guard revealKeyIsDown() else { apply(state.reset()); stop(); return }
         guard !looking, NSEvent.pressedMouseButtons == 0 else { return }   // an Option-drag or Option-click is no reveal
         let point = Self.pointer()
-        if let block, moved(block) || hidden(block) { hidePanel(); (self.block, lastPoint) = (nil, nil) }   // scrolled or covered
-        guard point != lastPoint else { return }
-        lastPoint = point
-        if let block, Self.band(block).contains(point) { return }   // on its way to the glyph, or still on the paragraph
         looking = true
+        let request = generation
         Task { @MainActor in
             defer { looking = false }
-            guard let hit = PointerCapture.hit(point) else {   // our own window, or nothing (the glyph is inside the band)
-                if timer != nil { hidePanel(); block = nil }
+            if let block {
+                let coveredPoint = Self.coverCheckPoint(block)
+                let stale = await PointerCapture.onWorker { Self.moved(block) || coveredPoint.map { Self.covered(block, at: $0) } == true }
+                guard request == generation, timer != nil else { return }
+                if stale { hidePanel(); (self.block, lastPoint) = (nil, nil) }
+            }
+            guard point != lastPoint else { return }
+            lastPoint = point
+            if let block, Self.band(block).contains(point) { return }
+            let hit = await PointerCapture.onWorker { PointerCapture.hit(point) }
+            guard request == generation, timer != nil else { return }
+            guard let hit else {
+                hidePanel(); block = nil
                 return
             }
-            var found = PointerCapture.block(from: hit.element, pid: hit.pid, point: point)
+            var found = await PointerCapture.onWorker { PointerCapture.block(from: hit.element, pid: hit.pid, point: point) }
+            guard request == generation, timer != nil else { return }
             if found == nil, !woken.contains(hit.pid) {
                 woken.insert(hit.pid)
                 coldUntil = ProcessInfo.processInfo.systemUptime + 1.5
@@ -154,19 +168,21 @@ import TalkReadCore
                 // A key-up and a fresh hold during the wake: that stop() cleared `woken` before the wake could ledger
                 // this app, so this hold's stop() must be the one to put it back.
                 woken.insert(hit.pid)
-                if let again = PointerCapture.hit(point), again.pid == hit.pid {
-                    found = PointerCapture.block(from: again.element, pid: again.pid, point: point)
+                found = await PointerCapture.onWorker {
+                    guard let again = PointerCapture.hit(point), again.pid == hit.pid else { return nil }
+                    return PointerCapture.block(from: again.element, pid: again.pid, point: point)
                 }
+                guard request == generation, timer != nil else { return }
             }
             // A cold tree fills in over the next ticks: look here again while it may still be loading.
             if found == nil, ProcessInfo.processInfo.systemUptime < coldUntil { lastPoint = nil }
             guard timer != nil else { return }   // the key went up meanwhile
-            if let found { show(found) } else if block.map({ !Self.band($0).contains(point) }) ?? true { hidePanel(); block = nil }
+            if let found, Self.band(found).contains(Self.pointer()) { show(found) } else if block.map({ !Self.band($0).contains(point) }) ?? true { hidePanel(); block = nil }
         }
     }
 
     /// Another window or dialog, even the same app's, shows at `point` on the paragraph instead of its own window.
-    static func covered(_ block: PointerCapture.Block, at point: CGPoint) -> Bool {
+    nonisolated static func covered(_ block: PointerCapture.Block, at point: CGPoint) -> Bool {
         guard let under = PointerCapture.hit(point), under.pid == block.pid else { return true }
         // Only a window positively matched to the paragraph's own counts as uncovered.
         return !PointerCapture.bounded {
@@ -177,14 +193,14 @@ import TalkReadCore
 
     /// The paragraph is no longer what shows beside the glyph: covered by another window, checked on its first line
     /// clear of the glyph (our own panel answers no hit test). Too short to leave such a point: not checked here.
-    private func hidden(_ block: PointerCapture.Block) -> Bool {
+    private static func coverCheckPoint(_ block: PointerCapture.Block) -> CGPoint? {
         let glyph = Self.glyphFrame(block)
         let x = max(block.frame.minX + min(8, block.frame.width / 2), glyph.maxX + 2)
-        return x < block.frame.maxX - 1 && Self.covered(block, at: CGPoint(x: x, y: glyph.midY))
+        return x < block.frame.maxX - 1 ? CGPoint(x: x, y: glyph.midY) : nil
     }
 
     /// The paragraph's frame moved or changed size (a scroll, a reflow): the glyph no longer belongs where it is.
-    private func moved(_ block: PointerCapture.Block) -> Bool {
+    nonisolated private static func moved(_ block: PointerCapture.Block) -> Bool {
         let now: CGRect? = PointerCapture.bounded {   // every tick: a hung app must not freeze it
             if let start = block.start { axBounds(block.element, location: start, length: block.length) } else { axFrame(block.element) }
         }
@@ -208,11 +224,15 @@ import TalkReadCore
 
     /// Held or hovering, the glyph's paragraph is on the Space just left: look again on this one.
     private func spaceChanged() {
+        clickGeneration += 1
+        generation += 1
         hidePanel()
         (block, rest, lastPoint) = (nil, nil, nil)
     }
 
     private func setHover(_ on: Bool) {
+        clickGeneration += 1
+        generation += 1
         hoverTimer?.invalidate()
         hoverTimer = nil
         rest = nil
@@ -225,41 +245,60 @@ import TalkReadCore
     }
 
     private func hoverTick() {
-        guard timer == nil, !looking else { return }   // the held key has the glyph
+        guard timer == nil, !looking else { return }
         let point = Self.pointer(), now = ProcessInfo.processInfo.systemUptime
-        // Left, scrolled or covered: the scroll and cover checks ask the app, so every third tick (150 ms) as before.
         hoverTicks += 1
-        if let block, !Self.band(block).contains(point) || hoverTicks % 3 == 0 && (moved(block) || hidden(block)) { hidePanel(); self.block = nil; rest = nil }
-        guard NSEvent.pressedMouseButtons == 0 else { rest = nil; return }   // a drag or a click in progress
-        guard NSEvent.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty else { return }   // a shortcut on its way
-        guard let r = rest, hypot(r.point.x - point.x, r.point.y - point.y) < 3 else {
+        if let block, !Self.band(block).contains(point) {
+            hidePanel(); self.block = nil; rest = nil
+        }
+        guard NSEvent.pressedMouseButtons == 0 else { rest = nil; return }
+        guard NSEvent.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty else { return }
+        if rest.map({ hypot($0.point.x - point.x, $0.point.y - point.y) >= 3 }) ?? true {
             rest = (point, now, false)
-            return
         }
-        guard !r.looked, now - r.since >= Self.restDelay else { return }
-        rest?.looked = true
-        if let block, Self.band(block).contains(point) { return }
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid(), let hit = PointerCapture.hit(point) else { return }
-        if let apps = model?.settings.readHereHoverApps, !apps.isEmpty,
-           !apps.contains(NSRunningApplication(processIdentifier: hit.pid)?.bundleIdentifier ?? "") { return }   // hover is limited to listed apps
-        if !asked.contains(hit.pid) {
-            asked.insert(hit.pid)
-            hoverColdUntil = now + 1.5
-            _ = PointerCapture.bounded {   // unasked, on the main thread: a hung app answers within the short timeout
-                AXUIElementSetAttributeValue(AXUIElementCreateApplication(hit.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        let shouldInspect = rest.map { !$0.looked && now - $0.since >= Self.restDelay } ?? false
+        let existing = block
+        guard shouldInspect || existing != nil && hoverTicks % 6 == 0 else { return }
+        let checkPoint = existing.flatMap(Self.coverCheckPoint)
+        let request = generation
+        looking = true
+        Task { @MainActor in
+            defer { looking = false }
+            if let existing {
+                let stale = await PointerCapture.onWorker { Self.moved(existing) || checkPoint.map { Self.covered(existing, at: $0) } == true }
+                guard request == generation, timer == nil else { return }
+                if stale { hidePanel(); block = nil; rest = nil }
+                else if Self.band(existing).contains(point) { return }
             }
+            guard shouldInspect, NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid() else { return }
+            rest?.looked = true
+            let hit = await PointerCapture.onWorker { PointerCapture.hit(point) }
+            guard request == generation, timer == nil, let hit else { return }
+            if let apps = model?.settings.readHereHoverApps, !apps.isEmpty,
+               !apps.contains(NSRunningApplication(processIdentifier: hit.pid)?.bundleIdentifier ?? "") { return }
+            if !asked.contains(hit.pid) {
+                asked.insert(hit.pid)
+                hoverColdUntil = now + 1.5
+                _ = await PointerCapture.onWorker {
+                    PointerCapture.bounded {
+                        AXUIElementSetAttributeValue(AXUIElementCreateApplication(hit.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+                    }
+                }
+                guard request == generation, timer == nil else { return }
+            }
+            if let miss = lastMiss, CFEqual(miss, hit.element), now >= hoverColdUntil { return }
+            let found = await PointerCapture.onWorker { PointerCapture.block(from: hit.element, pid: hit.pid, point: point) }
+            guard request == generation, timer == nil else { return }
+            guard let found, found.start == nil else {
+                if now < hoverColdUntil { rest?.looked = false }
+                lastMiss = hit.element
+                return
+            }
+            // The pointer may have moved while the other app answered.
+            guard Self.band(found).contains(Self.pointer()) else { rest = nil; return }
+            lastMiss = nil
+            show(found)
         }
-        // A slow drift stops every few ticks: the element already found empty is not asked again until the pointer
-        // reaches another one (or the tree was cold).
-        if let miss = lastMiss, CFEqual(miss, hit.element), now >= hoverColdUntil { return }
-        // Web pages only: in native text views the glyph would follow every click and caret.
-        guard let found = PointerCapture.block(from: hit.element, pid: hit.pid, point: point), found.start == nil else {
-            if now < hoverColdUntil { rest?.looked = false }   // a cold tree: a fresh hit test on the next tick
-            lastMiss = hit.element
-            return
-        }
-        lastMiss = nil
-        show(found)
     }
 
     /// Where the pointer may be and keep this glyph: the paragraph and the margin out to the glyph, in AX coordinates.
@@ -309,9 +348,10 @@ import TalkReadCore
         view.colour = NSColor(hex: model?.settings.highlightHex ?? Theme.accentHex) ?? Theme.accentNS
         view.onPress = { [weak self] in self?.play() }
         p.contentView = view
-        p.alphaValue = 0
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        p.alphaValue = reduceMotion ? 1 : 0
         p.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { $0.duration = 0.05; p.animator().alphaValue = 1 }
+        if !reduceMotion { NSAnimationContext.runAnimationGroup { $0.duration = 0.05; p.animator().alphaValue = 1 } }
         panel = p
     }
 
@@ -321,17 +361,39 @@ import TalkReadCore
         panel = nil
     }
 
+    /// A delayed click is valid only while neither the glyph context nor the model's read request changed.
+    struct ClickRequest {
+        let generation: Int
+        let readRevision: UInt64
+        func isCurrent(generation: Int, readRevision: UInt64) -> Bool {
+            self.generation == generation && self.readRevision == readRevision
+        }
+    }
+
+    func beginClick(readRevision: UInt64) -> ClickRequest {
+        generation += 1
+        clickGeneration += 1
+        return ClickRequest(generation: clickGeneration, readRevision: readRevision)
+    }
+
+    func accepts(_ request: ClickRequest, readRevision: UInt64) -> Bool {
+        request.isCurrent(generation: clickGeneration, readRevision: readRevision)
+    }
+
     private func play() {
-        guard let block else { return }
+        guard let block, let model else { return }
+        let request = beginClick(readRevision: model.readRevision)
         self.block = nil
-        // Out of the panel's own mouseDown first: closing it there would release the window that is handling the click.
-        // With the glyph gone, nothing of ours covers the paragraph, however short or close to the screen's edge it is.
-        DispatchQueue.main.async { [weak self] in
+        // Leave mouseDown before closing its window. Keep the current read alive during validation,
+        // but never let its delayed result replace a newer read or survive a reset or Space change.
+        Task { @MainActor [weak self] in
             guard let self else { return }
             hidePanel()
-            guard !Self.covered(block, at: CGPoint(x: block.frame.minX + min(8, block.frame.width / 2), y: Self.glyphFrame(block).midY)) else { return }
+            let point = CGPoint(x: block.frame.minX + min(8, block.frame.width / 2), y: Self.glyphFrame(block).midY)
+            let covered = await PointerCapture.onWorker { Self.moved(block) || Self.covered(block, at: point) }
+            guard accepts(request, readRevision: model.readRevision), !covered else { return }
             woken.remove(block.pid)   // the read's Highlighter puts the app back when it ends (E8)
-            model?.readHere(block: block)
+            model.readHere(block: block)
         }
     }
 

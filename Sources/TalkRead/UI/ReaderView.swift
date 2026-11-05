@@ -60,12 +60,30 @@ struct KaraokeLine: Equatable {
 }
 
 /// A loaded document ready to show.
-struct ReaderDocument {
+struct ReaderDocument: @unchecked Sendable {
     let text: String
     let tokens: [Token]
     let sentences: [Range<Int>]
     let pdf: PDFDocument?
     let pageStarts: [Int]
+    let furniture: [Range<Int>]
+
+    /// The PDF is created and read on one worker, then handed to PDFView on the main actor.
+    nonisolated static func load(_ item: LibraryItem, textOverride: String? = nil,
+                                 readText: (@Sendable () throws -> String)? = nil) async throws -> ReaderDocument {
+        let task = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            let text = try textOverride ?? readText?() ?? String(contentsOf: Paths.documents.appendingPathComponent("\(item.id.uuidString).txt"), encoding: .utf8)
+            let tokens = TextKit.tokenize(text)
+            let pdf = item.kind == "pdf" ? PDFDocument(url: Paths.documents.appendingPathComponent(item.fileName)) : nil
+            let joined = pdf.map(Importer.pdfText)
+            let furniture = joined.map { $0.text.utf16.elementsEqual(text.utf16) ? PageFurniture.ranges(text, pageStarts: $0.pageStarts) : [] } ?? []
+            try Task.checkCancellation()
+            return ReaderDocument(text: text, tokens: tokens, sentences: ReadingText.sentenceRanges(tokens),
+                                  pdf: pdf, pageStarts: joined?.pageStarts ?? [], furniture: furniture)
+        }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
 }
 
 struct ReaderView: View {
@@ -74,6 +92,7 @@ struct ReaderView: View {
     let data: ViewData
     @State private var doc: ReaderDocument?
     @State private var failure: String?
+    @Environment(\.offscreenRender) private var offscreen
 
     var body: some View {
         Group {
@@ -91,23 +110,23 @@ struct ReaderView: View {
         }
         .background(Theme.surface)
         .navigationTitle(item.title)
-        .task(id: item.id) { load() }
+        .task(id: item.id) { await load() }
     }
 
-    private func load() {
+    @MainActor private func load() async {
+        doc = nil
+        failure = nil
         do {
-            let text = try data.documentText(item)
-            let tokens = TextKit.tokenize(text)
-            var pdf: PDFDocument?
-            var starts: [Int] = []
-            if item.kind == "pdf", let p = PDFDocument(url: Paths.documents.appendingPathComponent(item.fileName)) {
-                pdf = p
-                let joined = Importer.pdfText(p)   // same joining as the importer, so offsets match the read text
-                starts = joined.pageStarts
-                model.rememberFurniture(item, text: text, joined: joined.text, pageStarts: starts)
-            }
-            doc = ReaderDocument(text: text, tokens: tokens, sentences: ReadingText.sentenceRanges(tokens), pdf: pdf, pageStarts: starts)
+            let fixture = offscreen ? try data.documentText(item) : nil
+            let model = model
+            let loaded = try await ReaderDocument.load(item, textOverride: fixture, readText: { try model.documentText(item) })
+            try Task.checkCancellation()
+            if loaded.pdf != nil { model.rememberFurniture(item, ranges: loaded.furniture) }
+            doc = loaded
+        } catch is CancellationError {
+            // Navigation cancelled this load; a later task owns the visible state.
         } catch {
+            guard !Task.isCancelled else { return }
             failure = error.localizedDescription
         }
     }
@@ -165,7 +184,7 @@ private struct ReaderPage: View {
                            restore: live || savedPosition <= 0 || savedPosition >= doc.tokens.count ? nil : doc.tokens[savedPosition].range.lowerBound,
                            onClick: start(at:), onSpace: playPause)
             }
-            transport.padding(.bottom, 18)
+            transport.padding(.bottom, Space.xl)
         }
         .onChange(of: current) { _, token in
             guard live, let token, Date().timeIntervalSince(lastSaved) > 2 else { return }
@@ -178,22 +197,22 @@ private struct ReaderPage: View {
     }
 
     private var transport: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Space.sm) {
             SymbolButton(symbol: "backward.fill", label: "Previous sentence (⌘[)") { model.skip(-1) }
                 .keyboardShortcut("[", modifiers: .command).disabled(!live)
             PlayButton(playing: state == .playing, size: 42) { playPause() }
                 .keyboardShortcut(.space, modifiers: [])
             SymbolButton(symbol: "forward.fill", label: "Next sentence (⌘])") { model.skip(1) }
                 .keyboardShortcut("]", modifiers: .command).disabled(!live)
-            Divider().frame(height: 22).padding(.horizontal, 6)
+            Divider().frame(height: 22).padding(.horizontal, Space.sm)
             SpeedMenu(model: model)
             VoiceMenu(voices: data.voices, english: model.settings.voiceID, french: model.settings.frenchVoiceID) { model.setVoice($0) }
             if doc.pdf == nil {
                 SymbolButton(symbol: "textformat.size", label: wider ? "Normal spacing" : "Wider spacing") { wider.toggle() }
-                    .foregroundStyle(wider ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(.primary))
+                    .foregroundStyle(wider ? AnyShapeStyle(Theme.accentText) : AnyShapeStyle(.primary))
             }
         }
-        .padding(.leading, 10).padding(.trailing, 12).padding(.vertical, 7)
+        .padding(.leading, Space.md).padding(.trailing, Space.md).padding(.vertical, Space.sm)
         .panelSurface(Capsule())
         .background {   // ⌘+ / ⌘− step the speed by 0.25
             Group {
@@ -226,7 +245,7 @@ struct SpeedMenu: View {
         let speed = Double(model.activeSpeed)   // a preview shows its own speed
         Button { open.toggle() } label: {
             Text(Theme.speed(speed)).font(.callout.weight(.semibold).monospacedDigit())
-                .padding(.horizontal, 6).padding(.vertical, 3)
+                .padding(.horizontal, Space.sm).padding(.vertical, Space.xs)
                 .background(open ? Theme.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .contentShape(Rectangle())
         }
@@ -278,6 +297,7 @@ struct VoiceMenu: View {
 // MARK: - Text
 
 struct TextReader: NSViewRepresentable {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let text: String
     let word: NSRange?
     let sentence: NSRange?
@@ -326,7 +346,7 @@ struct TextReader: NSViewRepresentable {
             if let old = c.word, NSMaxRange(old) <= view.string.utf16.count { lm.removeTemporaryAttribute(.foregroundColor, forCharacterRange: old) }
             if let w = word { lm.addTemporaryAttribute(.foregroundColor, value: Theme.onAccentNS, forCharacterRange: w) }
             c.word = word
-            if follow, let w = word { view.scrollToMiddleThird(w, in: scroll, animated: true) }
+            if follow, let w = word { view.scrollToMiddleThird(w, in: scroll, animated: !reduceMotion) }
         }
         view.word = word
         view.sentence = sentence
@@ -343,7 +363,7 @@ struct TextReader: NSViewRepresentable {
 /// Read-only, selectable text at a comfortable reading width; highlights are drawn behind the glyphs, so the text
 /// storage never changes while reading.
 final class ReaderTextView: NSTextView {
-    static let font = NSFont.systemFont(ofSize: 19)
+    static let font = NSFont.systemFont(ofSize: 20)
     var word: NSRange?
     var sentence: NSRange?
     var colour = Theme.accentNS

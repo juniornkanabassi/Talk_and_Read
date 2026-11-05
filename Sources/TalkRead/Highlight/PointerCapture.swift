@@ -10,7 +10,7 @@ import TalkReadCore
 
 enum PointerCapture {
     /// The paragraph under a point, as the glyph and the read need it.
-    struct Block {
+    struct Block: @unchecked Sendable {
         let pid: pid_t
         /// The paragraph-sized element (web), or the text view itself (native).
         let element: AXUIElement
@@ -26,13 +26,22 @@ enum PointerCapture {
         var line: CGRect?
     }
 
+    /// One serial lane for unsolicited hover AX work; callers keep at most one request in flight.
+    private static let hoverQueue = DispatchQueue(label: "TalkRead.pointer-accessibility", qos: .utility)
+
+    static func onWorker<T>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            hoverQueue.async { continuation.resume(returning: work()) }
+        }
+    }
+
     private static let maxText = 200_000
     /// Roles that are only part of a line: the climb goes past them to the paragraph that holds them.
     private static let inline: Set<String> = ["AXStaticText", "AXLink", "AXImage", "AXButton", "AXMark", "AXTextMarker"]
     private static let nativeText: Set<String> = ["AXTextArea", "AXTextField"]
 
     /// The element under `point` (AX top-left coordinates) and its app; nil over our own windows or nothing.
-    @MainActor static func hit(_ point: CGPoint) -> (element: AXUIElement, pid: pid_t)? {
+    static func hit(_ point: CGPoint) -> (element: AXUIElement, pid: pid_t)? {
         let system = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(system, 0.1)   // a hung app costs one tenth of a second, not six, for this call only
         var found: AXUIElement?
@@ -61,21 +70,20 @@ enum PointerCapture {
         return nil
     }
 
-    /// Runs `body` with every AX call answering within a quarter of a second: the glyph and hover look on the main
-    /// thread, unasked, so a hung app must not freeze Talk & Read. The system-wide timeout is every element's, so it
-    /// goes back to the default afterwards.
-    @MainActor static func bounded<T>(_ seconds: Float = 0.25, _ body: () -> T) -> T {
+    /// Bounds each AX call. Hover callers use the serial worker so a stalled app never blocks the UI.
+    /// The system-wide timeout is reset after the operation.
+    static func bounded<T>(_ seconds: Float = 0.25, _ body: () -> T) -> T {
         let system = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(system, seconds)
         defer { AXUIElementSetMessagingTimeout(system, 0) }
         return body()
     }
 
-    @MainActor static func block(from element: AXUIElement, pid: pid_t, point: CGPoint) -> Block? {
+    static func block(from element: AXUIElement, pid: pid_t, point: CGPoint) -> Block? {
         bounded { lookup(from: element, pid: pid, point: point) }
     }
 
-    @MainActor private static func lookup(from element: AXUIElement, pid: pid_t, point: CGPoint) -> Block? {
+    private static func lookup(from element: AXUIElement, pid: pid_t, point: CGPoint) -> Block? {
         let role = axAttribute(element, kAXRoleAttribute) as? String ?? ""
         if TextCapture.isSecure(element) { return nil }   // never read a password field, natively or as part of a page
         // A text view, or a web page's editable text when it answers like one; a contenteditable that does not falls

@@ -3,11 +3,38 @@ import AppKit
 import SwiftUI
 import TalkReadCore
 
+/// One four-point rhythm for custom layouts. System Forms and Lists keep native metrics.
+enum Space {
+    static let xs: CGFloat = 4
+    static let sm: CGFloat = 8
+    static let md: CGFloat = 12
+    static let lg: CGFloat = 16
+    static let xl: CGFloat = 20
+    static let xxl: CGFloat = 24
+    static let spacious: CGFloat = 28
+    static let section: CGFloat = 32
+    static let margin = xl
+}
+
+enum TypeStyle {
+    static let caption = Font.system(size: 12)
+    static let small = Font.system(size: 12)
+    static let label = Font.system(size: 16)
+    static let body = Font.system(size: 16)
+    static let title = Font.system(size: 20)
+    static let metric = Font.system(size: 24, weight: .semibold, design: .rounded)
+    static let display = Font.system(size: 40, weight: .bold, design: .rounded)
+}
+
 enum Theme {
     static let accentHex = "#FFD21F"
     static let accentNS = NSColor(hex: accentHex)!
     static let onAccentNS = NSColor(hex: "#1A1A1A")!
     static let accent = Color(nsColor: accentNS)
+    static let accentTextNS = NSColor.dynamic(light: "#805B00", dark: "#FFD21F")
+    static let accentText = Color(nsColor: accentTextNS)
+    static let warningNS = NSColor.dynamic(light: "#9A4800", dark: "#FFB454")
+    static let warning = Color(nsColor: warningNS)
     /// Text and glyphs on yellow.
     static let onAccent = Color(nsColor: onAccentNS)
     static let surface = Color(nsColor: .dynamic(light: "#F7F7F4", dark: "#16181D"))
@@ -157,7 +184,7 @@ struct AccentButtonStyle: ButtonStyle {
         configuration.label
             .font(.body.weight(.semibold))
             .foregroundStyle(Theme.onAccent)
-            .padding(.horizontal, 14).padding(.vertical, 6)
+            .padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
             .background(Theme.accent.opacity(configuration.isPressed ? 0.75 : 1), in: Capsule())
             .opacity(enabled ? 1 : 0.45)
     }
@@ -170,7 +197,7 @@ struct ChipStyle: ButtonStyle {
         configuration.label
             .font(.callout.weight(.medium).monospacedDigit())
             .foregroundStyle(selected ? Theme.onAccent : .primary)
-            .padding(.horizontal, 12).padding(.vertical, 5)
+            .padding(.horizontal, Space.md).padding(.vertical, Space.xs)
             .background(selected ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(Color.primary.opacity(configuration.isPressed ? 0.14 : 0.07)), in: Capsule())
     }
 }
@@ -197,12 +224,12 @@ struct KeyCaps: View {
     var body: some View {
         let mods = display.prefix { "⌃⌥⇧⌘".contains($0) }
         let caps = mods.map(String.init) + [String(display.dropFirst(mods.count))].filter { !$0.isEmpty }
-        HStack(spacing: 3) {
+        HStack(spacing: Space.xs) {
             ForEach(Array(caps.enumerated()), id: \.offset) { _, cap in
                 Text(cap)
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .frame(minWidth: 20, minHeight: 20)
-                    .padding(.horizontal, cap.count > 1 ? 5 : 0)
+                    .padding(.horizontal, cap.count > 1 ? Space.xs : 0)
                     .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Color.primary.opacity(0.12)))
             }
@@ -246,20 +273,20 @@ struct PermissionRow: View {
     let request: () -> Void
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: Space.lg) {
             IconTile(symbol: symbol)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Space.xs) {
                 Text(title).font(.headline)
                 Text(detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Space.md)
             if granted {
                 Label { Text("Allowed") } icon: { Tick() }.font(.callout).foregroundStyle(.secondary)
             } else {
                 Button(buttonTitle, action: request)
             }
         }
-        .padding(14)
+        .padding(Space.lg)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(title), \(granted ? "allowed" : "not allowed")")
     }
@@ -322,14 +349,14 @@ struct ModelStatusRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: Space.lg) {
             IconTile(symbol: symbol)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Space.xs) {
                 Text(title).font(.headline)
                 Text(detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if case .downloading(let p) = state { ThinBar(value: p).frame(maxWidth: 240).padding(.top, 2) }
+                if case .downloading(let p) = state { ThinBar(value: p).frame(maxWidth: 240).padding(.top, Space.xs) }
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Space.md)
             switch state {
             case .ready:
                 Label { Text("Ready") } icon: { Tick() }.font(.callout).foregroundStyle(.secondary)
@@ -341,7 +368,7 @@ struct ModelStatusRow: View {
                 if let download { Button("Try again", action: download) }
             }
         }
-        .padding(14)
+        .padding(Space.lg)
         .accessibilityElement(children: .contain)
     }
 

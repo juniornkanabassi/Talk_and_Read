@@ -104,12 +104,14 @@ import TalkReadCore
 
     func toggle() { isVisible ? hide() : show() }
 
-    /// A short status with no read behind it; hides after the usual delay.
+    /// A readable, announced status retained until dismissed or another read begins.
     func flash(_ text: String) {
         message = text
+        AccessibilityNotification.Announcement(text).post()
         resize()
         show()
-        hideLater()
+        // A failed action stays readable until dismissed or the next read begins.
+        hideTask?.cancel()
     }
 
     /// Close button and Esc: stop reading and hide.
@@ -148,7 +150,8 @@ import TalkReadCore
         message = nil
         stateWatch = session?.$state.removeDuplicates().sink { [weak self] state in
             switch state {
-            case .finished, .failed, .paused: self?.hideLater()   // a pause hides too; resuming brings it back (Junior, 2 Nov)
+            case .failed(let reason): self?.flash(reason)
+            case .finished, .paused: self?.hideLater()   // a pause hides too; resuming brings it back (Junior, 2 Nov)
             case .playing:
                 self?.hideTask?.cancel()
                 if self?.isShowing == false, self?.model?.settings.showMiniPlayer == true { self?.show() }
@@ -165,15 +168,15 @@ import TalkReadCore
     /// over the card holds it too, as over the pill.
     private func hideLater() {
         hideTask?.cancel()
-        var seconds = model?.settings.miniPlayerAutoHideSeconds ?? 0.5
+        guard message == nil else { return }
+        let seconds = model?.settings.miniPlayerAutoHideSeconds ?? 0.5
         guard seconds > 0 else { return }
-        if message != nil { seconds = max(seconds, 3) }   // a status line ("Select some text first") needs time to be read
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
             while !Task.isCancelled, self?.docked != nil || self?.containsPointer == true || SpeedControl.SpeedButton.panelShown {
                 try? await Task.sleep(for: .seconds(0.5))
             }
-            if !Task.isCancelled { self?.hide() }
+            if !Task.isCancelled, self?.message == nil { self?.hide() }
         }
     }
 
@@ -257,7 +260,7 @@ struct CombinedCard<Dictation: View, Player: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             dictation
-            Rectangle().fill(.separator).frame(height: MiniPlayerView.dockDivider).padding(.horizontal, 16)
+            Rectangle().fill(.separator).frame(height: MiniPlayerView.dockDivider).padding(.horizontal, Space.lg)
             player
         }
         .frame(width: MiniPlayerView.width)
@@ -351,14 +354,14 @@ struct MiniPlayerView: View {
     }
 
     private var face: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: Space.sm) {
             if let notice {
                 Label { Text(notice).lineLimit(1).truncationMode(.tail) } icon: {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.accent)
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(height: Self.noticeHeight - 6)
-                .padding(.horizontal, 22)
+                .padding(.horizontal, Space.xxl)
                 .help(notice)
                 .accessibilityElement(children: .combine)
             }
@@ -366,26 +369,26 @@ struct MiniPlayerView: View {
                 if let line {
                     if expanded { Subtitles(line: line) } else { KaraokeStrip(line: line) }
                 } else {
-                    Text(status).font(.system(size: 15)).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.center)
-                        .padding(.horizontal, 20)
+                    Text(status).font(TypeStyle.label).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.center)
+                        .padding(.horizontal, Space.xl)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             controls
         }
-        .padding(.top, 10).padding(.bottom, 8)
+        .padding(.top, Space.md).padding(.bottom, Space.sm)
         .frame(width: Self.width, height: Self.height(expanded: expanded, notice: notice != nil))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Player")
     }
 
     private var controls: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: Space.xs) {
             SymbolButton(symbol: "backward.fill", label: "Previous sentence", size: 13) { model.skip(-1) }.disabled(!active)
             PlayButton(playing: state == .playing, size: 34) { model.togglePause() }.disabled(!active)
             SymbolButton(symbol: "forward.fill", label: "Next sentence", size: 13) { model.skip(1) }.disabled(!active)
-            if let note { Text(note).font(.caption).foregroundStyle(.secondary).padding(.leading, 6).lineLimit(1) }
-            Spacer(minLength: 6)
+            if let note { Text(note).font(.caption).foregroundStyle(.secondary).padding(.leading, Space.sm).lineLimit(1) }
+            Spacer(minLength: Space.sm)
             SpeedControl(model: model)
                 .frame(width: 56, height: 24)
             VoiceMenu(voices: voices, english: model.settings.voiceID, french: model.settings.frenchVoiceID, title: voiceName) { model.setVoice($0) }
@@ -393,12 +396,13 @@ struct MiniPlayerView: View {
             SymbolButton(symbol: expanded ? "chevron.down" : "chevron.up", label: expanded ? "Hide subtitles" : "Show subtitles", size: 12) { expanded.toggle() }
             SymbolButton(symbol: "xmark", label: "Close", size: 12, action: close)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, Space.md)
     }
 }
 
 /// One line that keeps the spoken word (yellow pill) centred.
 struct KaraokeStrip: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let line: KaraokeLine
 
     var body: some View {
@@ -410,21 +414,24 @@ struct KaraokeStrip: View {
                     ForEach(words.indices, id: \.self) { i in
                         let on = i == current && line.word != nil
                         Text(words[i].text)
-                            .font(.system(size: 17, weight: on ? .semibold : .regular))
+                            .font(TypeStyle.body.weight(on ? .semibold : .regular))
                             .foregroundStyle(on ? Theme.onAccent : .primary)
-                            .padding(.horizontal, 4).padding(.vertical, 2)
+                            .padding(.horizontal, Space.xs).padding(.vertical, Space.xs)
                             .background { if on { Capsule().fill(Theme.accent) } }
                             .id(i)
                     }
                 }
-                .padding(.horizontal, 22)
+                .padding(.horizontal, Space.xxl)
             }
             .scrollDisabled(true)
             .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.06),
                                          .init(color: .black, location: 0.94), .init(color: .clear, location: 1)],
                                  startPoint: .leading, endPoint: .trailing))
             .onAppear { proxy.scrollTo(current, anchor: .center) }
-            .onChange(of: current) { _, i in withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(i, anchor: .center) } }
+            .onChange(of: current) { _, i in
+                if reduceMotion { proxy.scrollTo(i, anchor: .center) }
+                else { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(i, anchor: .center) } }
+            }
         }
         .accessibilityElement()
         .accessibilityLabel(line.current)
@@ -445,13 +452,13 @@ struct KaraokeStrip: View {
 struct Subtitles: View {
     let line: KaraokeLine
     var body: some View {
-        VStack(spacing: 5) {
+        VStack(spacing: Space.xs) {
             Text(line.previous ?? " ").lineLimit(1).foregroundStyle(.tertiary)
-            Text(highlighted).font(.system(size: 17)).lineLimit(3).multilineTextAlignment(.center)
+            Text(highlighted).font(TypeStyle.body).lineLimit(3).multilineTextAlignment(.center)
             Text(line.next ?? " ").lineLimit(1).foregroundStyle(.tertiary)
         }
-        .font(.system(size: 14))
-        .padding(.horizontal, 22)
+        .font(TypeStyle.label)
+        .padding(.horizontal, Space.xxl)
         .accessibilityElement()
         .accessibilityLabel(line.current)
     }
