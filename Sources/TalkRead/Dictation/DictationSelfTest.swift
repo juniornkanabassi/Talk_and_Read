@@ -437,6 +437,8 @@ import WebKit
         var onLevel: ((Float) -> Void)?
         var log: ((String) -> Void)?                              // "mic" when an input starts
         var delay = Duration.zero
+        var holdStartup = false
+        var startupWaiting: Bool { waiting != nil }
         var fallbackNotice: String?                               // what a Recorder whose device would not open reports
         private(set) var starts = 0
         private(set) var running = false
@@ -449,11 +451,13 @@ import WebKit
             session += 1
             running = true
             log?("mic")
-            if delay > .zero {
+            if holdStartup || delay > .zero {
                 let id = session, delay = delay
                 try await withCheckedThrowingContinuation { c in
                     waiting = c
-                    Task { try? await Task.sleep(for: delay); if self.session == id { self.finishWait(.success(())) } }
+                    if !holdStartup {
+                        Task { try? await Task.sleep(for: delay); if self.session == id { self.finishWait(.success(())) } }
+                    }
                 }
             }
             onBuffer?(Transcriber.buffer(ArraySlice(repeating: 0, count: 1600)))
@@ -471,6 +475,8 @@ import WebKit
             waiting = nil
             w?.resume(with: result)
         }
+
+        func releaseStartup() { finishWait(.success(())) }
     }
 
     /// Shaped like the Transcriber: the production `RecogniserQueue`, recognition that cancellation cannot interrupt
@@ -587,6 +593,14 @@ import WebKit
             do { try body(); failures.append("\(name): no busy") } catch { expect(name, error as? DictationError == .busy(owner: owner)) }
         }
         func settle(_ ms: Int = 100) async { try? await Task.sleep(for: .milliseconds(ms)) }
+        func waitForStartup(_ count: Int) async -> Bool {
+            let deadline = Date().addingTimeInterval(3)
+            while Date() < deadline {
+                if audio.starts == count && audio.startupWaiting { return true }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            return false
+        }
         func recording() -> Bool { if case .recording = c.state { true } else { false } }
         /// Stops the human's utterance and returns its typed text; nil at once when the human does not hold a recording
         /// (a lost slot leaves a recording nobody can stop: the check must fail, not hang).
@@ -671,22 +685,26 @@ import WebKit
         c.handle(.cancelRecording)
         expect("#1 cancel stops the mic", !audio.running && c.owner == nil)
 
-        audio.delay = .milliseconds(150)
+        // Hold the fake at the intended boundary; a busy host can skip a 40 ms timing window.
+        audio.holdStartup = true
         starts = audio.starts
         try? c.start(caller: "A")
-        await settle(40)                                            // A's microphone is starting
+        let cancellingStartup = await waitForStartup(starts + 1)
+        expect("#1 cancellation reaches startup", cancellingStartup)
         try? c.cancel(caller: "A")
-        await settle(250)
+        _ = await c.result()
         expect("#1 cancel during startup: mic off", audio.starts == starts + 1 && !audio.running && c.owner == nil)
 
         try? c.start(caller: "A")
-        await settle(40)                                            // A's microphone is starting ...
+        let takeoverStartup = await waitForStartup(starts + 2)
+        expect("#1 takeover reaches startup", takeoverStartup)
         c.handle(.startRecording)                                   // ... when the human takes over
-        await settle(300)
-        expect("#1 A's failed startup leaves the human's mic running", audio.running && c.owner == user && recording())
+        let humanStarted = await waitForStartup(starts + 3)
+        expect("#1 A's failed startup leaves the human's mic running", humanStarted && audio.running && c.owner == user && recording())
+        audio.releaseStartup()
         let human2 = await stopHuman()
         expect("#1 the human's text is typed", human2 != nil && typed.last == human2 && !audio.running)
-        audio.delay = .zero
+        audio.holdStartup = false
 
         // #6: live dictation and file transcription share one slot; the human's start cancels the file job, and the
         // cancelled job never releases the human's slot.

@@ -256,7 +256,8 @@ lane_gpu() {   # what the batch ran; only with --gpu
   st g-breeze-timing-warm 900 --selftest-tts $F --voice breeze.us_warm
   st g-breeze-timing-calm 900 --selftest-tts $F --voice breeze.us_calm
   st g-qwen-timing-en 900 --selftest-tts $F --voice qwen.us_warm
-  st g-qwen-timing-fr 900 --selftest-tts Tests/Fixtures/qwen-fr.txt --voice qwen.fr_warm
+  # At least 25 candidate onsets are needed for the 15-pair minimum to allow 60% coverage.
+  st g-qwen-timing-fr 900 --selftest-tts Tests/Fixtures/reading-fr.txt --voice qwen.fr_warm
   for v in warm calm; do for r in 1.5 2 2.5; do st g-breeze-long-$v-$r 900 --selftest-tts $F --voice breeze.us_$v --long --rate $r; done; done
   st g-qwen-long-2.5 900 --selftest-tts $F --voice qwen.us_warm --long --rate 2.5
   st g-breeze-cancel-warm 900 --selftest-tts $F --voice breeze.us_warm --cancel
