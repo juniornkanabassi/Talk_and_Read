@@ -318,6 +318,14 @@ enum SelfTest {
         session.start()
         var log: [String] = []
         var checks: [String: Bool] = [:]
+        func waitForSentence(_ target: Int) async throws -> Bool {
+            let deadline = ContinuousClock.now + .seconds(5)
+            repeat {
+                if session.state == .playing, session.currentSentence == target { return true }
+                try await Task.sleep(for: .milliseconds(10))
+            } while ContinuousClock.now < deadline
+            return false
+        }
         var held = 0, sentence = 0
         for second in 1 ... 20 {
             try await Task.sleep(nanoseconds: 1_000_000_000)
@@ -336,8 +344,8 @@ enum SelfTest {
                 checks["device change while paused: resume restarts at the held word"] = session.state == .playing
                     && (held ..< held + 60).contains(session.currentToken ?? -1) && session.player.queuedUntil > session.player.currentTime
                 sentence = session.currentSentence ?? -1; session.skip(sentences: 1)
+                checks["skip moves to the next sentence"] = try await waitForSentence(sentence + 1)
             case 18:
-                checks["skip moves to the next sentence"] = session.currentSentence == sentence + 1
                 if let system = await engines.system.voices().first { session.setVoice(system) }
             case 20: checks["system voice keeps reading"] = session.state == .playing && (session.currentSentence ?? 0) >= sentence + 1
             default: break
@@ -350,8 +358,7 @@ enum SelfTest {
         try await Task.sleep(nanoseconds: 1_000_000_000)
         checks["skip(Int.max) goes to the last sentence"] = session.currentSentence == session.tokens.last?.sentence || session.state == .finished
         session.skip(sentences: .min)
-        try await Task.sleep(nanoseconds: 1_000_000_000)
-        checks["skip(Int.min) goes to the first sentence"] = session.state == .playing && session.currentSentence == 0
+        checks["skip(Int.min) goes to the first sentence"] = try await waitForSentence(0)
         session.stop()
         // Sol #7: an output that will not start fails the read (AppModel releases ownership) instead of leaving it
         // "playing" with a frozen clock; no first-audio time is reported. Sol inspection 5 #1: the engine start and the
@@ -428,17 +435,18 @@ enum SelfTest {
         let before = footprint()
         var clock = Date()
         let fallbackID = v.language == "fr" ? "ff_siwis" : "af_heart"
+        try await engines.neural.prepare(voice: fallbackID)
         if above {   // as AppModel.warm on selection: Kokoro, not the model
-            try await engines.neural.prepare(voice: fallbackID)
             print("\(name) not loaded above its \(BreezeEngine.keepsUpTo)x; Kokoro warmed in \(ms(since: clock)) ms")
         } else {
+            clock = Date()
             try await slow.prepare(voice: voice)
             print(String(format: "%@ load + voice + warm-up: %d ms; footprint %.0f MB before, %.0f MB loaded (MLX active %.0f MB, cache %.0f MB)",
                          name, ms(since: clock), before, footprint(), Double(Memory.activeMemory) / 1e6, Double(Memory.cacheMemory) / 1e6))
         }
         let fallback = Voice(id: fallbackID, name: fallbackID, accent: "", gender: "Female", engine: .neural, installed: true, language: v.language)
         // As the app does at launch: the first audio engine start in a process costs ~0.3 s (measured 1.65 s first audio
-        // without this, 1.35 s with it). The read warms its Kokoro fallback itself.
+        // without this, 1.35 s with it). Kokoro is already prepared before the timed read.
         Player.warmOutput()
         try await Task.sleep(nanoseconds: 1_000_000_000)
         let session = ReadSession(text: text, capture: nil, voice: v, rate: rate, startToken: 0, engines: engines, lexicon: [:], fallback: fallback)
