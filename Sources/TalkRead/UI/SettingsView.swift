@@ -289,11 +289,11 @@ struct SettingsContent: View {
                 }
             }
             Section {
-                Picker("Free memory when unused for", selection: $model.settings.unloadAfterMinutes) {
+                Picker("Free other speech models after", selection: $model.settings.unloadAfterMinutes) {
                     ForEach([5, 10, 20, 30, 60], id: \.self) { Text("\($0) minutes").tag($0) }
                 }
             } footer: {
-                Text("The models load again in a moment the next time you read or dictate.").foregroundStyle(.secondary)
+                Text("When idle, Qwen, Breeze, French Kokoro and unused dictation models are freed from memory. English Kokoro and the model for your chosen dictation languages stay ready. Freed models reload when needed.").foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
