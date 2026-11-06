@@ -107,11 +107,13 @@ enum DictationError: LocalizedError, Equatable {
     private let decode: @Sendable (URL) throws -> [Float]
     private var pill: DictationPill?
 
-    init(audio: DictationAudio? = nil, asr: DictationASR? = nil, multilingual: DictationASR? = nil, insert: Insert? = nil,
+    init(audio: DictationAudio? = nil, asr: DictationASR? = nil, multilingual: DictationASR? = nil,
+         historyWriter: PersistenceQueue = PersistenceQueue(), insert: Insert? = nil,
          decode: (@Sendable (URL) throws -> [Float])? = nil) {
         self.audio = audio ?? Recorder()
         self.asr = asr ?? Transcriber()
         self.multilingual = multilingual ?? ParakeetV3Transcriber()
+        self.historyWriter = historyWriter
         self.insert = insert ?? { await Inserter.insert($0, targetPID: $1, requireField: $2, isCurrent: $3) }
         self.decode = decode ?? { try Transcriber.samples(of: $0) }
         history = AppModel.loadJSON(Paths.history) ?? []   // a bad file is kept as .bad, not overwritten
@@ -299,8 +301,13 @@ enum DictationError: LocalizedError, Equatable {
         return await insert(entry.text, targetPID, false, { true })
     }
 
-    /// Final text of the current or last utterance once it is typed; nil if it was cancelled or failed.
-    func result() async -> String? { await work?.value }
+    /// Control callers wait for the saved result; the result pill and next recording never wait for disk.
+    func result() async -> String? {
+        guard let work else { return nil }
+        let text = await work.value
+        await flushHistoryInBackground()
+        return text
+    }
 
     /// Hotkey actions; reading actions belong to the AppModel.
     func handle(_ action: HotkeyAction) {
@@ -370,8 +377,6 @@ enum DictationError: LocalizedError, Equatable {
         guard gen == generation else { return nil }
         if result != .refusedSecure {
             remember(text, app: app, bundleID: bundleID)   // never keep what was said into a password field
-            await flushHistoryInBackground()
-            guard gen == generation else { return nil }
         }
         owner = nil
         if case .inserted(let confirmed) = result { show(done: text, confirmed: confirmed) } else { show(failure: result, text: text) }
@@ -517,7 +522,7 @@ enum DictationError: LocalizedError, Equatable {
         state = .recording(level: level ?? l, partial: partial ?? p)
     }
 
-    private let historyWriter = PersistenceQueue()
+    private let historyWriter: PersistenceQueue
 
     /// Removal is reversible from the window's standard Edit > Undo command.
     func delete(_ id: UUID, undoManager: UndoManager? = nil) {

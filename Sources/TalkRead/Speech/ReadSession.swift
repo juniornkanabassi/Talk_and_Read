@@ -83,7 +83,7 @@ import TalkReadCore
     private var doneEnqueueing = false
     private var userPaused = false
     private var needsRestart = false
-    private var generation = 0
+    private(set) var generation = 0
     private var startedAt: Date?
     /// Measured seconds of work per spoken (speakable) character: the slow engine's (synthesis plus alignment, beyond
     /// `chunkOverhead`) and the fallback's. Spoken characters, because the engine pays for what it hears.

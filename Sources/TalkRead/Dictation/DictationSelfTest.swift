@@ -11,10 +11,7 @@ import WebKit
 
 @MainActor enum DictationSelfTest {
     static func run(dir: String) async -> Int32 {
-        // History and settings go to a scratch home unless the caller chose one (never the real data root).
-        if ProcessInfo.processInfo.environment["TALKREAD_HOME"] == nil {
-            setenv("TALKREAD_HOME", "/private/tmp/talkread-selftest-home", 1)
-        }
+        // The entry point requires an explicit disposable home before any self-test runs.
         if CommandLine.arguments.contains("--warm-up-only") {
             let path = Paths.dataRoot.resolvingSymlinksInPath().path
             guard path.hasPrefix("/tmp/") || path.hasPrefix("/private/tmp/") else { return 1 }
@@ -237,6 +234,30 @@ import WebKit
         expect("Inserter: no field refused", refused == .failed(Inserter.noField) || (!CGPreflightPostEventAccess() && !refused.landed))
         expect("Inserter: no field leaves the clipboard untouched", untouched(kept))
 
+        let absentFocus = await Inserter.insertionFocus(pid: nil, focusedApplication: { nil })
+        expect("missing focused application never falls back to the frontmost app", absentFocus.takesText == false)
+        var queriedApplication = false
+        _ = await Inserter.insertionFocus(pid: getpid(), focusedApplication: { queriedApplication = true; return nil })
+        expect("explicit target skips system-wide focused application lookup", !queriedApplication)
+        if CGPreflightPostEventAccess() {
+            for cancelledTask in [false, true] {
+                var answer: CheckedContinuation<Inserter.Focus, Never>?
+                Inserter.focus = { _ in await withCheckedContinuation { answer = $0 } }
+                var current = true
+                kept = sentinel()
+                let pending = Task { await Inserter.insert("cancelled while finding focus", targetPID: getpid(), requireField: true,
+                                                          isCurrent: { current }) }
+                for _ in 0..<100 where answer == nil { await settle(10) }
+                expect("focus lookup suspends before insertion", answer != nil)
+                if cancelledTask { pending.cancel() } else { current = false }
+                answer?.resume(returning: (false, nil, false, false, true))
+                let cancelled = await pending.value
+                expect("cancellation during focus lookup prevents insertion", cancelled == .failed("Cancelled"))
+                expect("cancelled focus lookup leaves clipboard untouched", untouched(kept))
+            }
+        }
+        Inserter.focus = { _ in (secure: false, previous: nil, terminal: false, singleLine: false, takesText: false) }
+
         var calls: [(text: String, requireField: Bool)] = []
         var answer = InsertResult.failed(Inserter.noField)
         let c = DictationController(audio: FakeAudio(), asr: FakeASR()) { text, _, requireField, _ in
@@ -367,6 +388,39 @@ import WebKit
         _ = await file.value
         await settle(200)
         expect("the result goes once the file is done", f.state == .idle)
+
+        // A busy disk must not hold the result pill or the next recording behind its history write.
+        for answer in [InsertResult.inserted(confirmed: true), .failed(Inserter.noField)] {
+            let writer = PersistenceQueue()
+            let disk = DispatchSemaphore(value: 0)
+            writer.perform { _ = disk.wait(timeout: .now() + 5) }
+            let delayed = DictationController(audio: FakeAudio(), asr: FakeASR(), historyWriter: writer) { _, _, _, _ in answer }
+            delayed.quiet = true
+            delayed.pointerOverPill = { false }
+            try? delayed.start(caller: DictationController.user)
+            await settle(100)
+            try? delayed.stop(insert: true, caller: DictationController.user)
+            var waitingForResult = false
+            let savedResult = Task {
+                waitingForResult = true
+                return await delayed.result()
+            }
+            while !waitingForResult { await Task.yield() }
+            for _ in 0..<100 where !delayed.state.showsResult { await settle(10) }
+            let text = delayed.history.first?.text
+            let expected: DictationController.State = answer.landed ? .done(text ?? "") : .failed(Inserter.noField)
+            expect("busy disk: result shown before history flush", text != nil && delayed.state == expected)
+            expect("busy disk: result releases ownership", delayed.owner == nil && !delayed.isBusy)
+            try? delayed.start(caller: "next")
+            expect("busy disk: next recording admitted", delayed.owner == "next")
+            disk.signal()
+            let result = await savedResult.value
+            expect("busy disk: earlier result survives next recording", result == (answer.landed ? text : nil))
+            expect("busy disk: flush does not replace next recording state", delayed.owner == "next")
+            let saved = (try? JSONDecoder().decode([DictationEntry].self, from: Data(contentsOf: Paths.history))) ?? []
+            expect("busy disk: awaited result has saved its history", saved.first?.id == delayed.history.first?.id)
+            try? delayed.cancel(caller: "next")
+        }
         print("result: no field typed nothing, kept in history, clipboard untouched until Copy; Copy during a capture; paste last; "
               + "5 s / 8 s and hover; ✕; password field; held through a file transcription \(failures.isEmpty ? "ok" : "FAIL \(failures)")")
         return failures.isEmpty
@@ -399,7 +453,11 @@ import WebKit
         let bounds = info?[kCGWindowBounds as String] as? [String: Double] ?? [:]
         expect("shown: on screen", info != nil)
         expect("shown: status-bar layer", info?[kCGWindowLayer as String] as? Int == Int(CGWindowLevelForKey(.statusWindow)))
-        expect("shown: opaque", info?[kCGWindowAlpha as String] as? Double == 1)
+        let expectedAlpha: Double = TalkReadMain.invisibleChecks ? 0 : 1
+        expect("shown: required visibility", info?[kCGWindowAlpha as String] as? Double == expectedAlpha)
+        if TalkReadMain.invisibleChecks {
+            expect("headless pill ignores input", pill.panel?.ignoresMouseEvents == true)
+        }
         expect("shown: 340 x 72 where it was put", bounds["Width"] == 340 && bounds["Height"] == 72 && bounds["X"] == away.x)
         expect("never key or main", pill.panel.map { !$0.canBecomeKey && !$0.canBecomeMain } == true)
         pill.show()                                                 // showing already: stays put, same window
@@ -428,7 +486,7 @@ import WebKit
         expect("still on screen through the states", onScreen(second) != nil)
         c.dismiss()
         pill.hide()
-        print("pill window: on screen at layer 25, opaque, 340 x 72, a new window each time it shows, content "
+        print("pill window: at layer 25, alpha \(expectedAlpha), 340 x 72, a new window each time it shows, content "
               + heights.sorted { $0.key < $1.key }.map { "\($0.key) \(Int($0.value))" }.joined(separator: ", ") + " pt "
               + (failures.isEmpty ? "ok" : "FAIL \(failures)"))
         return failures.isEmpty

@@ -11,13 +11,13 @@ import TalkReadCore
     /// The re-spellings made inside `text` (just typed by the inserter) before focus left the field or `seconds` ran
     /// out; [] when the field cannot be read. Cancelling ends the watch early with the readings so far.
     static func watch(text: String, seconds: Double = 15) async -> [AutoLearn.Correction] {
-        guard let first = snapshot(), let range = locate(text, in: first) else { return [] }
+        guard let first = await snapshot(), let range = locate(text, in: first) else { return [] }
         var last = first
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             try? await Task.sleep(for: .seconds(1))
             if Task.isCancelled { break }
-            guard let now = snapshot(), now.pid == first.pid, CFEqual(now.element, first.element) else { break }
+            guard let now = await snapshot(), now.pid == first.pid, CFEqual(now.element, first.element) else { break }
             last = now
         }
         return AutoLearn.corrections(before: first.value, after: last.value, inserted: range)
@@ -26,10 +26,12 @@ import TalkReadCore
     private struct Snapshot { let element: AXUIElement; let pid: pid_t; let value: String; let caret: Int }
 
     /// The focused text element of another app, when it is not secure and its text is readable.
-    private static func snapshot() -> Snapshot? {
+    private static func snapshot() async -> Snapshot? {
         guard !IsSecureEventInputEnabled() else { return nil }
-        let system = AXUIElementCreateSystemWide()
-        guard let element: AXUIElement = attribute(system, kAXFocusedUIElementAttribute) else { return nil }
+        guard let focused = await PointerCapture.focusedApplicationPID(), focused != getpid(),
+              !Task.isCancelled, !IsSecureEventInputEnabled() else { return nil }
+        let app = AXUIElementCreateApplication(focused)
+        guard let element: AXUIElement = attribute(app, kAXFocusedUIElementAttribute) else { return nil }
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success, pid != getpid() else { return nil }
         let secure = [kAXRoleAttribute, kAXSubroleAttribute].contains { (attribute(element, $0) as String?) == kAXSecureTextFieldSubrole }
@@ -53,7 +55,7 @@ import TalkReadCore
     private static func attribute<T>(_ element: AXUIElement, _ name: String) -> T? {
         var value: CFTypeRef?
         guard PointerCapture.bounded(0.25, {
-            PointerCapture.axCall { AXUIElementCopyAttributeValue(element, name as CFString, &value) }
+            PointerCapture.axCall(element) { AXUIElementCopyAttributeValue(element, name as CFString, &value) }
         }) == .success else { return nil }
         return value as? T
     }

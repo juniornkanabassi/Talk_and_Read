@@ -51,7 +51,7 @@ import ApplicationServices
         AXUIElementSetMessagingTimeout(probe, 0.1)
         for attempt in 0..<6 {
             // Scoped short timeout for the whole walk: the window and children it reaches are other elements than `probe`.
-            if PointerCapture.bounded(0.25, { exposesGeometry(probe, until: deadline) }) { return }
+            if PointerCapture.bounded(0.1, { exposesGeometry(probe, until: deadline) }) { return }
             guard attempt < 5, ContinuousClock.now < deadline else { break }
             try? await Task.sleep(for: .milliseconds(50))
         }
@@ -59,11 +59,15 @@ import ApplicationServices
         let set = AXUIElementSetAttributeValue(app, enhanced, kCFBooleanTrue)
         // The read-back decides: AppKit applies the value yet answers notImplemented. A read-back that fails after a
         // reported success is not "off": ledger it, so quit retries the restore.
-        if isOn(app) || (set == .success && axAttribute(app, enhanced as String) == nil) { ledger.insert(pid) }
+        if isOn(app) || (set == .success && PointerCapture.bounded(0.25, { axAttribute(app, enhanced as String) == nil })) {
+            ledger.insert(pid)
+        }
     }
 
     // ponytail: an unreadable previous value counts as off; setting fails for such apps anyway, so nothing is lost.
-    private static func isOn(_ app: AXUIElement) -> Bool { (axAttribute(app, enhanced as String) as? Bool) == true }
+    private static func isOn(_ app: AXUIElement) -> Bool {
+        PointerCapture.bounded(0.25) { (axAttribute(app, enhanced as String) as? Bool) == true }
+    }
 
     /// The read on `pid` ended (or never started): put AXEnhancedUserInterface back. A no-op for an app never woken.
     static func restore(_ pid: pid_t) {
@@ -74,7 +78,7 @@ import ApplicationServices
         AXUIElementSetMessagingTimeout(app, 0.25)
         _ = AXUIElementSetAttributeValue(app, enhanced, kCFBooleanFalse)
         // Only a read-back of "off" clears it: still on, or no answer in time, keeps the pid for `restoreAll` at quit.
-        if (axAttribute(app, enhanced as String) as? Bool) == false { ledger.remove(pid) }
+        if PointerCapture.bounded(0.25, { (axAttribute(app, enhanced as String) as? Bool) == false }) { ledger.remove(pid) }
     }
 
     /// Every app we woke, for a caller that has no pid (app quit).

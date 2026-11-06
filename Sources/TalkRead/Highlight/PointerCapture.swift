@@ -28,10 +28,28 @@ enum PointerCapture {
 
     /// One serial lane for unsolicited hover AX work; callers keep at most one request in flight.
     private static let hoverQueue = DispatchQueue(label: "TalkRead.pointer-accessibility", qos: .utility)
+    private static let clickQueue = DispatchQueue(label: "TalkRead.pointer-click", qos: .userInitiated)
 
-    static func onWorker<T>(_ work: @escaping @Sendable () -> T) async -> T {
+    static func onWorker<T>(forClick: Bool = false, _ work: @escaping @Sendable () -> T) async -> T {
         await withCheckedContinuation { continuation in
-            hoverQueue.async { continuation.resume(returning: work()) }
+            (forClick ? clickQueue : hoverQueue).async { continuation.resume(returning: work()) }
+        }
+    }
+
+    /// Panels can take keyboard focus without becoming NSWorkspace's frontmost application.
+    static func focusedApplicationPID() async -> pid_t? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &value) == .success,
+                      let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let application = value as! AXUIElement
+                var pid: pid_t = 0
+                continuation.resume(returning: AXUIElementGetPid(application, &pid) == .success && pid > 0 ? pid : nil)
+            }
         }
     }
 
@@ -42,11 +60,9 @@ enum PointerCapture {
 
     /// The element under `point` (AX top-left coordinates) and its app; nil over our own windows or nothing.
     static func hit(_ point: CGPoint) -> (element: AXUIElement, pid: pid_t)? {
-        let system = AXUIElementCreateSystemWide()
+        precondition(!Thread.isMainThread, "System-wide AX hit tests must run on a worker")
         var found: AXUIElement?
-        let result = bounded(0.1) {
-            axCall { AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &found) }
-        }
+        let result = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &found)
         guard result == .success, let found else { return nil }
         var pid: pid_t = 0
         guard AXUIElementGetPid(found, &pid) == .success, pid != getpid() else { return nil }
@@ -57,28 +73,34 @@ enum PointerCapture {
     /// first hit on a sleeping Claude window that finds only the window finds the text on the second try.
     /// `inUse` names an app a newer read is using by the time the lookup gives up, whose wake must stay.
     @MainActor static func block(at point: CGPoint, wake: Bool, inUse: () -> pid_t? = { nil }) async -> Block? {
-        guard let first = hit(point) else { return nil }
-        if let b = block(from: first.element, pid: first.pid, point: point) { return b }
+        guard let first = await onWorker(forClick: true, { hit(point) }) else { return nil }
+        if let b = await onWorker(forClick: true, { block(from: first.element, pid: first.pid, point: point) }) { return b }
         guard wake else { return nil }
         await AXWake.wake(AXUIElementCreateApplication(first.pid), pid: first.pid)
         // A cold Electron tree (Codex, Claude) fills in over the next half second or so: try a few times.
         for attempt in 0..<5 {
-            if let again = hit(point), again.pid == first.pid, let b = block(from: again.element, pid: again.pid, point: point) { return b }
+            let found = await onWorker(forClick: true) {
+                guard let again = hit(point), again.pid == first.pid else { return nil as Block? }
+                return block(from: again.element, pid: again.pid, point: point)
+            }
+            if let found { return found }
             if attempt < 4 { try? await Task.sleep(for: .milliseconds(150)) }
         }
         if inUse() != first.pid { AXWake.restore(first.pid) }   // nothing to read there: no Highlighter will put the app back
         return nil
     }
 
-    private static let calls = AXCallCoordinator { seconds in
-        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), seconds)
+    // System-wide refs change the process default, so never apply a per-request timeout to them.
+    private static let systemWide = AXUIElementCreateSystemWide()
+    private static let calls = AXCallCoordinator { element, seconds in
+        guard !CFEqual(element, systemWide) else { return }
+        AXUIElementSetMessagingTimeout(element, seconds)
     }
 
-    /// Scope a timeout to this thread's calls, without holding the lock over an entire tree walk.
+    /// Scope the target elements' timeout to this thread's calls.
     static func bounded<T>(_ seconds: Float = 0.25, _ body: () -> T) -> T { calls.bounded(seconds, body) }
 
-    /// Apply and restore the process-wide timeout atomically around one AX request.
-    static func axCall<T>(_ body: () -> T) -> T { calls.call(body) }
+    static func axCall<T>(_ element: AXUIElement, _ body: () -> T) -> T { calls.call(on: element, body) }
 
     static func block(from element: AXUIElement, pid: pid_t, point: CGPoint) -> Block? {
         bounded { lookup(from: element, pid: pid, point: point) }
@@ -230,7 +252,7 @@ enum PointerCapture {
     /// The element answers AXRangeForPosition, so the native path can place a point in its text.
     private static func positions(_ element: AXUIElement) -> Bool {
         var names: CFArray?
-        guard axCall({ AXUIElementCopyParameterizedAttributeNames(element, &names) }) == .success else { return false }
+        guard axCall(element, { AXUIElementCopyParameterizedAttributeNames(element, &names) }) == .success else { return false }
         return ((names as? [String]) ?? []).contains("AXRangeForPosition")
     }
 
@@ -419,15 +441,13 @@ enum PointerCapture {
     }
 }
 
-/// AX's system-wide timeout is process state. Threads keep their intended bound locally and hold this
-/// lock only while making one request, so a hover walk cannot reset a reader's timeout or monopolise it.
+/// A timeout on an ordinary AX element belongs to that reference, not even to other equal
+/// references (AXUIElement.h). No lock is held while a request waits on another process.
 final class AXCallCoordinator: @unchecked Sendable {
-    private let lock = NSRecursiveLock()
     private let timeoutKey = "TalkRead.AXTimeout.\(UUID().uuidString)"
-    private let setTimeout: (Float) -> Void
-    private var activeTimeout: Float = 0
+    private let setTimeout: (AXUIElement, Float) -> Void
 
-    init(setTimeout: @escaping (Float) -> Void) { self.setTimeout = setTimeout }
+    init(setTimeout: @escaping (AXUIElement, Float) -> Void) { self.setTimeout = setTimeout }
 
     func bounded<T>(_ seconds: Float, _ body: () -> T) -> T {
         let dictionary = Thread.current.threadDictionary
@@ -440,13 +460,9 @@ final class AXCallCoordinator: @unchecked Sendable {
         return body()
     }
 
-    func call<T>(_ body: () -> T) -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        let previous = activeTimeout
-        activeTimeout = (Thread.current.threadDictionary[timeoutKey] as? NSNumber)?.floatValue ?? 0
-        setTimeout(activeTimeout)
-        defer { activeTimeout = previous; setTimeout(previous) }
+    func call<T>(on element: AXUIElement, _ body: () -> T) -> T {
+        let seconds = (Thread.current.threadDictionary[timeoutKey] as? NSNumber)?.floatValue ?? 0
+        setTimeout(element, seconds)
         return body()
     }
 }

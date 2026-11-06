@@ -355,12 +355,19 @@ import TalkReadCore
     /// The word drawn under `point` (Cocoa screen coordinates), as its UTF-16 range in `capture.text`: a click on it while
     /// reading jumps there. Native text answers AXRangeForPosition; a web page is searched through the node map, only
     /// the nodes whose frame holds the point. nil off every word, or before the map exists (the first words of a read).
-    func wordRange(at point: CGPoint) -> Range<Int>? {
-        PointerCapture.bounded { lookupWord(at: point) }   // a hung app answers within a quarter of a second per call
+    func wordRange(at point: CGPoint) async -> Range<Int>? {
+        let p = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.height ?? 0) - point.y)   // AX top-left coordinates
+        if let range = PointerCapture.bounded(0.25, { nativeWordRange(at: point, axPoint: p) }) { return range }
+        guard nodeMap?.isEmpty == false else { return nil }
+        // Native hit testing honours foreign click-through windows. Its system-default timeout
+        // must stay off the main thread rather than changing every AX caller's timeout.
+        guard let hit = await PointerCapture.onWorker(forClick: true, { PointerCapture.hit(p) }),
+              !Task.isCancelled, hit.pid == capture.pid else { return nil }
+        return PointerCapture.bounded { mappedWordRange(at: point, element: hit.element) }
     }
 
-    private func lookupWord(at point: CGPoint) -> Range<Int>? {
-        var p = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.height ?? 0) - point.y)   // AX top-left coordinates
+    private func nativeWordRange(at point: CGPoint, axPoint: CGPoint) -> Range<Int>? {
+        var p = axPoint
         if let element = capture.element, let start = capture.selectionStart {
             if let parameter = AXValueCreate(.cgPoint, &p),
                let value = axParameterizedAttribute(element, "AXRangeForPosition", parameter: parameter), CFGetTypeID(value) == AXValueGetTypeID() {
@@ -374,11 +381,14 @@ import TalkReadCore
                 }
             }
         }
+        return nil
+    }
+
+    private func mappedWordRange(at point: CGPoint, element: AXUIElement) -> Range<Int>? {
         guard let map = nodeMap, !map.isEmpty else { return nil }
         // The text node under the point names the candidates: only its words are measured, at most 300 of them.
-        guard let hit = PointerCapture.hit(p), hit.pid == capture.pid else { return nil }
         var budget = 300
-        for (index, entry) in map where CFEqual(entry.node, hit.element) {
+        for (index, entry) in map where CFEqual(entry.node, element) {
             guard budget > 0 else { return nil }
             budget -= 1
             if let rect = rect(fromBoundsOf: entry.node, range: entry.range, clipFrom: entry.node), rect.insetBy(dx: -1, dy: -1).contains(point) {

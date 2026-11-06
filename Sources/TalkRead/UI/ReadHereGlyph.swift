@@ -284,8 +284,9 @@ import TalkReadCore
                 hoverColdUntil = now + 1.5
                 _ = await PointerCapture.onWorker {
                     PointerCapture.bounded {
-                        PointerCapture.axCall {
-                            AXUIElementSetAttributeValue(AXUIElementCreateApplication(hit.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+                        let app = AXUIElementCreateApplication(hit.pid)
+                        return PointerCapture.axCall(app) {
+                            AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
                         }
                     }
                 }
@@ -423,7 +424,7 @@ import TalkReadCore
             defer { releaseWake(request) }
             hidePanel()
             let point = CGPoint(x: block.frame.minX + min(8, block.frame.width / 2), y: Self.glyphFrame(block).midY)
-            let covered = await PointerCapture.onWorker { Self.moved(block) || Self.covered(block, at: point) }
+            let covered = await PointerCapture.onWorker(forClick: true) { Self.moved(block) || Self.covered(block, at: point) }
             guard accepts(request, readRevision: model.readRevision), !covered else { return }
             let reservation = model.reserve("user")
             await model.captureHereAndRead(id: reservation, point: point, block: block)

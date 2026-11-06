@@ -19,7 +19,7 @@ enum Inserter {
     /// The gate every paste goes through; the self-test swaps in a private pasteboard.
     @MainActor static var gate = PasteboardGate.shared
     /// The focus query; the self-test swaps in a fixed answer.
-    @MainActor static var focus: @MainActor (_ pid: pid_t?) -> Focus = { focusedField(pid: $0) }
+    @MainActor static var focus: @MainActor (_ pid: pid_t?) async -> Focus = { await insertionFocus(pid: $0) }
     /// Why the end of a dictation typed nothing: the focus cannot take text.
     static let noField = "No text field to type into"
 
@@ -36,7 +36,9 @@ enum Inserter {
         let gate = gate
         return await gate.transaction {
             if IsSecureEventInputEnabled() { return .refusedSecure }
-            let field = focus(targetPID)
+            let field = await focus(targetPID)
+            if IsSecureEventInputEnabled() { return .refusedSecure }
+            guard !Task.isCancelled, isCurrent() else { return .failed("Cancelled") }
             if field.secure { return .refusedSecure }
             if requireField, field.takesText == false { return .failed(noField) }
             let body = field.terminal || field.singleLine ? oneLine(text) : text
@@ -51,26 +53,36 @@ enum Inserter {
         }
     }
 
+    /// Resolve keyboard focus on a worker; a missing answer must never fall back to the app underneath a panel.
+    @MainActor static func insertionFocus(pid: pid_t?,
+                                         focusedApplication: @MainActor () async -> pid_t? = { await PointerCapture.focusedApplicationPID() }) async -> Focus {
+        let target: pid_t?
+        if let pid { target = pid } else { target = await focusedApplication() }
+        guard let target else { return (false, nil, false, false, false) }
+        return focusedField(pid: target)
+    }
+
     /// Whether the focused field is secure, whether it is a terminal, whether it is a single-line field, the UTF-16 unit
     /// before its caret (nil = unknown or at the start), and whether it can take text (`takesText`; nil = unknown).
-    /// Normal dictation passes no PID: the frontmost app then decides whether the focus is one of our own fields
-    /// (`frontmost` and `ownEditor` are swapped by the self-test).
+    /// Insertion supplies the actual focused PID; synchronous diagnostics can use the injectable frontmost fallback.
+    /// `frontmost` and `ownEditor` are swapped by the self-test.
     @MainActor static func focusedField(pid: pid_t?, frontmost: () -> pid_t? = { NSWorkspace.shared.frontmostApplication?.processIdentifier },
                                         ownEditor: @MainActor () -> NSTextView? = { Inserter.ownEditor() }) -> Focus {
-        if (pid ?? frontmost()) == getpid() {
+        guard let target = pid ?? frontmost() else { return (false, nil, false, false, nil) }
+        if target == getpid() {
             // Our own windows: no text view in focus (a web view, a button) is not ours to judge, so unknown.
             guard let editor = ownEditor() else { return (false, nil, false, false, nil) }
             let own = describe(editor)
             return (own.secure, own.previous, false, own.singleLine, editor.isEditable)
         }
-        let root = pid.map { AXUIElementCreateApplication($0) } ?? AXUIElementCreateSystemWide()
+        let root = AXUIElementCreateApplication(target)
         guard let element: AXUIElement = attribute(root, kAXFocusedUIElementAttribute) else { return (false, nil, false, false, nil) }
         let role: String? = attribute(element, kAXRoleAttribute), subrole: String? = attribute(element, kAXSubroleAttribute)
         let secure = role == kAXSecureTextFieldSubrole || subrole == kAXSecureTextFieldSubrole
         let terminal = isTerminal(element)
         var settable: DarwinBoolean = false
         _ = PointerCapture.bounded(0.25) {
-            PointerCapture.axCall { AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) }
+            PointerCapture.axCall(element) { AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) }
         }
         let single = isSingleLine(role: role, subrole: subrole, editable: settable.boolValue)
         let rangeValue: AXValue? = attribute(element, kAXSelectedTextRangeAttribute)
@@ -205,7 +217,7 @@ enum Inserter {
     private static func attribute<T>(_ element: AXUIElement, _ name: String) -> T? {
         var value: CFTypeRef?
         guard PointerCapture.bounded(0.25, {
-            PointerCapture.axCall { AXUIElementCopyAttributeValue(element, name as CFString, &value) }
+            PointerCapture.axCall(element) { AXUIElementCopyAttributeValue(element, name as CFString, &value) }
         }) == .success else { return nil }
         return value as? T
     }
@@ -213,7 +225,7 @@ enum Inserter {
     private static func parameterized<T>(_ element: AXUIElement, _ name: String, _ parameter: CFTypeRef) -> T? {
         var value: CFTypeRef?
         guard PointerCapture.bounded(0.25, {
-            PointerCapture.axCall { AXUIElementCopyParameterizedAttributeValue(element, name as CFString, parameter, &value) }
+            PointerCapture.axCall(element) { AXUIElementCopyParameterizedAttributeValue(element, name as CFString, parameter, &value) }
         }) == .success else { return nil }
         return value as? T
     }

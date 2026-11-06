@@ -1,6 +1,7 @@
 // Headless regression checks. Invoked only by --selftest-reader-performance with a disposable TALKREAD_HOME.
 import Foundation
 import PDFKit
+import ApplicationServices
 import TalkReadCore
 
 @MainActor enum ReaderPerformanceSelfTest {
@@ -62,30 +63,40 @@ import TalkReadCore
         model.settings.showMiniPlayer = false
         model.engines = Engines(neural: SilentEngine(kind: .neural), system: SilentEngine(kind: .system))
         await model.loadVoices()
+        MiniPlayer.shared.attach(model)
+        MiniPlayer.shared.flash("Review fixture error")
         let pendingItem = LibraryItem(id: UUID(), title: "Pending read", kind: "text", fileName: "unused.txt", added: Date(), position: 0)
-        let previous = model.startSession("The current read continues while another document opens.", capture: nil, id: model.reserve("user"))
-        previous.pause()
-        let previousOwner = model.owner?.sessionID
+        let previous = model.startSession("The current read stops while another document opens.", capture: nil, id: model.reserve("user"))
+        check(!MiniPlayer.shared.isVisible && MiniPlayer.shared.message == nil,
+              "a new read dismisses an error-only player when the player setting is off")
         let failedLoad = DocumentLoadProbe()
         model.read(pendingItem, fromToken: nil, readText: { try failedLoad.load(failing: true) })
         await wait { failedLoad.started }
-        check(model.session === previous && model.owner?.sessionID == previousOwner && previous.state == .paused,
-              "pending file load preserves the current session and ownership")
+        check(model.liveSession == nil && model.owner == nil && previous.state == .finished,
+              "pending file load stops previous playback immediately")
+        model.togglePause()
+        model.togglePause()
         failedLoad.release()
         await wait { failedLoad.finished }
         // Allow the waiting main-actor continuation to receive the failure.
         try? await Task.sleep(for: .milliseconds(30))
-        check(model.session === previous && model.owner?.sessionID == previousOwner && previous.state == .paused,
-              "failed file load preserves the current session and ownership")
+        check(model.liveSession == nil && model.owner == nil && previous.state == .finished,
+              "failed file load cannot leave previous playback running")
 
         let repeatLoad = DocumentLoadProbe()
-        model.read(pendingItem, fromToken: nil, readText: { try repeatLoad.load() })
+        WindowRouter.shared.libraryPath = [pendingItem]
+        let delegate = AppDelegate()
+        let playItem = NSMenuItem(title: "Play", action: #selector(AppDelegate.playPause(_:)), keyEquivalent: "")
+        model.read(pendingItem, fromToken: 0, readText: { try repeatLoad.load() })
         await wait { repeatLoad.started }
-        model.read(pendingItem, fromToken: nil, readText: { try repeatLoad.load() })
+        check(delegate.validateMenuItem(playItem) && playItem.title == "Pause", "menu offers Pause during a pending read")
+        delegate.playPause(nil)
+        check(model.pendingDocumentPaused == true && delegate.validateMenuItem(playItem) && playItem.title == "Resume",
+              "menu pauses the pending read without changing its start position")
         repeatLoad.release()
         await wait { model.session !== previous }
         check(repeatLoad.calls == 1 && model.session !== previous && model.session?.state == .paused,
-              "repeated Play while loading pauses the one pending read")
+              "menu Play while loading pauses the one pending read")
 
         let cancelledSession = model.session
         let stoppedLoad = DocumentLoadProbe()
@@ -140,18 +151,48 @@ import TalkReadCore
         check(!centralLeases.contains(wakePID) && !centralLeases.release(wakePID, keepAwake: false),
               "quit clears central leases and ignores a later stale release")
 
-        let timeoutProbe = TimeoutProbe()
-        let calls = AXCallCoordinator { timeoutProbe.set($0) }
-        calls.bounded(0.25) {
-            calls.call {
-                timeoutProbe.expect(0.25)
-                calls.bounded(0.1) { calls.call { timeoutProbe.expect(0.1) } }
-                timeoutProbe.expect(0.25)
-            }
-            calls.call { timeoutProbe.expect(0.25) }
+        let clickSession = model.startSession(String(repeating: "A sentence for a delayed click. ", count: 30),
+                                              capture: nil, id: model.reserve("user"))
+        let locatorIdentity = NSObject()
+        let otherLocator = NSObject()
+        let request = Highlighter.ClickRequest(click: 1, read: clickSession.generation,
+                                              locator: ObjectIdentifier(locatorIdentity), session: ObjectIdentifier(clickSession))
+        let hitWait = PendingHitProbe()
+        let delayedClick = Task { @MainActor in
+            await PointerCapture.onWorker(forClick: true) { hitWait.wait() }
+            return request.isCurrent(click: 1, read: clickSession.generation, locator: ObjectIdentifier(locatorIdentity),
+                                     session: ObjectIdentifier(clickSession), playing: true)
         }
-        calls.call { timeoutProbe.expect(0) }
-        check(timeoutProbe.passed && timeoutProbe.current == 0, "nested AX request bounds restore outer timeout and default")
+        await wait { hitWait.started }
+        check(hitWait.started, "main actor remains responsive during pending native hit work")
+        clickSession.seek(token: 1)
+        hitWait.release()
+        let staleClickAccepted = await delayedClick.value
+        check(!staleClickAccepted && !hitWait.timedOut, "a manual seek invalidates a delayed click in the same session")
+        check(!request.isCurrent(click: 2, read: request.read, locator: request.locator, session: request.session, playing: true),
+              "a newer click or invalidation cancels the older click")
+        check(!request.isCurrent(click: 1, read: request.read, locator: ObjectIdentifier(otherLocator), session: request.session, playing: true),
+              "a replacement locator cancels the delayed click")
+        check(!request.isCurrent(click: 1, read: request.read, locator: request.locator, session: ObjectIdentifier(otherLocator), playing: true),
+              "a replacement session cancels the delayed click")
+        check(!request.isCurrent(click: 1, read: request.read, locator: request.locator, session: request.session, playing: false),
+              "paused or stopped playback rejects the delayed click")
+        model.stopReading()
+
+        let timeoutProbe = TimeoutProbe()
+        let calls = AXCallCoordinator { timeoutProbe.set($0, to: $1) }
+        let foreground = AXUIElementCreateApplication(getpid())
+        let background = AXUIElementCreateApplication(getpid())
+        calls.bounded(0.25) {
+            calls.call(on: foreground) {
+                timeoutProbe.expect(foreground, 0.25)
+                calls.bounded(0.1) { calls.call(on: background) { timeoutProbe.expect(background, 0.1) } }
+                timeoutProbe.expect(foreground, 0.25)
+            }
+            calls.call(on: foreground) { timeoutProbe.expect(foreground, 0.25) }
+        }
+        calls.call(on: background) { timeoutProbe.expect(background, 0) }
+        check(timeoutProbe.passed, "nested AX scopes keep independent element bounds and restore the next call's default")
 
         let waiting = DispatchSemaphore(value: 0)
         let foregroundDone = DispatchSemaphore(value: 0)
@@ -159,11 +200,13 @@ import TalkReadCore
         concurrent.enter()
         DispatchQueue.global().async {
             calls.bounded(0.1) {
-                calls.call { timeoutProbe.expect(0.1) }
-                waiting.signal()
-                // The foreground must be able to run while this walk is between requests.
-                timeoutProbe.recordProgress(foregroundDone.wait(timeout: .now() + 2) == .success)
-                calls.call { timeoutProbe.expect(0.1) }
+                calls.call(on: background) {
+                    timeoutProbe.expect(background, 0.1)
+                    waiting.signal()
+                    // Keep an AX request in flight. Foreground work must not wait on its lock.
+                    timeoutProbe.recordProgress(foregroundDone.wait(timeout: .now() + 2) == .success)
+                    timeoutProbe.expect(background, 0.1)
+                }
             }
             concurrent.leave()
         }
@@ -171,7 +214,7 @@ import TalkReadCore
         DispatchQueue.global().async {
             calls.bounded(0.25) {
                 timeoutProbe.recordProgress(waiting.wait(timeout: .now() + 2) == .success)
-                calls.call { timeoutProbe.expect(0.25) }
+                calls.call(on: foreground) { timeoutProbe.expect(foreground, 0.25) }
                 foregroundDone.signal()
             }
             concurrent.leave()
@@ -179,8 +222,8 @@ import TalkReadCore
         await withCheckedContinuation { continuation in
             concurrent.notify(queue: .global()) { continuation.resume() }
         }
-        check(timeoutProbe.passed && timeoutProbe.current == 0, "concurrent AX callers retain their own bounds")
-        check(timeoutProbe.progressed, "foreground AX request runs between worker tree-walk requests")
+        check(timeoutProbe.passed, "concurrent AX callers retain their own element bounds")
+        check(timeoutProbe.progressed, "foreground AX request runs while a worker AX request is blocked")
 
         let probe = WorkerProbe()
         await withTaskGroup(of: Void.self) { group in
@@ -191,6 +234,12 @@ import TalkReadCore
             }
         }
         check(probe.calls == 12 && probe.peak == 1 && !probe.usedMainThread, "AX worker is serial and never executes work on the main thread")
+        let lanes = WorkerLaneProbe()
+        let blockedHover = Task { await PointerCapture.onWorker { lanes.hover() } }
+        await wait { lanes.started }
+        let clickWasImmediate = await PointerCapture.onWorker(forClick: true) { lanes.click() }
+        await blockedHover.value
+        check(clickWasImmediate, "click validation runs without waiting for a blocked hover or held-key walk")
         print("reader-performance: \(checks - failures)/\(checks) passed")
         return failures == 0 ? 0 : 1
     }
@@ -240,15 +289,47 @@ import TalkReadCore
 
     private final class TimeoutProbe: @unchecked Sendable {
         private let lock = NSLock()
-        private var timeout: Float = 0
+        private var timeouts: [ObjectIdentifier: Float] = [:]
         private var valid = true
         private var progress = true
-        var current: Float { lock.withLock { timeout } }
         var passed: Bool { lock.withLock { valid } }
         var progressed: Bool { lock.withLock { progress } }
-        func set(_ value: Float) { lock.withLock { timeout = value } }
-        func expect(_ value: Float) { lock.withLock { valid = valid && timeout == value } }
+        func set(_ element: AXUIElement, to value: Float) { lock.withLock { timeouts[ObjectIdentifier(element)] = value } }
+        func expect(_ element: AXUIElement, _ value: Float) { lock.withLock { valid = valid && timeouts[ObjectIdentifier(element)] == value } }
         func recordProgress(_ value: Bool) { lock.withLock { progress = progress && value } }
+    }
+
+    private final class WorkerLaneProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private let release = DispatchSemaphore(value: 0)
+        private var entered = false
+        private var exited = false
+        var started: Bool { lock.withLock { entered } }
+        func hover() {
+            lock.withLock { entered = true }
+            _ = release.wait(timeout: .now() + 2)
+            lock.withLock { exited = true }
+        }
+        func click() -> Bool {
+            let immediate = lock.withLock { entered && !exited }
+            release.signal()
+            return immediate && !Thread.isMainThread
+        }
+    }
+
+    private final class PendingHitProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private let gate = DispatchSemaphore(value: 0)
+        private var entered = false
+        private var timeout = false
+        var started: Bool { lock.withLock { entered } }
+        var timedOut: Bool { lock.withLock { timeout } }
+        func wait() {
+            lock.withLock { entered = !Thread.isMainThread }
+            let result = gate.wait(timeout: .now() + 5)
+            lock.withLock { timeout = result != .success }
+        }
+        func release() { gate.signal() }
     }
 
     private final class WorkerProbe: @unchecked Sendable {

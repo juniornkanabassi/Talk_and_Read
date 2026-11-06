@@ -24,6 +24,7 @@ import TalkReadCore
     private var clickMonitor: Any?
     /// Where a plain single click went down, until it is released or dragged.
     private var clickDown: CGPoint?
+    private var clickGeneration = 0
     private var activationObserver: NSObjectProtocol?
     private var sentenceCache: (sentence: Int, rects: [CGRect], anchor: Range<Int>, anchorRect: CGRect?)?
     private lazy var sentenceTokens: [Int: Range<Int>] = {
@@ -69,8 +70,12 @@ import TalkReadCore
             MainActor.assumeIsolated {
                 guard let self else { return }
                 switch type {
-                case .leftMouseDown: self.clickDown = plain && count == 1 ? location : nil
-                case .leftMouseDragged: self.clickDown = nil
+                case .leftMouseDown:
+                    self.clickGeneration += 1
+                    self.clickDown = plain && count == 1 ? location : nil
+                case .leftMouseDragged:
+                    self.clickGeneration += 1
+                    self.clickDown = nil
                 case .leftMouseUp:
                     if let down = self.clickDown, count == 1, hypot(down.x - location.x, down.y - location.y) < 3 { self.clicked(at: down) }
                     self.clickDown = nil
@@ -83,10 +88,11 @@ import TalkReadCore
         ) { [weak self] _ in MainActor.assumeIsolated { self?.invalidate(); self?.overlay.follow() } }   // its windows rise over the box
         spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
-        ) { [weak self] _ in MainActor.assumeIsolated { _ = self?.overlay.follow() } }
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.invalidate(); _ = self?.overlay.follow() } }
     }
 
     func stop() {
+        clickGeneration += 1
         if let locator { Log.write("highlight ended: path=\(locator.pathUsed.rawValue), node map \(locator.nodeMapSummary), OCR \(locator.ocrSummary)") }
         timer?.invalidate()
         timer = nil
@@ -117,6 +123,7 @@ import TalkReadCore
             RunLoop.main.add(timer, forMode: .common)
             self.timer = timer
         case .paused:   // the box stays on its word (a scroll still moves it with the text) and with its window
+            clickGeneration += 1
             timer?.invalidate()
             timer = nil
             guard pausedTimer == nil else { return }
@@ -126,6 +133,7 @@ import TalkReadCore
             RunLoop.main.add(timer, forMode: .common)
             pausedTimer = timer
         case .preparing:
+            clickGeneration += 1
             break
         case .finished, .failed:
             stop()
@@ -161,10 +169,31 @@ import TalkReadCore
     /// A clean click on a word of the text being read (Cocoa screen point): the read jumps there, unless it is the
     /// word being spoken (a restart would only stutter).
     private func clicked(at point: CGPoint) {
-        guard session.state == .playing, let locator, pointerOverSource(),
-              let range = locator.wordRange(at: point),
-              let token = session.tokens.firstIndex(where: { $0.range == range }), token != session.currentToken else { return }
-        session.seek(token: token)
+        clickGeneration += 1
+        guard session.state == .playing, let locator, pointerOverSource() else { return }
+        let request = ClickRequest(click: clickGeneration, read: session.generation,
+                                   locator: ObjectIdentifier(locator), session: ObjectIdentifier(session))
+        Task { @MainActor [weak self, weak locator] in
+            guard let locator, let range = await locator.wordRange(at: point), let self,
+                  let currentLocator = self.locator,
+                  request.isCurrent(click: self.clickGeneration, read: self.session.generation,
+                                    locator: ObjectIdentifier(currentLocator), session: ObjectIdentifier(self.session),
+                                    playing: self.session.state == .playing),
+                  self.pointerOverSource(),
+                  let token = self.session.tokens.firstIndex(where: { $0.range == range }), token != self.session.currentToken else { return }
+            self.session.seek(token: token)
+        }
+    }
+
+    struct ClickRequest {
+        let click: Int
+        let read: Int
+        let locator: ObjectIdentifier
+        let session: ObjectIdentifier
+
+        func isCurrent(click: Int, read: Int, locator: ObjectIdentifier, session: ObjectIdentifier, playing: Bool) -> Bool {
+            playing && self.click == click && self.read == read && self.locator == locator && self.session == session
+        }
     }
 
     /// The window under the pointer, looking through our own click-through panel, is the source window.
@@ -185,6 +214,7 @@ import TalkReadCore
     }
 
     private func invalidate() {
+        clickGeneration += 1
         locator?.invalidate()
         sentenceCache = nil
         requery = true
