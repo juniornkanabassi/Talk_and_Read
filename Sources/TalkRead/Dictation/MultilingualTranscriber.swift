@@ -16,6 +16,7 @@ import TalkReadCore
     private(set) var isLoading = false { didSet { onLoadingChange?() } }
     var onLoadingChange: (() -> Void)?
     private var loadError: Error?
+    private var loadingCached = false
     private var loadWaiters: [AsyncStream<Void>.Continuation] = []
     private let queue = RecogniserQueue()
 
@@ -32,19 +33,37 @@ import TalkReadCore
     /// Downloads (first use only; the Settings choice of languages is the consent) and loads; one load shared by every
     /// caller, as `Transcriber.load`.
     func load(progress: ((Double) -> Void)? = nil) async throws {
+        try await load(progress: progress, cachedOnly: false)
+    }
+
+    func loadCached() async throws {
+        try await load(progress: nil, cachedOnly: true)
+    }
+
+    private func load(progress: ((Double) -> Void)?, cachedOnly: Bool) async throws {
         if manager != nil { return }
+        let retryAfterCachedFailure = !cachedOnly && isLoading && loadingCached
         if !isLoading {
             isLoading = true
+            loadingCached = cachedOnly
             let directory = directory, version = version
             Task {
                 do {
-                    if !AsrModels.modelsExist(at: directory, version: version) {
+                    if !cachedOnly, !AsrModels.modelsExist(at: directory, version: version) {
                         try await AsrModels.download(to: directory, version: version) { p in
                             Task { @MainActor in progress?(p.fractionCompleted * 0.95) }
                         }
                     }
                     let m = AsrManager(config: .default)
-                    try await m.loadModels(try await AsrModels.load(from: directory, version: version))
+                    let models: AsrModels
+                    if cachedOnly {
+                        models = try await Task.detached {
+                            try AsrModels.loadLocal(from: directory, version: version)
+                        }.value
+                    } else {
+                        models = try await AsrModels.load(from: directory, version: version)
+                    }
+                    try await m.loadModels(models)
                     manager = m
                     loadError = nil
                 } catch {
@@ -59,6 +78,10 @@ import TalkReadCore
         loadWaiters.append(waiter)
         for await _ in done {}
         try Task.checkCancellation()
+        if manager == nil, retryAfterCachedFailure {
+            try await load(progress: progress, cachedOnly: false)
+            return
+        }
         guard manager != nil else { throw loadError ?? ASRError.notInitialized }
         progress?(1)
     }

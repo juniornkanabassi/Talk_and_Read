@@ -493,7 +493,9 @@ import WebKit
         var isLoaded = true
         var isDownloaded = true
         var failNextLoad = false
+        var failNextCachedLoad = false
         private(set) var loads = 0
+        private(set) var cachedLoads = 0
         private(set) var isLoading = false { didSet { onLoadingChange?() } }
         var onLoadingChange: (() -> Void)?
         var loadTime = Duration.zero
@@ -513,6 +515,12 @@ import WebKit
                 Task { await Self.uninterruptible(loadTime); isLoaded = true; isLoading = false }
             }
             while isLoading { try await Task.sleep(for: .milliseconds(5)) }
+        }
+
+        func loadCached() async throws {
+            cachedLoads += 1
+            if failNextCachedLoad { failNextCachedLoad = false; throw ASRError.notInitialized }
+            try await load(progress: nil)
         }
 
         @discardableResult func unload() -> Bool {
@@ -560,11 +568,13 @@ import WebKit
         let (englishController, english, unused, audio) = make()
         let history = englishController.history.map(\.id)
         await englishController.warmUpIfInstalled()
-        expect("English model only", english.isLoaded && english.loads == 1 && unused.loads == 0)
+        expect("English model uses cached-only preparation", english.isLoaded && english.loads == 1
+               && english.cachedLoads == 1 && unused.loads == 0 && unused.cachedLoads == 0)
         expect("one second of silent inference, no microphone, owner or history", audio.starts == 0 && english.completedFrames == [16_000]
                && englishController.owner == nil && englishController.history.map(\.id) == history && !englishController.isBusy)
         await englishController.warmUpIfInstalled()
-        expect("loaded model primed without reload", english.loads == 1 && english.completedFrames == [16_000, 16_000])
+        expect("loaded model skips preparation", english.loads == 1 && english.cachedLoads == 1
+               && english.completedFrames == [16_000] && !englishController.isBusy)
 
         let (multilingualController, unchosenEnglish, other, _) = make()
         multilingualController.languages = ["en", "fr"]
@@ -572,10 +582,17 @@ import WebKit
         await multilingualController.warmUpIfInstalled()
         expect("multilingual model selected", other.loads == 1 && other.completedFrames == [16_000] && unchosenEnglish.loads == 0)
 
-        let (appleController, appleUnused, _, _) = make()
+        let (appleController, appleFallback, missingMultilingual, _) = make()
         appleController.preferApple = true
         await appleController.warmUpIfInstalled()
-        expect("Apple preference skipped", appleUnused.loads == 0 && !appleController.apple.isLoaded)
+        expect("Apple preference uses the actual recogniser fallback", appleFallback.loads == 1
+               && appleFallback.completedFrames == [16_000] && !appleController.apple.isLoaded)
+        expect("fallback unloads", appleController.unloadModel() && !appleFallback.isLoaded)
+        appleController.languages = ["en", "fr"]
+        missingMultilingual.isDownloaded = false
+        await appleController.warmUpIfInstalled()
+        expect("missing multilingual model warms English fallback despite Apple preference", appleFallback.loads == 2
+               && appleFallback.completedFrames == [16_000, 16_000] && missingMultilingual.loads == 0)
         let apple = AppleTranscriber()
         let injectedApple = DictationController(audio: FakeAudio(), asr: apple, multilingual: FakeASR())
         await injectedApple.warmUpIfInstalled()
@@ -613,7 +630,6 @@ import WebKit
         expect("request during load skips priming", arrival.loads == 1 && arrival.completedFrames == [1600])
 
         let (primeController, prime, _, _) = make()
-        prime.isLoaded = true
         prime.work = .milliseconds(150)
         let priming = Task { await primeController.warmUpIfInstalled() }
         for _ in 0..<100 where prime.entered == 0 { try? await Task.sleep(for: .milliseconds(2)) }
@@ -623,7 +639,7 @@ import WebKit
         let primeFile = Task { try? await primeController.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "warm-test") }
         await priming.value
         _ = await primeFile.value
-        expect("request during priming follows on queue", prime.loads == 0 && prime.completedFrames == [16_000, 1600] && !primeController.isBusy)
+        expect("request during priming follows on queue", prime.loads == 1 && prime.completedFrames == [16_000, 1600] && !primeController.isBusy)
         expect("idle unload after priming", primeController.unloadModel() && !prime.isLoaded)
 
         let (busyController, busyEnglish, busyOther, _) = make()
@@ -635,31 +651,59 @@ import WebKit
         expect("active file request skips preparation", busyOther.loads == 0)
         _ = await file.value
 
-        // The idle timer keeps the chosen languages' model and frees the other; an explicit unload frees both.
+        // The benchmark can keep the actual recogniser selected for comparison; normal unload frees both.
         let (keepController, keepEnglish, keepOther, _) = make()
         keepEnglish.isLoaded = true
         keepOther.isLoaded = true
-        expect("idle unload keeps the English model only", keepController.unloadModel(keepSelected: true) && keepEnglish.isLoaded && !keepOther.isLoaded)
+        expect("benchmark retention keeps the English model only", keepController.unloadModel(keepSelected: true) && keepEnglish.isLoaded && !keepOther.isLoaded)
         keepController.languages = ["en", "fr"]
         keepEnglish.isLoaded = true
         keepOther.isLoaded = true
-        expect("idle unload keeps the multilingual model only", keepController.unloadModel(keepSelected: true) && !keepEnglish.isLoaded && keepOther.isLoaded)
+        expect("benchmark retention keeps the multilingual model only", keepController.unloadModel(keepSelected: true) && !keepEnglish.isLoaded && keepOther.isLoaded)
         keepOther.isDownloaded = false
         keepOther.isLoaded = false
         keepEnglish.isLoaded = true
-        expect("idle unload keeps the English fallback while the multilingual model is missing", keepController.unloadModel(keepSelected: true) && keepEnglish.isLoaded)
+        expect("benchmark retention keeps the English fallback while the multilingual model is missing", keepController.unloadModel(keepSelected: true) && keepEnglish.isLoaded)
         keepController.languages = ["en"]
         keepController.preferApple = true
         keepEnglish.isLoaded = true
-        expect("idle unload with Apple preferred frees both", keepController.unloadModel(keepSelected: true) && !keepEnglish.isLoaded && !keepOther.isLoaded)
+        expect("benchmark retention follows the actual fallback despite Apple preference", keepController.unloadModel(keepSelected: true)
+               && keepEnglish.isLoaded && !keepOther.isLoaded)
+        expect("normal idle unload frees both models", keepController.unloadModel() && !keepEnglish.isLoaded && !keepOther.isLoaded)
 
         let (retryController, retry, _, _) = make()
-        retry.failNextLoad = true
+        retry.failNextCachedLoad = true
         await retryController.warmUpIfInstalled()
-        expect("failed warm-up leaves controller available", !retryController.isBusy && !retry.isLoaded)
+        expect("failed cached preparation never starts ordinary load", !retryController.isBusy && !retry.isLoaded
+               && retry.cachedLoads == 1 && retry.loads == 0)
         let result = try? await retryController.transcribe(file: URL(fileURLWithPath: "/dev/null"), caller: "warm-test")
-        expect("user request retries failed preparation", result != nil && retry.loads == 2)
-        print("warm-up: \(failures.isEmpty ? "PASS" : "FAIL \(failures)") (installed selection, no audio, shared load, cancellation, retry, idle unload keeps the chosen model)")
+        expect("user request loads after failed cached preparation", result != nil && retry.loads == 1 && retry.cachedLoads == 1)
+
+        // Exercise the real multilingual loader's waiter path with missing files and downloads disabled.
+        do {
+            let directory = Paths.dataRoot.appendingPathComponent("missing-model-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let offline = ModelHub.offlineMode
+            ModelHub.offlineMode = true
+            defer { ModelHub.offlineMode = offline; try? FileManager.default.removeItem(at: directory) }
+            let real = ParakeetV3Transcriber(directory: directory)
+            var request: Task<Error?, Never>?
+            real.onLoadingChange = {
+                if real.isLoading, request == nil {
+                    request = Task {
+                        do { try await real.load(progress: nil); return nil }
+                        catch { return error }
+                    }
+                }
+            }
+            var cachedError: Error?
+            do { try await real.loadCached() } catch { cachedError = error }
+            let requestError = await request?.value
+            real.onLoadingChange = nil
+            expect("request during failed cached load retries ordinary offline recovery",
+                   cachedError != nil && !(cachedError is DownloadError) && requestError is DownloadError)
+        } catch { expect("missing-model overlap fixture", false) }
+        print("warm-up: \(failures.isEmpty ? "PASS" : "FAIL \(failures)") (installed selection and fallbacks, loaded model skipped, no audio, shared load, cancellation, retry, idle unload)")
         return failures.isEmpty
     }
 

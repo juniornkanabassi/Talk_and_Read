@@ -8,14 +8,10 @@ import TalkReadCore
 @MainActor enum DictationColdStartBench {
     static func run(file: String) async -> Int32 {
         setvbuf(stdout, nil, _IOLBF, 0)
-        assert(!isDisposableHome("/private/tmp/bama-evil/child"))
-        assert(!isDisposableHome("relative/child"))
-        assert(!isDisposableHome("/private/tmp/bama"))
+        if file == "selfcheck" { return checkDisposableHome() }
         guard let home = ProcessInfo.processInfo.environment["TALKREAD_HOME"], isDisposableHome(home) else {
-            print("cold-start: TALKREAD_HOME must be a disposable directory under /private/tmp/bama/"); return 1
+            print("cold-start: TALKREAD_HOME must be a disposable child of the system temporary directory or /tmp"); return 1
         }
-        assert(isDisposableHome(home))
-        assert(isDisposableHome(URL(fileURLWithPath: home).resolvingSymlinksInPath().path))
         let wasOffline = ModelHub.offlineMode
         ModelHub.offlineMode = true
         defer { ModelHub.offlineMode = wasOffline }
@@ -152,9 +148,33 @@ import TalkReadCore
         var isDirectory: ObjCBool = false
         guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
               isDirectory.boolValue else { return false }
-        let root = URL(fileURLWithPath: "/private/tmp/bama").resolvingSymlinksInPath().standardizedFileURL.path
         let candidate = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
-        return candidate.hasPrefix(root + "/")
+        guard candidate != FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().standardizedFileURL.path else { return false }
+        return [FileManager.default.temporaryDirectory, URL(fileURLWithPath: "/tmp", isDirectory: true)].contains { url in
+            let root = url.resolvingSymlinksInPath().standardizedFileURL.path
+            return candidate.hasPrefix(root + "/")
+        }
+    }
+
+    /// Runs in release builds too, without loading models or accessing the user's app data.
+    private static func checkDisposableHome() -> Int32 {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("talkread-cold-start-check-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        do {
+            try fm.createDirectory(at: root, withIntermediateDirectories: false)
+            let alias = root.appendingPathComponent("escape")
+            try fm.createSymbolicLink(at: alias, withDestinationURL: fm.homeDirectoryForCurrentUser)
+            let file = root.appendingPathComponent("file")
+            try Data().write(to: file)
+            let checks = [isDisposableHome(root.path), !isDisposableHome("relative/child"),
+                          !isDisposableHome(fm.temporaryDirectory.path), !isDisposableHome("/tmp"),
+                          !isDisposableHome(fm.homeDirectoryForCurrentUser.path), !isDisposableHome(alias.path),
+                          !isDisposableHome(file.path), !isDisposableHome(root.appendingPathComponent("missing").path)]
+            let passed = checks.filter { $0 }.count
+            print("cold-start path selfcheck: \(passed)/\(checks.count) passed")
+            return passed == checks.count ? 0 : 1
+        } catch { print("cold-start path selfcheck: FAIL \(error)"); return 1 }
     }
 
     private static func elapsed(_ start: Double) -> Double { (ProcessInfo.processInfo.systemUptime - start) * 1000 }
@@ -175,7 +195,7 @@ import TalkReadCore
         }
         guard status == 0 else { return [:] }
         return ["residentMiB": Double(info.ri_resident_size) / 1_048_576,
-                "footprintMiB": Double(info.ri_phys_footprint) / 1_048_576,
+                "footprintMiB": DictationBench.footprintMB(),
                 "cpuSeconds": Double(info.ri_user_time + info.ri_system_time) / 1e9]
     }
 
@@ -195,6 +215,10 @@ import TalkReadCore
         var loadDone: Double?
         func load(progress: ((Double) -> Void)?) async throws {
             try await engine.load(progress: progress)
+            if loadDone == nil { loadDone = ProcessInfo.processInfo.systemUptime }
+        }
+        func loadCached() async throws {
+            try await engine.loadCached()
             if loadDone == nil { loadDone = ProcessInfo.processInfo.systemUptime }
         }
         func unload() -> Bool { engine.unload() }

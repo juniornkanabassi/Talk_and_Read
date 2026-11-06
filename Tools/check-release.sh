@@ -383,7 +383,7 @@ rules() {
     owe D2 "dictate with a chosen USB or Bluetooth mic; unplug it and see the fallback notice"
     n=$(num $OUT/control.txt '^PASS  idle CPU over 20 s: ([0-9.]+) %.*')
     [[ -n $n ]] && pass E3 "idle CPU ${n} % over 20 s (limit 0.5)" || fail E3 "idle CPU check missing or failed: $(L $OUT/control.txt 'idle CPU')"
-    grep -q '^PASS  idle unload around dictate-file' $OUT/control.txt && pass E3 "model unloads after the idle timeout (scheduled and fired)" || fail E3 "idle unload check failed"
+    grep -q '^PASS  idle unload around dictate-file' $OUT/control.txt && pass E3 "dictation and large speech models freed after the idle timeout; English Kokoro kept" || fail E3 "idle unload check failed"
     grep -q '^PASS  quit during a paste' $OUT/control.txt && pass R7 "quit during a paste restores the clipboard (private pasteboard)"
     grep -q '^PASS  insert-again target' $OUT/control.txt && pass T6 "insert again targets another app"
     if [[ -f $OUT/mcp.rc ]]; then

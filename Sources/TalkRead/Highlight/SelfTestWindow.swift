@@ -1324,7 +1324,6 @@ enum SelfTestClient {
         let screens = NSScreen.screens.map(\.frame)
         let frame = NSRect(x: (screens.map(\.maxX).max() ?? 0) + 10_000,
                            y: (screens.map(\.maxY).max() ?? 0) + 10_000, width: 600, height: 400)
-        guard screens.allSatisfy({ !$0.intersects(frame.insetBy(dx: -200, dy: -200)) }) else { return 1 }
         let source = window(frame)
         source.orderFrontRegardless()
         var cover: NSPanel?

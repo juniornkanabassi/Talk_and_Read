@@ -17,6 +17,8 @@ struct Transcript: Sendable {
     func run(_ audio: AsyncStream<AVAudioPCMBuffer>, partial: @escaping @MainActor (String) -> Void) async throws -> Transcript
     /// Downloads and loads the model once; a cancelled caller stops waiting at once while the load carries on.
     func load(progress: ((Double) -> Void)?) async throws
+    /// Prepares existing files only. Missing or corrupt caches fail locally, without recovery downloads.
+    func loadCached() async throws
     /// Frees the model. False, freeing nothing, while it is in use or loading; true once nothing is resident (Sol #24).
     @discardableResult func unload() -> Bool
     var isLoaded: Bool { get }
@@ -30,6 +32,9 @@ struct Transcript: Sendable {
 
 extension DictationASR {
     var isDownloaded: Bool { true }
+    func loadCached() async throws {
+        guard isLoaded else { throw ASRError.notInitialized }
+    }
 
     /// Whole-clip transcription (dictate-file, self-test): fed in 1 s buffers, then finished.
     func transcribe(samples: [Float]) async throws -> Transcript {
@@ -64,6 +69,7 @@ extension DictationASR {
     private(set) var isLoading = false { didSet { onLoadingChange?() } }
     var onLoadingChange: (() -> Void)?
     private var loadError: Error?
+    private var loadingCached = false
     private var loadWaiters: [AsyncStream<Void>.Continuation] = []
     private let queue = RecogniserQueue()
     /// Terms the recogniser listens for (CTC keyword boosting with Parakeet CTC 110M); nil switches boosting off. Read at
@@ -74,9 +80,13 @@ extension DictationASR {
     var isDownloaded: Bool { Self.isDownloaded }
 
     /// The model files are already in FluidAudio's cache (no download needed).
-    static var isDownloaded: Bool {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    private static var directory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("FluidAudio/Models/\(Repo.parakeetUnified.folderName)")
+    }
+
+    static var isDownloaded: Bool {
+        let dir = directory
         let names = ModelNames.ParakeetUnified.self
         let encoder = names.streamingEncoderFile(precision: .int8, contextSuffix: variant.unifiedConfig!.contextSuffix)
         return [encoder, names.decoderFile, names.jointDecisionFile, names.vocab]
@@ -87,17 +97,34 @@ extension DictationASR {
     /// every caller, runs to the end even when its callers are cancelled (`isLoading` until then), so the idle unload
     /// sees it (Sol #24) and a cancelled caller is not held up by it (Sol #23).
     func load(progress: ((Double) -> Void)? = nil) async throws {
+        try await load(progress: progress, cachedOnly: false)
+    }
+
+    func loadCached() async throws {
+        try await load(progress: nil, cachedOnly: true)
+    }
+
+    private func load(progress: ((Double) -> Void)?, cachedOnly: Bool) async throws {
         if manager != nil { return }
+        let retryAfterCachedFailure = !cachedOnly && isLoading && loadingCached
         if !isLoading {
             isLoading = true
+            loadingCached = cachedOnly
             Task {
                 do {
                     let m = StreamingUnifiedAsrManager(config: Self.variant.unifiedConfig!, encoderPrecision: .int8)
-                    try await m.loadModels(to: nil, configuration: nil) { p in
-                        Task { @MainActor in progress?(p.fractionCompleted) }
+                    if cachedOnly {
+                        try await m.loadModels(from: Self.directory)
+                    } else {
+                        try await m.loadModels(to: nil, configuration: nil) { p in
+                            Task { @MainActor in progress?(p.fractionCompleted) }
+                        }
                     }
                     if let boosting {
-                        try await m.configureVocabularyBoosting(vocabulary: boosting, ctcModels: try await CtcModels.downloadAndLoad())
+                        let ctc: CtcModels
+                        if cachedOnly { ctc = try await CtcModels.loadDirect(from: CtcModels.defaultCacheDirectory()) }
+                        else { ctc = try await CtcModels.downloadAndLoad() }
+                        try await m.configureVocabularyBoosting(vocabulary: boosting, ctcModels: ctc)
                     }
                     manager = m
                     loadError = nil
@@ -113,6 +140,10 @@ extension DictationASR {
         loadWaiters.append(waiter)
         for await _ in done {}                    // ends when the load does, or at once when this task is cancelled
         try Task.checkCancellation()
+        if manager == nil, retryAfterCachedFailure {
+            try await load(progress: progress, cachedOnly: false)
+            return
+        }
         guard manager != nil else { throw loadError ?? ASRError.notInitialized }
     }
 

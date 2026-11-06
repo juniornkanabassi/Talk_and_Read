@@ -293,7 +293,7 @@ struct SettingsContent: View {
                     ForEach([5, 10, 20, 30, 60], id: \.self) { Text("\($0) minutes").tag($0) }
                 }
             } footer: {
-                Text("When idle, Qwen, Breeze, French Kokoro and unused dictation models are freed from memory. English Kokoro and the model for your chosen dictation languages stay ready. Freed models reload when needed.").foregroundStyle(.secondary)
+                Text("When idle, Qwen, Breeze, French Kokoro and dictation models are freed from memory. English Kokoro stays ready. Freed models reload when needed.").foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

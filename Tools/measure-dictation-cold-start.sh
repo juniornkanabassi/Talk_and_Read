@@ -8,7 +8,7 @@ set -euo pipefail
 binary=${1:?Pass the built TalkRead binary}
 shift
 repo=${0:A:h:h}
-run_root=$(mktemp -d /private/tmp/bama/cold-start.XXXXXX)
+run_root=$(mktemp -d "${TMPDIR:-/tmp}/talkread-cold-start.XXXXXX")
 mkdir -p "$run_root/data"
 cp "$repo/Tests/Fixtures/dictation/01-email-contract.wav" "$run_root/fixture.wav"
 print "Evidence directory: $run_root"

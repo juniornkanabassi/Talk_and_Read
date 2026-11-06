@@ -8,12 +8,14 @@ import TalkReadCore
 final class SilentEngine: SpeechEngine {
     let kind: EngineKind
     let secondsPerWord = 0.8
+    private(set) var isLoaded = true
+    private(set) var frenchLoaded = true
     init(kind: EngineKind) { self.kind = kind }
 
     func voices() async -> [Voice] {
         kind == .system ? [Voice(id: "silent", name: "Silent (test)", accent: "None", gender: "None", engine: .system, installed: true)] : []
     }
-    func prepare(voice: String) async throws {}
+    func prepare(voice: String) async throws { isLoaded = true }
     func synthesize(_ text: String, voice: String) async throws -> SynthChunk {
         let words = TextKit.tokenize(text).enumerated().map { i, t in
             SpokenWord(text: t.text, start: Double(i) * secondsPerWord, end: Double(i + 1) * secondsPerWord, range: t.range)
@@ -21,7 +23,8 @@ final class SilentEngine: SpeechEngine {
         let seconds = Double(max(words.count, 1)) * secondsPerWord
         return SynthChunk(samples: [Float](repeating: 0, count: Int(seconds * 24_000)), sampleRate: 24_000, words: words)
     }
-    func unload() {}
+    func unload() { isLoaded = false }
+    func unloadFrench() { frenchLoaded = false }
 }
 
 enum ControlSelfTest {
@@ -53,6 +56,11 @@ enum ControlSelfTest {
         print("control self-test: home \(home), CLI \(cli.path)")
 
         var results: [Bool] = []
+        model.warmDictation()
+        try? await Task.sleep(for: .milliseconds(50))
+        let readingOnly = model.dictation.history.isEmpty && !model.dictation.isBusy && !model.dictation.asr.isLoaded
+        results.append(readingOnly)
+        print("\(readingOnly ? "PASS" : "FAIL")  no automatic dictation load before any dictation history")
         func step(_ label: String, _ args: [String], _ expect: Expect) async {
             results.append(check(label, await call(cli, args), expect))
         }
@@ -105,7 +113,9 @@ enum ControlSelfTest {
 
         // Two callers transcribe at once: the shared transcriber admits one, the other is told busy.
         // Sol #16: with a 1 s idle unload, nothing may be pending while the file keeps dictation busy; after it, the
-        // unload is scheduled and fires. It keeps the chosen dictation model loaded (a purged Core ML cache costs 13 s).
+        // unload is scheduled and frees dictation and large TTS models, retaining only English Kokoro.
+        let neural = SilentEngine(kind: .neural), qwen = SilentEngine(kind: .qwen), breeze = SilentEngine(kind: .breeze)
+        model.engines = Engines(neural: neural, system: SilentEngine(kind: .system), qwen: qwen, breeze: breeze)
         model.unloadDelay = .seconds(1)
         if let clip = clip ?? fixture() {
             let watch = Task { @MainActor () -> (busy: Bool, overlap: Bool) in
@@ -129,10 +139,11 @@ enum ControlSelfTest {
             let seen = await watch.value
             let loaded = model.dictation.asr.isLoaded, scheduled = model.unloadPending
             let unloaded = await waitUntil(3) { !model.unloadPending }
-            let kept = model.dictation.asr.isLoaded && !model.dictation.multilingual.isLoaded
-            let idle = seen.busy && !seen.overlap && loaded && scheduled && unloaded && kept
+            let freed = !model.dictation.asr.isLoaded && !model.dictation.multilingual.isLoaded
+                && !qwen.isLoaded && !breeze.isLoaded && !neural.frenchLoaded && neural.isLoaded
+            let idle = seen.busy && !seen.overlap && loaded && scheduled && unloaded && freed
             print("\(idle ? "PASS" : "FAIL")  idle unload around dictate-file: busy seen \(seen.busy), unload pending while busy \(seen.overlap), "
-                  + "after: loaded \(loaded), scheduled \(scheduled), fired within 3 s \(unloaded), chosen model kept \(kept)")
+                  + "after: loaded \(loaded), scheduled \(scheduled), fired within 3 s \(unloaded), models freed, English Kokoro kept \(freed)")
             results.append(idle)
         } else {
             print("FAIL  dictate-file: no clip given and no Tests/Fixtures/dictation/*.wav in the current folder")
