@@ -13,6 +13,13 @@ enum TalkReadMain {
         TRInstallInvisibleChecks()
         let args = CommandLine.arguments
         if invisibleChecks {
+            guard let home = ProcessInfo.processInfo.environment["TALKREAD_HOME"],
+                  Self.isDisposableHome(home) else {
+                fputs("Headless checks require TALKREAD_HOME inside a disposable temporary folder.\n", stderr)
+                exit(2)
+            }
+        }
+        if invisibleChecks {
             NSApplication.shared.setActivationPolicy(.prohibited)
             NSWindow.keepEveryWindowInvisible()
         }
@@ -44,6 +51,12 @@ enum TalkReadMain {
     static var invisibleChecks: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
             || CommandLine.arguments.contains { $0 == "--agent-screen" || $0.hasPrefix("--selftest-") }
+    }
+
+    static func isDisposableHome(_ path: String) -> Bool {
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        let roots = ["/tmp", "/private/tmp", FileManager.default.temporaryDirectory.resolvingSymlinksInPath().standardizedFileURL.path]
+        return roots.contains { resolved.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }
     }
 
     /// Runs `work` headless and exits with its code. A main run loop, not dispatchMain: dispatchMain retires the main

@@ -107,7 +107,6 @@ import TalkReadCore
     /// Announce errors even when the player is disabled; visible status stays readable for at least three seconds.
     func flash(_ text: String) {
         AccessibilityNotification.Announcement(text).post()
-        guard model?.settings.showMiniPlayer == true else { return }
         message = text
         resize()
         show()
@@ -147,6 +146,7 @@ import TalkReadCore
     }
 
     private func follow(_ session: ReadSession?) {
+        if message != nil, model?.settings.showMiniPlayer == false { hide() }
         message = nil
         stateWatch = session?.$state.removeDuplicates().sink { [weak self] state in
             switch state {

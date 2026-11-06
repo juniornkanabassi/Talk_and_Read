@@ -488,6 +488,7 @@ extension EngineKind {
     /// Furniture ranges per PDF document, found once (`furniture`).
     private var furnitureCache: [UUID: [Range<Int>]] = [:]
     private var pendingDocument: (id: UUID, item: UUID, token: Int?, paused: Bool)?
+    var pendingDocumentPaused: Bool? { pendingDocument?.paused }
     private var documentTask: Task<Void, Never>?
 
     func read(_ item: LibraryItem, fromToken: Int?, readText: (@Sendable () throws -> String)? = nil) {
@@ -495,8 +496,7 @@ extension EngineKind {
             pendingDocument?.paused.toggle()
             return
         }
-        documentTask?.cancel()
-        readRevision &+= 1
+        stopSession()
         let revision = readRevision, request = UUID()
         pendingDocument = (request, item.id, fromToken, false)
         documentTask = Task {

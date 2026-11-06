@@ -34,7 +34,8 @@ import TalkReadCore
             menu.addItem(.separator())
         }
         add("Read selection", s.readShortcut) { [model] in model.readSelection() }
-        add(state == .paused ? "Resume" : "Pause", s.pauseShortcut, enabled: reading || state == .paused) { [model] in model.togglePause() }
+        let paused = model.pendingDocumentPaused ?? (state == .paused)
+        add(paused ? "Resume" : "Pause", s.pauseShortcut, enabled: model.pendingDocumentPaused != nil || reading || state == .paused) { [model] in model.togglePause() }
         add("Replay last", enabled: !model.recentReads.isEmpty) { [model] in
             if let text = model.recentReads.first?.text { try? model.speak(text, title: nil, caller: "user") }
         }

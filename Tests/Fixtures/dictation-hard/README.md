@@ -1,4 +1,4 @@
-Harder dictation clips for `TalkRead --selftest-asr Tests/Fixtures/dictation-hard --bench` (V-F, 23 Oct 2026): names, legal and football jargon, money, times, dates, a spoken list, email and web addresses, spoken commands ("comma", "new line"), a number correction ("seven, actually eight") and long pauses.
+Harder dictation clips for `TALKREAD_HOME=$(mktemp -d /private/tmp/talkread-bench.XXXXXX) TalkRead --agent-screen --selftest-asr Tests/Fixtures/dictation-hard --bench` (V-F, 23 Oct 2026): names, legal and football jargon, money, times, dates, a spoken list, email and web addresses, spoken commands ("comma", "new line"), a number correction ("seven, actually eight") and long pauses. Copy any cached model fixtures into the disposable test home before running with downloads disabled.
 
 All 16 clips are **synthetic**: rendered by `make.sh` with macOS `say` voices (Daniel, Moira, Karen, Rishi, Samantha, Flo), 16 kHz mono 16-bit. No real voice is included; TTS is cleaner and more regular than a person, so real-voice accuracy will be lower.
 

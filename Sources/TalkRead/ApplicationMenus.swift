@@ -69,9 +69,12 @@ extension AppDelegate {
         let session = model.liveSession
         switch menuItem.action {
         case #selector(playPause(_:)):
-            menuItem.title = session?.state == .playing ? "Pause" : session?.state == .paused ? "Resume" : "Play"
-            return session != nil || !WindowRouter.shared.libraryPath.isEmpty
-        case #selector(previousSentence(_:)), #selector(nextSentence(_:)), #selector(stopPlayback(_:)):
+            menuItem.title = model.pendingDocumentPaused.map { $0 ? "Resume" : "Pause" }
+                ?? (session?.state == .playing ? "Pause" : session?.state == .paused ? "Resume" : "Play")
+            return model.pendingDocumentPaused != nil || session != nil || !WindowRouter.shared.libraryPath.isEmpty
+        case #selector(stopPlayback(_:)):
+            return model.pendingDocumentPaused != nil || session != nil
+        case #selector(previousSentence(_:)), #selector(nextSentence(_:)):
             return session != nil
         case #selector(faster(_:)): return model.activeSpeed < 4
         case #selector(slower(_:)): return model.activeSpeed > 0.5
@@ -100,7 +103,8 @@ extension AppDelegate {
     }
     @objc func playPause(_ sender: Any?) {
         let model = AppModel.shared
-        if model.liveSession == nil, let item = WindowRouter.shared.libraryPath.last { model.read(item, fromToken: nil) }
+        if model.liveSession == nil, model.pendingDocumentPaused == nil,
+           let item = WindowRouter.shared.libraryPath.last { model.read(item, fromToken: nil) }
         else { model.togglePause() }
     }
     @objc func stopPlayback(_ sender: Any?) { AppModel.shared.stopReading() }

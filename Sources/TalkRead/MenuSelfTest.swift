@@ -40,6 +40,16 @@ enum MenuSelfTest {
         check(MiniPlayer.autoHideDelay(setting: 0, hasMessage: true) == 3, "error toast hides with ordinary auto-hide disabled")
         check(MiniPlayer.autoHideDelay(setting: 10, hasMessage: true) == 10, "error toast honours longer configured delay")
         check(MiniPlayer.autoHideDelay(setting: 0, hasMessage: false) == nil, "ordinary player honours never hide")
+        let model = AppModel.shared
+        model.settings.showMiniPlayer = false
+        MiniPlayer.shared.attach(model)
+        MiniPlayer.shared.flash("Review fixture error")
+        check(MiniPlayer.shared.message == "Review fixture error" && MiniPlayer.shared.isVisible,
+              "errors remain visible with mini player disabled")
+        MiniPlayer.shared.hide()
+        check(TalkReadMain.isDisposableHome("/private/tmp/talkread-review-home"), "headless check accepts disposable home")
+        check(!TalkReadMain.isDisposableHome("/Users/review-fixture/Library/Application Support/Talk and Read") && !TalkReadMain.isDisposableHome("/private/tmp"),
+              "headless check rejects real home and temporary root")
         print("menu self-test: \(failed == 0 ? "PASS" : "FAIL"), \(failed) failures")
         return failed == 0 ? 0 : 1
     }
