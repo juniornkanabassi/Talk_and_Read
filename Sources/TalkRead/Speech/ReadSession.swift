@@ -384,17 +384,25 @@ import TalkReadCore
         guard player.isPlaying, let spc = slowSecondsPerChar else { return slowChunk(from: next, limit: Self.slowChars) }
         let fixed = Self.spare + fallbackFixed - 0.2   // `spare` counts the warm fallback's 0.2 s
         let room = (bufferedSeconds - fixed - Self.chunkOverhead(kind)) / (spc * Self.costMargin(kind) + fallbackSecondsPerChar)   // spoken characters that fit
+        if let chunk = fittingSlowChunk(from: next, room: room) { return chunk }
+        Log.write(String(format: "read: budget %.2f s buffered at %gx, %.4f s per character, room %.0f characters",
+                         bufferedSeconds, player.rate, spc * Self.costMargin(kind) + fallbackSecondsPerChar, room))
+        return nil
+    }
+
+    /// Find a cut that fits the existing spoken-character budget, without starting an engine.
+    func fittingSlowChunk(from next: Int, room: Double) -> Chunk? {
         var limit = min(Int(room), Self.slowChars)
+        var spokenCounts: [Range<Int>: Int] = [:]
         // ponytail: each try stops after the first chunk (maxChunks 1); only the protected-span scan covers the whole text,
         // and it is cached per text.
         while limit >= Self.minSlowChars {
             let c = slowChunk(from: next, limit: limit)
-            let n = speakable(c).text.utf16.count
+            let n = spokenCounts[c.range] ?? speakable(c).text.utf16.count
+            spokenCounts[c.range] = n
             if Double(n) <= room { return c }
-            limit = min(limit - 1, Int(Double(limit) * room / Double(n)))   // shrink by the overshoot
+            limit -= 1   // Clause cuts are nonmonotonic: a proportional jump can skip a fitting cut.
         }
-        Log.write(String(format: "read: budget %.2f s buffered at %gx, %.4f s per character, room %.0f characters",
-                         bufferedSeconds, player.rate, spc * Self.costMargin(kind) + fallbackSecondsPerChar, room))
         return nil
     }
 

@@ -179,6 +179,38 @@ import TalkReadCore
               "paused or stopped playback rejects the delayed click")
         model.stopReading()
 
+        do {
+            let fixtureURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Tests/Fixtures/reading.txt")
+            let fixture = try String(contentsOf: fixtureURL, encoding: .utf8)
+            let budgetSession = ReadSession(text: fixture, capture: nil,
+                voice: Voice(id: "breeze.us_warm", name: "Fixture", accent: "", gender: "", engine: .breeze, installed: true),
+                rate: 1.5, startToken: 0, engines: model.engines, lexicon: [:])
+            guard let carrying = budgetSession.tokens.firstIndex(where: { $0.text == "carrying" }) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            let control = budgetSession.fittingSlowChunk(from: carrying, room: 29)
+            check(control != nil, "slow budget fixture has a valid small cut at carrying")
+            let began = ContinuousClock.now
+            let fitting = budgetSession.fittingSlowChunk(from: carrying, room: 38)
+            let spokenCount = fitting.map {
+                Speakable.make(fixture, range: $0.range, lexicon: [:], language: "en").text.utf16.count
+            }
+            check(fitting != nil && spokenCount.map { $0 > 0 && $0 <= 38 } == true,
+                  "slow budget finds a fitting cut across nonmonotonic clause boundaries")
+            check(budgetSession.fittingSlowChunk(from: carrying, room: 1) == nil,
+                  "slow budget still rejects a budget too small for any permitted cut")
+            print("MEASURE slow budget search: \(began.duration(to: ContinuousClock.now)), spoken characters \(spokenCount ?? -1) / 38")
+            let expanded = ReadSession(text: String(repeating: "oversized ", count: 25), capture: nil,
+                voice: Voice(id: "breeze.us_warm", name: "Fixture", accent: "", gender: "", engine: .breeze, installed: true),
+                rate: 1.5, startToken: 0, engines: model.engines,
+                lexicon: ["oversized": String(repeating: "spoken ", count: 100)])
+            let worstStarted = ContinuousClock.now
+            let noFit = expanded.fittingSlowChunk(from: 0, room: 160)
+            print("MEASURE full slow budget search: \(worstStarted.duration(to: ContinuousClock.now)), all 136 limits rejected")
+            check(noFit == nil, "slow budget rejects large spoken expansion across every candidate limit")
+        } catch { check(false, "slow budget fixture: \(error)") }
+
         let timeoutProbe = TimeoutProbe()
         let calls = AXCallCoordinator { timeoutProbe.set($0, to: $1) }
         let foreground = AXUIElementCreateApplication(getpid())
