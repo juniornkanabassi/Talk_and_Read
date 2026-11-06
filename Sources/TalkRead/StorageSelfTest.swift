@@ -31,10 +31,29 @@ import TalkReadCore
             try Data("PDF bytes".utf8).write(to: Paths.documents.appendingPathComponent(original.fileName))
             _ = store.add(original); _ = store.add(neighbour)
             check(store.flush(), "initial library writes flush")
+            // A blocked metadata writer must not delay synchronous GUI file moves.
+            // A background watchdog releases the gate even if this regression returns.
+            let snapshotGate = DispatchSemaphore(value: 0)
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                store.writer.perform { continuation.resume(); snapshotGate.wait() }
+            }
+            let watchdog = DispatchWorkItem { snapshotGate.signal() }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1, execute: watchdog)
+            let removeStarted = DispatchTime.now().uptimeNanoseconds
+            group(undo) { store.remove(original, undoManager: undo) }
+            check(Double(DispatchTime.now().uptimeNanoseconds - removeStarted) / 1_000_000_000 < 0.5,
+                  "GUI removal does not wait for the blocked metadata writer")
+            let restoreStarted = DispatchTime.now().uptimeNanoseconds
+            undo.undo()
+            check(Double(DispatchTime.now().uptimeNanoseconds - restoreStarted) / 1_000_000_000 < 0.5,
+                  "GUI Undo does not wait for the blocked metadata writer")
+            watchdog.cancel()
+            snapshotGate.signal()
+            check(try store.text(original) == "Original extracted text", "independent file queue preserves Undo bytes")
             group(undo) { store.remove(original, undoManager: undo) }
             check(store.flush() && store.items.map(\.id) == [neighbour.id], "remove updates library")
             check(!FileManager.default.fileExists(atPath: Paths.documents.appendingPathComponent(original.fileName).path), "remove holds original PDF")
-            check(FileManager.default.fileExists(atPath: Paths.dataRoot.appendingPathComponent("Removed documents/\(original.id).txt").path), "remove holds extracted text")
+            check(FileManager.default.fileExists(atPath: store.holdingDirectory.appendingPathComponent("\(original.id).txt").path), "remove holds extracted text")
             undo.undo()
             check(store.items.map(\.id) == [neighbour.id, original.id] && store.items.last?.position == 47, "Undo restores order and reading position")
             check(try store.text(original) == "Original extracted text", "Undo restores extracted text before a read")
@@ -75,9 +94,15 @@ import TalkReadCore
             try store.store("Retry text", for: retry)
             try Data("source".utf8).write(to: Paths.documents.appendingPathComponent(retry.fileName))
             _ = store.add(retry)
-            let heldRetry = Paths.dataRoot.appendingPathComponent("Removed documents/\(retry.fileName)")
+            let heldRetry = store.holdingDirectory.appendingPathComponent(retry.fileName)
             try FileManager.default.createDirectory(at: heldRetry.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data("conflict".utf8).write(to: heldRetry)
+            group(undo) { store.remove(retry, undoManager: undo) }
+            check(store.items.contains(where: { $0.id == retry.id }), "failed GUI hold retains the library item")
+            check(store.flush(), "failed GUI hold does not poison persistence")
+            let afterGUIFailure: [LibraryItem]? = AppModel.loadJSON(Paths.library)
+            check(afterGUIFailure?.contains(where: { $0.id == retry.id }) == true,
+                  "failed GUI hold leaves persisted metadata pointing to the original files")
             do {
                 try await store.removePersisted(retry)
                 check(false, "failed hold rejects removal")
@@ -134,10 +159,20 @@ import TalkReadCore
             check(racingStore.flush(), "rollback fixture is persisted")
             let removalGate = DispatchSemaphore(value: 0)
             // Queue a failure immediately before the removal save, after its file hold succeeded.
-            let observation = racingStore.objectWillChange.prefix(1).sink {
-                racingStore.writer.perform {
-                    removalGate.wait()
-                    throw CocoaError(.fileWriteNoPermission)
+            let backupIndex = Paths.library.appendingPathExtension("rollback-backup")
+            var changes = 0
+            let observation = racingStore.objectWillChange.sink {
+                changes += 1
+                if changes == 1 {
+                    racingStore.writer.perform {
+                        removalGate.wait()
+                        try FileManager.default.moveItem(at: Paths.library, to: backupIndex)
+                        try FileManager.default.createDirectory(at: Paths.library, withIntermediateDirectories: false)
+                    }
+                } else if changes == 2 {
+                    // Let the rollback's next metadata save succeed after the first write truly failed.
+                    try? FileManager.default.removeItem(at: Paths.library)
+                    try? FileManager.default.moveItem(at: backupIndex, to: Paths.library)
                 }
             }
             let removing = Task { () -> Bool in

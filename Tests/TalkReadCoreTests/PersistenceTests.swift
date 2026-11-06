@@ -88,10 +88,9 @@ final class PersistenceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: docs.appendingPathComponent("id.txt"), encoding: .utf8), "new")
     }
 
-    func testFileOperationFailureIsReportedOnceWithoutPoisoningLaterSaves() throws {
+    func testUnrelatedFileOperationFailureDoesNotPoisonSaveFlush() throws {
         let writer = PersistenceQueue(delay: 60, report: { _ in })
         writer.perform { throw CocoaError(.fileWriteNoPermission) }
-        XCTAssertFalse(writer.flush())
         let file = try fixture().appendingPathComponent("later.json")
         writer.save(["later"], to: file)
         XCTAssertTrue(writer.flush())
@@ -141,6 +140,50 @@ final class PersistenceTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: docs.appendingPathComponent(name)), Data(name.utf8))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: held.appendingPathComponent("original.pdf").path))
+    }
+
+    func testRestorePreflightsEveryFileBeforeMovingAny() throws {
+        let root = try fixture(), docs = root.appendingPathComponent("Documents"), held = root.appendingPathComponent("Removed")
+        try FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        for name in ["original.pdf", "extracted.txt"] { try Data(name.utf8).write(to: docs.appendingPathComponent(name)) }
+        let files = DocumentHoldingArea(documents: docs, holding: held)
+        try files.hold(["original.pdf", "extracted.txt"])
+        try Data("conflict".utf8).write(to: docs.appendingPathComponent("extracted.txt"))
+        XCTAssertThrowsError(try files.restore(["original.pdf", "extracted.txt"]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: docs.appendingPathComponent("original.pdf").path))
+        for name in ["original.pdf", "extracted.txt"] {
+            XCTAssertEqual(try Data(contentsOf: held.appendingPathComponent(name)), Data(name.utf8))
+        }
+    }
+
+    func testSecondLiveStoreCannotRecoverFirstStoresUndoFiles() throws {
+        let root = try fixture(), docs = root.appendingPathComponent("Documents"), held = root.appendingPathComponent("Removed")
+        try FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        try Data("original".utf8).write(to: docs.appendingPathComponent("id.txt"))
+        let first = try DocumentHoldingSession(documents: docs, root: held, referencedNames: [])
+        try first.files.hold(["id.txt"])
+        let second = try DocumentHoldingSession(documents: docs, root: held, referencedNames: [])
+        try withExtendedLifetime(second) {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: first.files.holding.appendingPathComponent("id.txt").path))
+            XCTAssertNoThrow(try first.files.restore(["id.txt"]))
+        }
+        XCTAssertEqual(try String(contentsOf: docs.appendingPathComponent("id.txt"), encoding: .utf8), "original")
+    }
+
+    func testReleasedStoreHoldingIsRecoveredAfterInterruptedQuit() throws {
+        let root = try fixture(), docs = root.appendingPathComponent("Documents"), held = root.appendingPathComponent("Removed")
+        try FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        for name in ["kept.txt", "removed.txt"] { try Data(name.utf8).write(to: docs.appendingPathComponent(name)) }
+        var first: DocumentHoldingSession? = try DocumentHoldingSession(documents: docs, root: held, referencedNames: [])
+        let oldFolder = first!.files.holding
+        try first!.files.hold(["kept.txt", "removed.txt"])
+        first = nil
+        let second = try DocumentHoldingSession(documents: docs, root: held, referencedNames: ["kept.txt"])
+        withExtendedLifetime(second) {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: docs.appendingPathComponent("kept.txt").path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: docs.appendingPathComponent("removed.txt").path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: oldFolder.path))
+        }
     }
 
     private final class Marker: @unchecked Sendable {

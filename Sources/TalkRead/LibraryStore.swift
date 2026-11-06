@@ -31,8 +31,11 @@ struct ReadEntry: Codable, Identifiable, Sendable {
     private var removalsInFlight = 0
     private var removalWaiters: [CheckedContinuation<Void, Never>] = []
     nonisolated let writer = PersistenceQueue()
-    nonisolated private let files = DocumentHoldingArea(documents: Paths.documents,
-        holding: Paths.dataRoot.appendingPathComponent("Removed documents", isDirectory: true))
+    // File moves and text reads must never queue behind whole-library JSON encoding.
+    nonisolated private let documentIO = PersistenceQueue()
+    nonisolated private let holdingSession: DocumentHoldingSession?
+    nonisolated private let files: DocumentHoldingArea
+    nonisolated var holdingDirectory: URL { files.holding }
 
     init() {
         let saved: [LibraryItem]? = AppModel.loadJSON(Paths.library)
@@ -40,8 +43,17 @@ struct ReadEntry: Codable, Identifiable, Sendable {
         reads = AppModel.loadJSON(Paths.reads) ?? []
         // An unreadable/missing index must never cause held documents to be discarded.
         let referenced = saved.map { Set($0.flatMap(Self.fileNames)) }
-        // Recover files before any document can be opened after an interrupted quit.
-        do { try files.recover(referencedNames: referenced) } catch { Log.write("Recovering removed documents failed: \(error)") }
+        let root = Paths.dataRoot.appendingPathComponent("Removed documents", isDirectory: true)
+        do {
+            let session = try DocumentHoldingSession(documents: Paths.documents, root: root, referencedNames: referenced)
+            holdingSession = session
+            files = session.files
+        } catch {
+            holdingSession = nil
+            // A unique fallback can never consume another process's Undo files.
+            files = DocumentHoldingArea(documents: Paths.documents, holding: root.appendingPathComponent(UUID().uuidString))
+            Log.write("Recovering removed documents failed: \(error)")
+        }
     }
 
     nonisolated static func textURL(_ item: LibraryItem) -> URL {
@@ -51,10 +63,10 @@ struct ReadEntry: Codable, Identifiable, Sendable {
         [item.fileName, "\(item.id.uuidString).txt"]
     }
     nonisolated func text(_ item: LibraryItem) throws -> String {
-        try writer.read { try String(contentsOf: Self.textURL(item), encoding: .utf8) }
+        try documentIO.read { try String(contentsOf: Self.textURL(item), encoding: .utf8) }
     }
     nonisolated func store(_ text: String, for item: LibraryItem) throws {
-        try writer.read {
+        try documentIO.read {
             try FileManager.default.createDirectory(at: Paths.documents, withIntermediateDirectories: true)
             try text.write(to: Self.textURL(item), atomically: true, encoding: .utf8)
         }
@@ -74,9 +86,21 @@ struct ReadEntry: Codable, Identifiable, Sendable {
     func remove(_ item: LibraryItem, undoManager: UndoManager?, holdFiles: Bool = true) {
         guard !isFinishing else { return }
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-        let saved = items.remove(at: index)
+        let saved = items[index]
         let names = Self.fileNames(saved)
-        if holdFiles { writer.perform { [files] in try files.hold(names) } }
+        if holdFiles {
+            guard holdingSession != nil else {
+                MiniPlayer.shared.flash("Could not remove “\(saved.title)”")
+                return
+            }
+            do { try documentIO.read { try files.hold(names) } }
+            catch {
+                Log.write("Removing document failed: \(error)")
+                MiniPlayer.shared.flash("Could not remove “\(saved.title)”")
+                return
+            }
+        }
+        items.remove(at: index)
         writer.save(items, to: Paths.library, immediately: true)
         undoManager?.registerUndo(withTarget: self) { [weak undoManager] store in
             store.restore(saved, at: index, undoManager: undoManager)
@@ -85,7 +109,7 @@ struct ReadEntry: Codable, Identifiable, Sendable {
     }
     /// Hold files before changing the index so a failed move leaves a retryable item.
     func removePersisted(_ item: LibraryItem) async throws {
-        guard !isFinishing, let index = items.firstIndex(where: { $0.id == item.id }) else {
+        guard !isFinishing, holdingSession != nil, let index = items.firstIndex(where: { $0.id == item.id }) else {
             throw CocoaError(.fileNoSuchFile)
         }
         removalsInFlight += 1
@@ -98,9 +122,9 @@ struct ReadEntry: Codable, Identifiable, Sendable {
             }
         }
         let names = Self.fileNames(item)
-        try await writer.performAndWait { [files] in try files.hold(names) }
+        try await documentIO.performAndWait { [files] in try files.hold(names) }
         guard !isFinishing else {
-            try await writer.performAndWait { [files] in try files.restore(names) }
+            try await documentIO.performAndWait { [files] in try files.restore(names) }
             throw CocoaError(.userCancelled)
         }
         guard items.contains(where: { $0.id == item.id }) else { throw CocoaError(.fileNoSuchFile) }
@@ -109,7 +133,7 @@ struct ReadEntry: Codable, Identifiable, Sendable {
             // Keep the original record retryable, including when the index could not be written.
             if !items.contains(where: { $0.id == item.id }) { items.insert(item, at: min(index, items.count)) }
             writer.save(items, to: Paths.library, immediately: true)
-            try await writer.performAndWait { [files] in try files.restore(names) }
+            try await documentIO.performAndWait { [files] in try files.restore(names) }
             _ = await Task.detached(priority: .utility) { [writer] in writer.flush() }.value
             throw CocoaError(.fileWriteUnknown)
         }
@@ -119,7 +143,12 @@ struct ReadEntry: Codable, Identifiable, Sendable {
         guard !isFinishing else { return }
         guard !items.contains(where: { $0.id == item.id }) else { return }
         let names = Self.fileNames(item)
-        writer.perform { [files] in try files.restore(names) }
+        do { try documentIO.read { try files.restore(names) } }
+        catch {
+            Log.write("Restoring document failed: \(error)")
+            MiniPlayer.shared.flash("Could not restore “\(item.title)”")
+            return
+        }
         items.insert(item, at: min(index, items.count))
         writer.save(items, to: Paths.library, immediately: true)
         undoManager?.registerUndo(withTarget: self) { [weak undoManager] store in store.remove(item, undoManager: undoManager) }
@@ -147,7 +176,10 @@ struct ReadEntry: Codable, Identifiable, Sendable {
         undoManager?.registerUndo(withTarget: self) { [weak undoManager] store in store.deleteRead(entry.id, undoManager: undoManager) }
         undoManager?.setActionName("Delete read")
     }
-    @discardableResult func flush() -> Bool { writer.flush() }
+    @discardableResult func flush() -> Bool {
+        let filesComplete = documentIO.flush()
+        return writer.flush() && filesComplete
+    }
     func finish() async {
         // Freeze metadata before yielding: Undo, imports and position timers must not
         // restore a record after cleanup has decided which held files to discard.
@@ -157,15 +189,16 @@ struct ReadEntry: Codable, Identifiable, Sendable {
             await withCheckedContinuation { removalWaiters.append($0) }
         }
         let referenced = Set(items.flatMap(Self.fileNames))
-        await Task.detached(priority: .utility) { [writer, files] in
+        await Task.detached(priority: .utility) { [writer, documentIO, files] in
             guard writer.flush() else { return }
-            writer.perform { try files.recover(referencedNames: referenced) }
-            writer.flush()
+            do { try documentIO.read { try files.recover(referencedNames: referenced) } }
+            catch { Log.write("Cleaning up removed documents failed: \(error)") }
         }.value
     }
     func discardRemovedFiles() {
         let referenced = Set(items.flatMap(Self.fileNames))
-        writer.perform { [files] in try files.recover(referencedNames: referenced) }
-        writer.flush()
+        guard writer.flush() else { return }
+        do { try documentIO.read { try files.recover(referencedNames: referenced) } }
+        catch { Log.write("Cleaning up removed documents failed: \(error)") }
     }
 }
