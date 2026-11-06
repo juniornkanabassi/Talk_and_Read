@@ -1502,7 +1502,8 @@ import WebKit
         pump.cancel()
         await pump.value
         let focusAfter = focusedAppPID()
-        if NSRunningApplication.current.isActive || focusAfter != focusBefore { failures.append("focus moved (\(focusBefore) -> \(focusAfter))") }
+        // Another app taking focus is not a failure; only this process taking it is (before/after kept as evidence).
+        if NSRunningApplication.current.isActive || focusAfter == getpid() { failures.append("focus taken (\(focusBefore) -> \(focusAfter))") }
         // Read-only: what the AX path sees in Junior's frontmost app (nothing is typed there).
         let front = Inserter.focusedField(pid: nil)
         print("insert: frontmost app focus via AX (read only): secure \(front.secure), caret context \(front.previous != nil ? "found" : "none")")

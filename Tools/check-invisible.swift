@@ -13,6 +13,7 @@ child.arguments = Array(args.dropFirst(2))
 var owned = Set<pid_t>()
 var windows: [[String: Any]] = []
 var focusChanges: [[String: Any]] = []
+var ownFocus: [[String: Any]] = []
 var samples = 0
 var lastFront = baseline
 var scanFailed = false
@@ -49,7 +50,12 @@ func sample() {
                             "owner": entry[kCGWindowOwnerName as String] as? String ?? "unknown"])
         }
     }
+    // Fails only when the command or a descendant is frontmost or active; other apps' changes are diagnostic.
     let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    let active = NSWorkspace.shared.runningApplications.filter(\.isActive).map(\.processIdentifier)
+    for pid in Set(active + [front].compactMap { $0 }) where owned.contains(pid) {
+        ownFocus.append(["sample": samples, "pid": pid, "frontmost": pid == front, "active": active.contains(pid)])
+    }
     if front != lastFront {
         focusChanges.append(["sample": samples, "from": lastFront ?? -1, "to": front ?? -1])
         lastFront = front
@@ -70,7 +76,7 @@ let summary: [String: Any] = ["command": Array(args.dropFirst(2)), "exitCode": c
     "samples": samples, "intervalSeconds": 0.2, "trackedPIDs": owned.sorted(),
     "visibleWindows": windows, "frontmostChanges": focusChanges, "samplingFailed": scanFailed,
     "baselineFrontmostPID": baseline ?? -1,
-    "commandTookFocus": focusChanges.contains { owned.contains($0["to"] as? Int32 ?? -1) }]
+    "ownFrontmostOrActive": ownFocus, "commandTookFocus": !ownFocus.isEmpty]
 try JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys]).write(to: destination)
-print("Visibility proof: \(samples) samples, \(windows.count) visible windows, \(focusChanges.count) frontmost changes; child exit \(child.terminationStatus)")
-exit(windows.isEmpty && focusChanges.isEmpty && !scanFailed ? child.terminationStatus : 1)
+print("Visibility proof: \(samples) samples, \(windows.count) visible windows, \(ownFocus.count) own frontmost/active samples, \(focusChanges.count) frontmost changes (diagnostic); child exit \(child.terminationStatus)")
+exit(windows.isEmpty && ownFocus.isEmpty && !scanFailed ? child.terminationStatus : 1)

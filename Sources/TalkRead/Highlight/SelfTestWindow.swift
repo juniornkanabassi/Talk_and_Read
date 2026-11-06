@@ -110,7 +110,8 @@ enum SelfTestWindow {
             hiddenTextCost()
         }
         let frontAfter = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        record("No focus change", frontAfter == frontBefore && !NSApp.isActive, "frontmost pid \(frontBefore.map(String.init) ?? "-") -> \(frontAfter.map(String.init) ?? "-"), our app active: \(NSApp.isActive)")
+        // Another app taking the foreground is not a failure; only this process being frontmost or active is.
+        record("No focus change", frontAfter != getpid() && !NSApp.isActive, "frontmost pid \(frontBefore.map(String.init) ?? "-") -> \(frontAfter.map(String.init) ?? "-"), our app active: \(NSApp.isActive)")
         NSPasteboard(name: NSPasteboard.Name(pasteboardName)).releaseGlobally()
 
         print("\nTalk & Read --selftest-window")
