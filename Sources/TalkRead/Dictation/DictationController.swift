@@ -103,6 +103,7 @@ enum DictationError: LocalizedError, Equatable {
     /// Cancelled transcripts and file jobs still running; the next recording starts only after them (Sol #23).
     private var draining: Task<Void, Never>? { didSet { updateBusy() } }
     private var drains = 0
+    private var warming = false
     private let decode: @Sendable (URL) throws -> [Float]
     private var pill: DictationPill?
 
@@ -135,6 +136,32 @@ enum DictationError: LocalizedError, Equatable {
         guard preferApple || !parakeetReady else { return asr }
         apple.contextualStrings = Cleanup.terms(vocabulary())
         return apple
+    }
+
+    /// The Parakeet model the next dictation uses, as `recogniser()` picks it; nil when Apple's is preferred for English.
+    private var selectedModel: DictationASR? {
+        if languages != ["en"], multilingual.isLoaded || multilingual.isLoading || multilingual.isDownloaded { return multilingual }
+        return preferApple ? nil : asr
+    }
+
+    /// Prepare model loading and first inference before dictation, without audio input or history changes.
+    /// A user request shares loading; priming already in progress finishes on the normal recogniser queue.
+    func warmUpIfInstalled() async {
+        guard !isBusy, let selected = selectedModel, !(selected is AppleTranscriber), selected.isDownloaded,
+              !selected.isLoading else { return }
+        warming = true
+        updateBusy()
+        defer { warming = false; updateBusy() }
+        do {
+            try await selected.load(progress: nil)
+            try Task.checkCancellation()
+            guard owner == nil else { return }
+            _ = try await selected.transcribe(samples: [Float](repeating: 0, count: 16_000))
+        } catch is CancellationError {
+            // The backend keeps its shared load alive for another caller.
+        } catch {
+            Log.write("dictation warm-up failed: \(error)")
+        }
     }
 
     // MARK: Control (CLI/MCP pass their caller and force; hotkeys and the GUI pass "user")
@@ -290,10 +317,12 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     /// Frees the recogniser. False, freeing nothing, while dictation, a file, a drain or the model load still runs: the
-    /// caller keeps its idle timer and tries again later (Sol #24).
-    @discardableResult func unloadModel() -> Bool {
+    /// caller keeps its idle timer and tries again later (Sol #24). `keepSelected` (the idle timer) leaves the chosen
+    /// languages' model loaded: once freed, a purged Core ML cache makes the next load recompile for 13 to 29 s.
+    @discardableResult func unloadModel(keepSelected: Bool = false) -> Bool {
         guard !isBusy else { return false }
-        let english = asr.unload(), other = multilingual.unload()
+        let keep = keepSelected ? selectedModel : nil
+        let english = keep === asr || asr.unload(), other = keep === multilingual || multilingual.unload()
         return english && other
     }
 
@@ -475,7 +504,7 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     private func updateBusy() {
-        let preparing = draining != nil || asr.isLoading || multilingual.isLoading
+        let preparing = warming || draining != nil || asr.isLoading || multilingual.isLoading
         if self.preparing != preparing { self.preparing = preparing }
         let busy = owner != nil || inserting > 0 || preparing
         if isBusy != busy { isBusy = busy }

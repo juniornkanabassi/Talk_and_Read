@@ -105,7 +105,7 @@ enum ControlSelfTest {
 
         // Two callers transcribe at once: the shared transcriber admits one, the other is told busy.
         // Sol #16: with a 1 s idle unload, nothing may be pending while the file keeps dictation busy; after it, the
-        // unload is scheduled and fires.
+        // unload is scheduled and fires. It keeps the chosen dictation model loaded (a purged Core ML cache costs 13 s).
         model.unloadDelay = .seconds(1)
         if let clip = clip ?? fixture() {
             let watch = Task { @MainActor () -> (busy: Bool, overlap: Bool) in
@@ -128,10 +128,11 @@ enum ControlSelfTest {
             results.append(pass)
             let seen = await watch.value
             let loaded = model.dictation.asr.isLoaded, scheduled = model.unloadPending
-            let unloaded = await waitUntil(3) { !model.unloadPending && !model.dictation.asr.isLoaded }
-            let idle = seen.busy && !seen.overlap && loaded && scheduled && unloaded
+            let unloaded = await waitUntil(3) { !model.unloadPending }
+            let kept = model.dictation.asr.isLoaded && !model.dictation.multilingual.isLoaded
+            let idle = seen.busy && !seen.overlap && loaded && scheduled && unloaded && kept
             print("\(idle ? "PASS" : "FAIL")  idle unload around dictate-file: busy seen \(seen.busy), unload pending while busy \(seen.overlap), "
-                  + "after: loaded \(loaded), scheduled \(scheduled), unloaded within 3 s \(unloaded)")
+                  + "after: loaded \(loaded), scheduled \(scheduled), fired within 3 s \(unloaded), chosen model kept \(kept)")
             results.append(idle)
         } else {
             print("FAIL  dictate-file: no clip given and no Tests/Fixtures/dictation/*.wav in the current folder")

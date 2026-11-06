@@ -15,6 +15,7 @@ enum TalkReadMain {
             return args[i + 1]
         }
         // Headless switches run, report and exit; they never show a status item, start hotkeys or register a login item.
+        if let file = value(after: "--selftest-asr-cold-start") { exitAfter { await DictationColdStartBench.run(file: file) } }
         if let file = value(after: "--selftest-tts") { exitAfter { await SelfTest.tts(file: file) } }
         if let dir = value(after: "--selftest-asr") { exitAfter { await DictationSelfTest.run(dir: dir) } }
         if args.contains("--selftest-window") { exit(SelfTestWindow.run()) }
@@ -116,6 +117,9 @@ enum TalkReadMain {
             .sink { [weak self] in self?.recording = $0 }.store(in: &watchers)
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { AppModel.shared.pauseForSleep() }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { AppModel.shared.warmDictation() }
         }
         NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { AppModel.shared.refreshPermissions() }
