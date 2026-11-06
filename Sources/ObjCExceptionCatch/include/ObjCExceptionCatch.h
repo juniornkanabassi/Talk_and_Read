@@ -7,4 +7,6 @@ NS_ASSUME_NONNULL_BEGIN
 /// description: its reason); nil when the block finished normally.
 NSError *_Nullable TRCatchException(NS_NOESCAPE void (^block)(void));
 
+void TRInstallInvisibleChecks(void);
+
 NS_ASSUME_NONNULL_END

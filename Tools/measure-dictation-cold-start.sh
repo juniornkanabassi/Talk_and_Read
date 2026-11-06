@@ -20,6 +20,7 @@ if (( ${@[(Ie)--cold-start-live]} )); then
   trap 'rm -f "${binary:h}/$name"; rm -rf "$HOME/Library/Caches/$name" "$(getconf DARWIN_USER_CACHE_DIR)$name"' EXIT
   binary="${binary:h}/$name"
 fi
-TALKREAD_HOME="$run_root/data" "$binary" --selftest-asr-cold-start "$run_root/fixture.wav" "$@" > "$run_root/run.log" 2>&1
+TALKREAD_HOME="$run_root/data" "$binary" --agent-screen --selftest-asr-cold-start "$run_root/fixture.wav" "$@" > "$run_root/run.log" 2>&1 &
+wait $!
 sed -n 's/^COLD_START_JSON //p' "$run_root/run.log" > "$run_root/timings.jsonl"
 cat "$run_root/timings.jsonl"

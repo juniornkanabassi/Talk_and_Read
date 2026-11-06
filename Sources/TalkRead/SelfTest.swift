@@ -25,7 +25,9 @@ import os
 import TalkReadCore
 
 enum SelfTest {
-    static let outDir = URL(fileURLWithPath: "/private/tmp/talkread-selftest", isDirectory: true)
+    static let outDir = ProcessInfo.processInfo.environment["TALKREAD_HOME"].map {
+        URL(fileURLWithPath: $0, isDirectory: true).appendingPathComponent("SelfTest", isDirectory: true)
+    } ?? URL(fileURLWithPath: "/private/tmp/talkread-selftest", isDirectory: true)
 
     /// Synthesises the text file, transcribes it back and reports timing error. Returns the process exit code.
     static func tts(file: String) async -> Int32 {

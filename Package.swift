@@ -36,7 +36,8 @@ let package = Package(
                           linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
         .executableTarget(name: "TalkReadCLI", dependencies: ["TalkReadCore"], path: "Sources/TalkReadCLI",
                           swiftSettings: [.swiftLanguageMode(.v5)]),
-        .testTarget(name: "TalkReadCoreTests", dependencies: ["TalkReadCore"], path: "Tests/TalkReadCoreTests",
+        .target(name: "TestOffscreen", path: "Tests/TestOffscreen"),
+        .testTarget(name: "TalkReadCoreTests", dependencies: ["TalkReadCore", "TestOffscreen"], path: "Tests/TalkReadCoreTests",
                     swiftSettings: [.swiftLanguageMode(.v6)])
     ]
 )

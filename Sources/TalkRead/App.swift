@@ -1,6 +1,7 @@
 // Entry point and app lifecycle: headless --selftest-* switches, menu bar item, windows and Dock icon, hotkeys,
 // permission polling, login item, control server, sleep. Owned by WP7.
 import AppKit
+import ObjCExceptionCatch
 import Combine
 import ServiceManagement
 import SwiftUI
@@ -9,12 +10,18 @@ import TalkReadCore
 @main
 enum TalkReadMain {
     static func main() {
+        TRInstallInvisibleChecks()
         let args = CommandLine.arguments
+        if invisibleChecks {
+            NSApplication.shared.setActivationPolicy(.prohibited)
+            NSWindow.keepEveryWindowInvisible()
+        }
         func value(after flag: String) -> String? {
             guard let i = args.firstIndex(of: flag), i + 1 < args.count, !args[i + 1].hasPrefix("--") else { return nil }
             return args[i + 1]
         }
         // Headless switches run, report and exit; they never show a status item, start hotkeys or register a login item.
+        if args.contains("--selftest-invisible-windows") { exit(MainActor.assumeIsolated { SelfTestInvisibleWindows.run() }) }
         if let file = value(after: "--selftest-asr-cold-start") { exitAfter { await DictationColdStartBench.run(file: file) } }
         if let file = value(after: "--selftest-tts") { exitAfter { await SelfTest.tts(file: file) } }
         if let dir = value(after: "--selftest-asr") { exitAfter { await DictationSelfTest.run(dir: dir) } }
@@ -30,8 +37,13 @@ enum TalkReadMain {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.accessory)
+        app.setActivationPolicy(invisibleChecks ? .prohibited : .accessory)
         app.run()
+    }
+
+    static var invisibleChecks: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || CommandLine.arguments.contains { $0 == "--agent-screen" || $0.hasPrefix("--selftest-") }
     }
 
     /// Runs `work` headless and exits with its code. A main run loop, not dispatchMain: dispatchMain retires the main
@@ -290,7 +302,7 @@ enum TalkReadMain {
     /// Opening a window is always the user's own request, so the app comes forward with a Dock icon.
     private func show(_ kind: String) {
         if kind == "settings" {
-            NSApp.setActivationPolicy(.regular)
+            NSApp.setActivationPolicy(TalkReadMain.invisibleChecks ? .prohibited : .regular)
             openSettingsScene?()
             NSApp.activate()
             startPolling()
@@ -298,7 +310,7 @@ enum TalkReadMain {
         }
         let window = windows[kind] ?? makeWindow(kind)
         windows[kind] = window
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(TalkReadMain.invisibleChecks ? .prohibited : .regular)
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         startPolling()
@@ -342,7 +354,7 @@ enum TalkReadMain {
               let kind = windows.first(where: { $0.value === window })?.key else { return }
         // SwiftUI owns its Settings window and can reuse it when opened again.
         if kind != "settings" { windows[kind] = nil }
-        if !windows.values.contains(where: { $0 !== window && Self.windowIsOpen($0) }) { NSApp.setActivationPolicy(.accessory) }
+        if !windows.values.contains(where: { $0 !== window && Self.windowIsOpen($0) }) { NSApp.setActivationPolicy(TalkReadMain.invisibleChecks ? .prohibited : .accessory) }
     }
 
 }
@@ -363,5 +375,37 @@ private struct SettingsWindowRegistration: NSViewRepresentable {
             super.viewDidMoveToWindow()
             if let window { register(window) }
         }
+    }
+}
+
+
+extension NSWindow {
+    /// Keep later AppKit updates transparent too, as in Video Prompter's --agent-screen checks.
+    static func keepEveryWindowInvisible() {
+        NotificationCenter.default.addObserver(forName: NSWindow.didUpdateNotification, object: nil, queue: .main) { note in
+            guard let window = note.object as? NSWindow, window.alphaValue != 0 || !window.ignoresMouseEvents else { return }
+            MainActor.assumeIsolated { window.alphaValue = 0; window.ignoresMouseEvents = true }
+        }
+    }
+}
+
+@MainActor private enum SelfTestInvisibleWindows {
+    static func run() -> Int32 {
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 200),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        for show in [{ window.makeKeyAndOrderFront(nil) }, { window.orderFrontRegardless() }, { window.orderFront(nil) }] {
+            window.alphaValue = 1
+            show()
+            guard window.isVisible, window.alphaValue == 0, window.ignoresMouseEvents else { return 1 }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.4))
+            window.orderOut(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
+        guard !NSApp.isActive else { return 1 }
+        print("PASS invisible windows: all ordering paths transparent and click-through, activation blocked")
+        return 0
     }
 }

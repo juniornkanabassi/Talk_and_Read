@@ -1,7 +1,7 @@
 // `TalkRead --selftest-asr <dir> [--insert | --paragraphs]`: hotkey mapping, the focus rule, Copy and the result pill's
 // timing, the pill's window (outside every display), the ownership rules (fake recorder and recogniser),
 // WER and latency of the real Transcriber over the fixtures (file path and live streaming path), paragraph breaks on a
-// Kokoro-spoken four-paragraph script, and, with --insert, pasting into a test panel on the Prompter XL. Never uses the microphone; events go only to our own pid.
+// Kokoro-spoken four-paragraph script, and, with --insert, pasting into an invisible test panel. Never uses the microphone; events go only to our own pid.
 import AppKit
 import AVFoundation
 import FluidAudio
@@ -1323,10 +1323,6 @@ import WebKit
             print("insert: NOT RUN (the main actor is not on the main thread: the --selftest dispatch must run the main run loop, not dispatchMain)")
             return false
         }
-        guard let screen = NSScreen.screens.first(where: { $0.localizedName.contains("Prompter") }) else {
-            print("insert: NOT RUN (no Prompter XL screen)")
-            return true
-        }
         // Prohibited: the process can never be activated, so Junior's app keeps focus. The panel is never key.
         let app = NSApplication.shared
         guard app.setActivationPolicy(.prohibited) || app.activationPolicy() == .prohibited else {
@@ -1354,15 +1350,8 @@ import WebKit
         NSApp.mainMenu = menu
 
         let size = NSSize(width: 420, height: 230)
-        let panel = NSPanel(contentRect: NSRect(origin: NSPoint(x: (screen.frame.width - size.width) / 2, y: (screen.frame.height - size.height) / 2), size: size),
-                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false, screen: screen)
-        // AppKit may move a new window to the main screen at init: place it explicitly, check, and only then show it.
-        panel.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.midY - size.height / 2,
-                              width: size.width, height: size.height), display: false)
-        guard panel.screen?.localizedName.contains("Prompter") == true else {
-            print("insert: NOT RUN (panel would land on \(panel.screen?.localizedName ?? "no screen"), not the Prompter XL)")
-            return true
-        }
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.backgroundColor = .windowBackgroundColor
         panel.isReleasedWhenClosed = false
         let field = NSTextField(frame: NSRect(x: 20, y: 186, width: 380, height: 24))
@@ -1383,8 +1372,8 @@ import WebKit
         panel.orderFrontRegardless()
         try? await Task.sleep(for: .milliseconds(400))
         var failures: [String] = []
-        if NSRunningApplication.current.isActive || panel.isKeyWindow || panel.screen != screen {
-            failures.append("panel activated, became key or left the Prompter XL")
+        if NSRunningApplication.current.isActive || panel.isKeyWindow || panel.alphaValue != 0 || !panel.ignoresMouseEvents {
+            failures.append("panel activated, became key or became visible")
         }
 
         /// `cancelAtPaste`: the inserting task is cancelled the moment its last check passes, just before ⌘V goes out;

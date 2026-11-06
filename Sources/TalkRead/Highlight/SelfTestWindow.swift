@@ -1,8 +1,8 @@
 // `TalkRead --selftest-window` (R4, R5, R6, R7, R7c, R7d, R12, E8, H1, H2, H3). Headless first: PasteboardGate, the
 // coordinate flip, screenshot OCR and the OCR selection-colour anchor on rendered bitmaps, the overlay pin on recorded
 // window-server snapshots and on live windows placed off every display. With --headless, stop before any display or live-app probes.
-// Otherwise, on the Prompter XL screen only, one test
-// window (NSTextView, WKWebView, PDFView, rendered-text NSImageView, a terminal-style text view) shown without activating
+// Otherwise, one invisible test
+// window (NSTextView, WKWebView, PDFView, rendered-text NSImageView, a terminal-style text view) ordered without activating
 // the app or becoming key.
 // Each pane is read by a child process of this binary through the real TextCapture and Locator: AX calls into one's own
 // process are answered in-process, where WebKit's remote web content has no role on the main thread and crashes off it,
@@ -99,16 +99,12 @@ enum SelfTestWindow {
         await screenshotTextCheck()
         await ocrHighlightCheck()
         if CommandLine.arguments.contains("--headless") {
-            record("Test window panes", nil, "--headless: visible Prompter window tests not run")
+            record("Test window panes", nil, "--headless: extended AX window tests not run")
             record("R5 node map", nil, "--headless: live Chromium/Electron app probe not run")
             record("Hidden text (Claude chat)", nil, "--headless: live Claude chat probe not run")
             record("Hidden text walk cost", nil, "--headless: live Claude, Chrome and Safari probe not run")
         } else {
-            if let screen = NSScreen.screens.first(where: { $0.localizedName.contains("Prompter") }) {
-                await windowChecks(on: screen)
-            } else {
-                record("Test window panes", nil, "not run: no screen named Prompter (Elgato Prompter XL) connected")
-            }
+            record("Test window panes", nil, "live-screen capture requires visible content; use the offscreen fixture checks")
             await chromiumProbe()
             hiddenTextProbe()
             hiddenTextCost()
@@ -476,15 +472,14 @@ enum SelfTestWindow {
         loaded = nil
     }
 
-    private func windowChecks(on screen: NSScreen) async {
+    private func windowChecks() async {
         let directory = URL(fileURLWithPath: "/private/tmp/talkread-wp4-selftest-\(getpid())", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 1100, height: 960))
-        let frame = NSRect(x: screen.visibleFrame.minX + 40, y: screen.visibleFrame.maxY - 1000, width: 1100, height: 960)
+        let frame = NSRect(x: 0, y: 0, width: 1100, height: 960)
         let window = Panel(contentRect: frame, styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: true)
-        window.setFrame(frame, display: false)   // a titled panel's init moves a frame on a second screen onto the main one
         window.title = "Talk & Read self-test"
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
@@ -537,10 +532,6 @@ enum SelfTestWindow {
         await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
             loaded = done
             web.loadHTMLString("<html><body style=\"margin:12px;font:17px -apple-system;background:#fff;color:#000\"><p id=\"a\">\(SelfTestWindow.webParagraph)</p><p id=\"b\">\(SelfTestWindow.webParagraph)</p></body></html>", baseURL: nil)
-        }
-        guard window.screen == screen, screen.frame.contains(window.frame) else {
-            record("Test window panes", nil, "not run: the window could not be placed on \(screen.localizedName) (frame \(window.frame))")
-            return
         }
         window.orderFrontRegardless()
         defer { window.orderOut(nil); window.close(); NSApp.mainMenu = nil }
@@ -722,8 +713,8 @@ enum SelfTestWindow {
                    first: tokens.map { glyphRect(SelfTestWindow.ns($0.range, plus: terminalFirst.location)) })
 
         await wakeCheck("E8 wake, app with native text", bare: false)
-        await overlayCheck(window: window, screen: screen, word: textTruth[0], sentence: textTruth)
-        record("Test window never key", !window.isKeyWindow && !window.isMainWindow, "shown with orderFrontRegardless on \(screen.localizedName)")
+        await overlayCheck(window: window, word: textTruth[0], sentence: textTruth)
+        record("Test window never key", !window.isKeyWindow && !window.isMainWindow, "invisible with orderFrontRegardless")
     }
 
     /// Runs the client on one pane and scores its rects against the view's own glyph rects. Returns the client output.
@@ -767,7 +758,7 @@ enum SelfTestWindow {
         guard let executable = Bundle.main.executableURL else { return nil }
         let process = Process()
         process.executableURL = executable
-        process.arguments = ["--selftest-window", "--client", String(getpid()), pane, pasteboardName]
+        process.arguments = ["--agent-screen", "--selftest-window", "--client", String(getpid()), pane, pasteboardName]
         let pipe = Pipe()
         process.standardOutput = pipe
         guard (try? process.run()) != nil else { return nil }
@@ -845,7 +836,7 @@ enum SelfTestWindow {
 
     // MARK: Overlay (R4: never takes clicks, never key; no panel while idle; H2: pinned to the window being read)
 
-    private func overlayCheck(window: NSWindow, screen: NSScreen, word: CGRect, sentence: [CGRect]) async {
+    private func overlayCheck(window: NSWindow, word: CGRect, sentence: [CGRect]) async {
         let overlay = Overlay(style: Overlay.Style())
         overlay.source = CGWindowID(window.windowNumber)
         var followed = false, above = false
@@ -863,7 +854,7 @@ enum SelfTestWindow {
         try? await Task.sleep(for: .milliseconds(400))
         overlay.hide()
         record("Overlay panel", followed && flags && above && placed && overlay.panel == nil,
-               "on \(screen.localizedName), directly above the test window: \(above); click-through, never key/main, nonactivating, the window's level, one Space: \(flags); box on the word: \(placed); closed at hide: \(overlay.panel == nil)")
+               "invisible, directly above the test window: \(above); click-through, never key/main, nonactivating, the window's level, one Space: \(flags); box on the word: \(placed); closed at hide: \(overlay.panel == nil)")
     }
 
     static func overlayFlags(_ p: NSPanel) -> Bool {
@@ -935,7 +926,7 @@ enum SelfTestWindow {
         guard let executable = Bundle.main.executableURL else { return }
         let process = Process()
         process.executableURL = executable
-        process.arguments = ["--selftest-window", "--client", String(getpid()), "pinsource", pasteboardName]
+        process.arguments = ["--agent-screen", "--selftest-window", "--client", String(getpid()), "pinsource", pasteboardName]
         let input = Pipe(), output = Pipe()
         (process.standardInput, process.standardOutput) = (input, output)
         guard (try? process.run()) != nil else { record("Pinned overlay (H2)", false, "the source process did not start"); return }
@@ -955,6 +946,14 @@ enum SelfTestWindow {
         let axWindow = (axAttribute(AXUIElementCreateApplication(pid), kAXWindowsAttribute) as? [AXUIElement])?.first
         let overlay = Overlay(style: Overlay.Style())
         overlay.source = WindowPin.windowID(pid: pid, axFrame: axWindow.flatMap(axFrame))
+        // The fixture is transparent for Junior, but this test exercises pinning to an opaque source.
+        // Keep the real window-server geometry/order; change only the fixture's alpha in the test input.
+        func fixtureSnapshot() -> [WindowInfo] {
+            WindowPin.snapshot(above: sid).map { w in
+                WindowInfo(id: w.id, pid: w.pid, layer: w.layer, bounds: w.bounds,
+                           onScreen: w.onScreen, alpha: w.pid == pid ? 1 : w.alpha)
+            }
+        }
         func order() -> [CGWindowID] { WindowPin.snapshot(above: sid).map(\.id) }   // front to back, the source last
         func pinned() -> Bool {
             guard let panel = overlay.panel else { return false }
@@ -965,7 +964,7 @@ enum SelfTestWindow {
         func follow() async -> Bool {
             var ok = false
             for _ in 0..<2 where !ok {
-                guard overlay.follow() else { break }
+                guard overlay.follow(snapshot: fixtureSnapshot()) else { break }
                 try? await Task.sleep(for: .milliseconds(60))
                 ok = pinned()
             }
@@ -1008,7 +1007,7 @@ enum SelfTestWindow {
             && near(box(), before?.offsetBy(dx: 100, dy: -40) ?? .null)
 
         _ = await send("hide")   // to the window server, minimised, hidden and on another Space all look like this
-        let hidden = !overlay.follow() && overlay.panel == nil
+        let hidden = !overlay.follow(snapshot: fixtureSnapshot()) && overlay.panel == nil
         steps["window off screen: no panel"] = hidden
         _ = await send("show")
         steps["window back: new panel, word shown"] = await follow() && box() != nil
@@ -1031,7 +1030,7 @@ enum SelfTestWindow {
         overlay.style.shape = .box
 
         // Cost per reading tick with the panel in place: the pin (one window-server query) and the drawing.
-        let followUs = Self.microseconds(300) { _ = overlay.follow() }
+        let followUs = Self.microseconds(300) { _ = overlay.follow(snapshot: fixtureSnapshot()) }
         let showUs = Self.microseconds(300) { overlay.show(word: moved, sentence: [moved]) }
 
         overlay.hide()

@@ -124,7 +124,8 @@ local_feed "$E2E/rel-down/appcast.xml" "$E2E/site/down.xml"
 sed -E 's/sparkle:edSignature="[^"]+"/sparkle:edSignature="'"$(head -c 64 /dev/zero | base64)"'"/' "$E2E/site/appcast.xml" > "$E2E/site/bad.xml"
 
 run_old() {   # <log name> <feed file> [more arguments]
-  TALKREAD_HOME="$E2E/home" "$OLD/Contents/MacOS/TalkRead" --selftest-update "http://127.0.0.1:$PORT/$2" "${@:3}" > "$E2E/$1.log" 2>&1 || true
+  TALKREAD_HOME="$E2E/home" "$OLD/Contents/MacOS/TalkRead" --agent-screen --selftest-update "http://127.0.0.1:$PORT/$2" "${@:3}" > "$E2E/$1.log" 2>&1 &
+  wait $! || true
 }
 manifest() {   # every directory, file (sha256 and mode) and link (target) in a bundle
   ( cd "$1" && find . -print0 | sort -z | while IFS= read -r -d '' f; do

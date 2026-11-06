@@ -60,9 +60,9 @@ import TalkReadCore
 
     /// Puts the panel on the source window: closed when the window is off screen, else sized to it and ordered directly
     /// above it when anything moved it out of place. One window-server query; returns whether the window is on screen.
-    @discardableResult func follow() -> Bool {
+    @discardableResult func follow(snapshot: [WindowInfo]? = nil) -> Bool {
         guard let source else { closePanel(); return false }
-        guard case .shown(let bounds, let layer, let order) = WindowPin.placement(WindowPin.snapshot(above: source), source: source,
+        guard case .shown(let bounds, let layer, let order) = WindowPin.placement(snapshot ?? WindowPin.snapshot(above: source), source: source,
                                                                                  panel: panel.map { CGWindowID($0.windowNumber) })
         else {
             closePanel()   // a new panel joins whatever Space the window is on when it comes back

@@ -206,7 +206,7 @@ st() {   # st NAME SECONDS ARGS...: one self-test run in its own disposable data
   local home=$ROOT/home/$name t0=$EPOCHREALTIME
   rm -rf -- "$home"; mkdir -p "$home"
   (( GPU )) && [[ $name == g-* && -d $BATCH_DIR/home/Models ]] && /bin/cp -cR "$BATCH_DIR/home/Models" "$home/Models"
-  ( cd "$FX" && exec env TALKREAD_HOME="$home" TALKREAD_SHOTS="$OUT/shots-$name" "${NETDENY[@]}" "$EXE" "$@" ) >"$OUT/$name.txt" 2>"$OUT/$name.err" &
+  ( cd "$FX" && exec env TALKREAD_HOME="$home" TALKREAD_SHOTS="$OUT/shots-$name" "${NETDENY[@]}" "$EXE" --agent-screen "$@" ) >"$OUT/$name.txt" 2>"$OUT/$name.err" &
   local pid=$! wd; wd=$(watchdog $pid $secs)
   wait $pid; print -r -- $? > "$OUT/$name.rc"
   kill $wd 2>/dev/null; pkill -P $wd 2>/dev/null
@@ -221,7 +221,7 @@ control_run() {   # the control self-test, with the CLI and the MCP adapter aske
     mcpapp=$ROOT/mcpapp; rm -rf "$mcpapp"; mkdir -p "$mcpapp/Contents/Resources/mcp"
     /bin/cp "$SRC/mcp/talkread-mcp.mjs" "$mcpapp/Contents/Resources/mcp/"; /bin/cp "$SRC/Resources/Info.plist" "$mcpapp/Contents/Info.plist"
   fi
-  ( cd "$FX" && exec env TALKREAD_HOME="$home" "${NETDENY[@]}" "$EXE" --selftest-control ) >"$OUT/control.txt" 2>"$OUT/control.err" &
+  ( cd "$FX" && exec env TALKREAD_HOME="$home" "${NETDENY[@]}" "$EXE" --agent-screen --selftest-control ) >"$OUT/control.txt" 2>"$OUT/control.err" &
   local pid=$! wd i; wd=$(watchdog $pid 420)
   for i in {1..9000}; do [[ -S $home/control.sock ]] && break; kill -0 $pid 2>/dev/null || break; sleep 0.01; done
   if [[ -S $home/control.sock ]]; then
@@ -246,6 +246,11 @@ lane_speech() {   # timing-sensitive speech runs, one at a time
   st switchfake 200 --selftest-tts $F --switch --fake
 }
 lane_app() {
+  st invisible 30 --selftest-invisible-windows
+  st menus 30 --selftest-ui-commands
+  st storage 60 --selftest-storage
+  st reader 60 --selftest-reader-performance
+  st window 120 --selftest-window --headless
   st import 150 --selftest-import Tests/Fixtures/documents
   st ui 300 --selftest-ui-snapshots
   control_run
@@ -282,7 +287,14 @@ rc() { cat "$OUT/$1.rc" 2>/dev/null || print 999; }
 crash() { local k=$1 name=$2; fail $k "$name run produced no verdict (exit $(rc $name): $(tail -1 "$OUT/$name.err" 2>/dev/null | cut -c1-100))"; }
 
 rules() {
-  local f line v w n
+  local f line v w n name
+
+  for name in invisible menus storage reader window; do
+    if R $name; then
+      if [[ $(rc $name) == 0 ]]; then pass E4 "$name headless self-test passed"
+      else fail E4 "$name headless self-test failed (exit $(rc $name))"; fi
+    fi
+  done
 
   # ---- long read, R10 and R1
   if R long; then
@@ -487,7 +499,7 @@ if [[ -f $BATCH_DIR/home/Models/breeze-tts-2-8bit/LICENSE && -f $BATCH_DIR/home/
 fi
 if (( ${#NETDENY} )) && (( ! STATIC_ONLY )); then
   clean=1
-  for name in long en25 en2 en4 emma fr fake switchfake import ui control asr; do [[ -f $OUT/$name.rc ]] || continue; [[ $(<"$OUT/$name.rc") == 0 ]] || clean=0; done
+  for name in long en25 en2 en4 emma fr fake switchfake invisible menus storage reader window import ui control asr; do [[ -f $OUT/$name.rc ]] || continue; [[ $(<"$OUT/$name.rc") == 0 ]] || clean=0; done
   (( clean )) && pass E5 "every self-test passed with outbound IP traffic denied (models were already on disk, nothing needed the network)" \
               || nrun E5 "a run failed under the network deny: see its .err file before reading this as a network use (rerun with --no-netdeny to compare)"
 else
@@ -495,13 +507,13 @@ else
 fi
 
 # Lines that only Junior can settle (what the headless runs could and could not show is kept beside each)
-owe R4 "word box on the spoken word in NSTextView, WKWebView, PDFView test windows: \`TalkRead --selftest-window\` opens a window on the Prompter XL, so the checker does not run it"
+owe R4 "word box on the spoken word in NSTextView, WKWebView, PDFView test windows: \`TalkRead --agent-screen --selftest-window --headless\` checks offscreen fixtures; live-screen capture remains manual"
 owe R5 "Chromium/Electron highlight through the AX node map (a read in Chrome or Claude)"
 owe R6 "OCR boxes in a window with no AX text, and the no-prompt-loop path (Screen Recording)"
 owe R7 "every pasteboard item restored through the capture and insert paths (--selftest-window)"
 owe R8 "mini player clicks, auto-hide, remembered position"
 owe R12 "the drag over a screen region (⌃⌥⌘X)"
-owe T3 "text lands in NSTextField and a web textarea (--selftest-asr --insert opens a panel on the Prompter XL)"
+owe T3 "text lands in NSTextField and a web textarea (--selftest-asr --insert uses an invisible panel)"
 owe T4 "the pill on screen, Esc cancelling a live recording"
 owe T6 "⌃⌘V paste last, copy from history"
 owe E4 "the real first launch: permission prompts, model download sizes and progress"
