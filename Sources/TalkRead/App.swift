@@ -114,6 +114,7 @@ enum TalkReadMain {
             }
             return
         }
+        Watchdog.start()
         // Sparkle: checks at launch and daily; installs only after the user agrees in its window. Off without SUFeedURL.
         Updates.shared.start()
         NSApp.mainMenu = Self.mainMenu(delegate: self)

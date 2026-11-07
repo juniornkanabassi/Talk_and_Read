@@ -2,6 +2,7 @@
 // Ownership (PLAN decision 19): one owner from `start` until the utterance is inserted, cancelled or failed; another
 // control caller gets `busy` unless it forces; the human (hotkeys, pill, GUI: caller "user") always wins.
 import AppKit
+import ObjCExceptionCatch
 import AVFoundation
 import TalkReadCore
 
@@ -408,16 +409,15 @@ enum DictationError: LocalizedError, Equatable {
     /// The spell checker's dictionaries for the dictation's languages, so a French word ("chaise") is not taken for a near
     /// miss either. Looked up once per dictation.
     static func dictionaries(for languages: [String]) -> [String] {
-        let available = NSSpellChecker.shared.availableLanguages
+        var available: [String] = []
+        _ = TRCatchException { available = NSSpellChecker.shared.availableLanguages }   // see BritishSpelling.spelledRight
         return languages.flatMap { code -> [String] in
             code == "en" ? ["en_GB", "en_US"] : available.filter { $0 == code || $0.hasPrefix(code + "_") }
         }
     }
 
     static func isCommonWord(_ word: String, dictionaries: [String]) -> Bool {
-        dictionaries.contains {
-            NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0, language: $0, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
-        }
+        dictionaries.contains { BritishSpelling.spelledRight(word.lowercased(), $0) == true }
     }
 
     private func vocabulary() -> [String: String] {

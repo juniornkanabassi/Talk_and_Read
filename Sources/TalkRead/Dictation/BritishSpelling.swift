@@ -3,6 +3,7 @@
 // -ize → -ise, -yze → -yse, -er → -re, -ense → -ence, -l- → -ll-, -ll → -l) when the British dictionary accepts the
 // result. Words it cannot place by a pattern ("gray") are left alone; web and email addresses are skipped.
 import AppKit
+import ObjCExceptionCatch
 import TalkReadCore
 
 enum BritishSpelling {
@@ -23,19 +24,29 @@ enum BritishSpelling {
             .map { $0.language == "en" ? apply(String($0.text), keepingWordsOf: others) : String($0.text) }.joined()
     }
 
-    @MainActor static func apply(_ text: String, keepingWordsOf others: [String] = []) -> String {
-        let checker = NSSpellChecker.shared
-        func accepted(_ word: String, _ language: String) -> Bool {
-            checker.checkSpelling(of: word, startingAt: 0, language: language, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
+    /// Whether the system dictionary for `language` accepts `word`; nil when the spell server did not answer. It raises
+    /// NSXPCSpellServerTimeoutException then, and an exception unwinding through Swift and SwiftUI froze the app for
+    /// good (work Mac, 7 Nov 2026).
+    @MainActor static func spelledRight(_ word: String, _ language: String) -> Bool? {
+        var found = NSNotFound
+        let failed = TRCatchException {
+            found = NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0, language: language, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location
         }
+        return failed == nil ? found == NSNotFound : nil
+    }
+
+    @MainActor static func apply(_ text: String, keepingWordsOf others: [String] = []) -> String {
+        let accepted = spelledRight
         guard let regex = try? NSRegularExpression(pattern: "(?<![\\p{L}@./])[A-Za-z]{4,}(?![\\p{L}@/]|\\.[A-Za-z])") else { return text }
         let out = NSMutableString(string: text)
         for m in regex.matches(in: text, range: NSRange(location: 0, length: out.length)).reversed() {
             let word = out.substring(with: m.range)
-            guard !accepted(word, "en_GB"), accepted(word, "en_US"), !others.contains(where: { accepted(word, $0) }) else { continue }
+            // An unanswered check (nil) leaves the word as dictated.
+            guard accepted(word, "en_GB") == false, accepted(word, "en_US") == true,
+                  !others.contains(where: { accepted(word, $0) != false }) else { continue }
             for (pattern, template) in patterns {
                 let british = word.replacingOccurrences(of: pattern, with: template, options: [.regularExpression, .caseInsensitive])
-                if british != word, accepted(british, "en_GB") { out.replaceCharacters(in: m.range, with: british); break }
+                if british != word, accepted(british, "en_GB") == true { out.replaceCharacters(in: m.range, with: british); break }
             }
         }
         return out as String
