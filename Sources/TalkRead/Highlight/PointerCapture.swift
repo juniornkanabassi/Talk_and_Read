@@ -379,7 +379,7 @@ enum PointerCapture {
                                                      root: area, selection: nil)
             }
             var cut = TextCapture.withoutHiddenText(c, root: area, selection: (range as! AXTextMarkerRange))
-            if message != nil { cut.text = ReadHere.withoutTrailingTimestamp(cut.text) }   // the T3 message's time under it ("22:48")
+            if message != nil { cut.text = ReadHere.withoutT3Tail(cut.text) }   // the T3 message's time under it ("22:48")
             return cut
         }
         // No text markers: the page's text nodes from the block on, in document order.
@@ -389,7 +389,7 @@ enum PointerCapture {
             return (node.text, f.map { Double($0.minY) }, f.map { Double($0.maxY) }, f.map { Double($0.minX) }, f.map { Double($0.maxX) })
         })
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        let ns = (message != nil ? ReadHere.withoutTrailingTimestamp(text) : text) as NSString
+        let ns = (message != nil ? ReadHere.withoutT3Tail(text) : text) as NSString
         let clipped = ns.length > maxText ? ns.substring(with: ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: maxText))) : ns as String
         // No markers to place hidden nodes with: in Claude's chat the text-only net still drops its headings.
         return TextCapture.withoutHiddenText(Capture(text: clipped, pid: block.pid, element: block.element, window: window, selectionStart: nil, source: .pointer),

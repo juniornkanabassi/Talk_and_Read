@@ -68,6 +68,9 @@ final class ReadHereTests: XCTestCase {
         XCTAssertEqual(ReadHere.withoutTrailingTimestamp("22:48"), "22:48")
         XCTAssertEqual(ReadHere.withoutTrailingTimestamp("I saved this plan.\u{FFFC}\u{FFFC}4:17\u{FFFC}\u{FFFC}\u{FFFC}Scroll to end\u{FFFC}"), "I saved this plan.")
         XCTAssertEqual(ReadHere.withoutTrailingTimestamp("Press Copy"), "Press Copy", "a word in the sentence stays")
+        XCTAssertEqual(ReadHere.withoutT3Tail("Run it again.3 changed files\u{FFFC}\u{FFFC}Open diffResources\u{FFFC}Sources/VideoPrompter/Presenter"), "Run it again.")
+        XCTAssertEqual(ReadHere.withoutT3Tail("I fixed 3 changed files in the tests."), "I fixed 3 changed files in the tests.", "prose stays")
+        XCTAssertEqual(ReadHere.withoutT3Tail("Done.\u{FFFC}\u{FFFC}4:17"), "Done.")
     }
 
     func testJoinKeepsLinesTogetherAndParagraphsApart() {

@@ -77,6 +77,15 @@ public enum ReadHere {
     }
 
     /// `text` without a last line that is only a time or date ("22:48", "3 min ago"): a chat message's timestamp.
+    /// A T3 Code message as read: without the changed-files bar under an agent's last reply ("…again.3 changed files￼￼Open
+    /// diffResources￼Sources/…", Junior, 7 Nov 2026), its time and its buttons.
+    public static func withoutT3Tail(_ text: String) -> String {
+        let ns = text as NSString
+        let bar = changedFiles.matches(in: text, range: NSRange(location: 0, length: ns.length)).last
+        return withoutTrailingTimestamp(bar.map { ns.substring(to: $0.range.location) } ?? text)
+    }
+    private static let changedFiles = try! NSRegularExpression(pattern: "\\d+ changed files?\\s*\u{FFFC}")
+
     public static func withoutTrailingTimestamp(_ text: String) -> String {
         // The time may follow a line break or a run of button placeholders (U+FFFC: T3 Code "…left them.￼￼23:01").
         func junk(_ c: Character) -> Bool { c.isWhitespace || c == "\u{FFFC}" || c == "\u{FFFD}" }
