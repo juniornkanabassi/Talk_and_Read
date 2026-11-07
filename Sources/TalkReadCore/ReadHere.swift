@@ -93,7 +93,9 @@ public enum ReadHere {
         let kept = text[..<end]   // the head is left exactly as captured
         guard let lastBreak = kept.lastIndex(where: { $0.isNewline || $0 == "\u{FFFC}" || $0 == "\u{FFFD}" }) else { return text }
         let tail = String(kept[kept.index(after: lastBreak)...]).trimmingCharacters(in: .whitespaces)
-        guard HiddenText.isTimestamp(tail) || trailingButtons.contains(tail) else { return text }
+        // A button label counts only after a control placeholder; after a line break it may be the message's own last word.
+        let control = kept[lastBreak] != "\n" && !kept[lastBreak].isNewline
+        guard HiddenText.isTimestamp(tail) || control && trailingButtons.contains(tail) else { return text }
         let cut = kept[..<lastBreak]
         // Again: T3 puts the time before its floating "Scroll to end" button ("…MEMORY.md.￼￼4:17￼￼￼Scroll to end￼").
         return withoutTrailingTimestamp(String(cut[..<(cut.lastIndex(where: { !junk($0) }).map(cut.index(after:)) ?? cut.startIndex)]))

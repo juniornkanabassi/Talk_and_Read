@@ -426,7 +426,8 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     static func isCommonWord(_ word: String, dictionaries: [String]) -> Bool {
-        dictionaries.contains { BritishSpelling.spelledRight(word.lowercased(), $0) == true }
+        // An unanswered check counts as a word: near-miss correction must not turn "contact" into a vocabulary "contract".
+        dictionaries.contains { BritishSpelling.spelledRight(word.lowercased(), $0) != false }
     }
 
     private func vocabulary() -> [String: String] {

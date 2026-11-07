@@ -17,6 +17,9 @@ enum Watchdog {
     static func start() {
         let thread = Thread {
             var memoryAt: TimeInterval = 0
+            // Since when this thread has run without a gap: a suspended process (App Nap, a debugger) stops it too, and
+            // the main thread's heartbeat then needs a moment after the resume before silence means anything.
+            var watching = ProcessInfo.processInfo.systemUptime, last = watching
             while true {
                 let asked = ProcessInfo.processInfo.systemUptime
                 DispatchQueue.main.async {
@@ -26,12 +29,22 @@ enum Watchdog {
                 }
                 Thread.sleep(forTimeInterval: 1)
                 let now = ProcessInfo.processInfo.systemUptime
-                if now - lock.withLock({ beat }) > limit { restart(after: now - lock.withLock { beat }) }
+                if now - last > 3 { watching = now }
+                last = now
+                let silent = now - lock.withLock { beat }
+                if silent > limit, now - watching > limit, !debugged() { restart(after: silent) }
                 if now - memoryAt >= 900 { memoryAt = now; Log.write("memory: \(memory())") }
             }
         }
         thread.name = "Talk & Read watchdog"
         thread.start()
+    }
+
+    /// A debugger stops the main thread on purpose.
+    private static func debugged() -> Bool {
+        var info = kinfo_proc(), size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        return sysctl(&mib, 4, &info, &size, nil, 0) == 0 && info.kp_proc.p_flag & P_TRACED != 0
     }
 
     /// "app 412 MB, swap 4871 MB used of 6144, free pages 3 %".

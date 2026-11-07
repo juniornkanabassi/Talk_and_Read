@@ -160,7 +160,7 @@ import TalkReadCore
         var visited = 0
         // A partial map is fine (the next rebuild, a second later, continues from the spoken word); a frozen read is not.
         let deadline = ContinuousClock.now + .seconds(1)
-        while let (node, parentChrome, parentInside, parentWeb) = stack.popLast(), visited < 8000, visited % 64 != 0 || ContinuousClock.now < deadline {
+        while let (node, parentChrome, parentInside, parentWeb) = stack.popLast(), visited < 8000, ContinuousClock.now < deadline {
             visited += 1
             let children = axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]
             let role = axAttribute(node, kAXRoleAttribute) as? String

@@ -161,7 +161,8 @@ import TalkReadCore
         producer?.cancel()
         ticker?.cancel()
         player.reset()
-        if state != .finished { logEnd("stopped"); state = .finished }
+        if [.preparing, .playing, .paused].contains(state) { logEnd("stopped") }   // a failed read has logged already
+        if state != .finished { state = .finished }
     }
 
     /// One line per read in talkread.log, so a bad day on one Mac can be read back afterwards (Junior, 7 Nov 2026).
