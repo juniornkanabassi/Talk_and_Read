@@ -36,7 +36,8 @@
 #   changed meanwhile) and prints the lib/apps.json release object. Refused if a full release with a higher build is
 #   already in the feed (Sparkle would never offer this one): publish a new build instead.
 # --withdraw <version>: remove that item from the appcast so the feed stops offering it. Sparkle cannot roll anyone
-#   back: copies that already installed it keep it until a newer build is published. Never reuse its build number.
+#   back: copies that already installed it keep it until a newer build is published. A comment, <!-- withdrawn build N -->,
+#   stays in the feed so no later release (or promote) can reuse build N or a lower one.
 #   The GitHub release is left alone (mark it a prerelease or draft by hand).
 # --resume --zip <the zip it published>: finish a release a failed run left behind (never rebuilds): an existing
 #   release and tag are reused only when they match (each asset, if present, must be this file byte for byte; the tag
@@ -63,7 +64,7 @@ while (( $# )); do case $1 in
   --zip) ZIP=${2:-}; shift 2;;
   --dmg) DMG=${2:-}; shift 2;;
   --out) OUT=${2:-}; shift 2;;
-  -h|--help) sed -n 2,46p "$0"; exit 0;;
+  -h|--help) sed -n 2,47p "$0"; exit 0;;
   *) die "unknown argument $1 (see --help)";; esac; done
 [[ -n $WEBSITE && -f $WEBSITE/lib/apps.json ]] || die "--website must be the website checkout (no lib/apps.json in '$WEBSITE')"
 if [[ -n $PROMOTE$WITHDRAW ]]; then
@@ -160,9 +161,12 @@ if [[ -n $PROMOTE$WITHDRAW ]]; then
     DMG_BYTES=$(stat -f %z "$DMG") DMG_SHA=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
     $APPCAST_PY promote "$APPCAST" "$WORK/appcast.xml" "$VERSION" || die "could not prepare the appcast"
     if (( DRY )); then
-      print "dry run, not run: gh release edit v$VERSION --prerelease=false --repo $GHREPO"
+      print "dry run, not run: gh release edit v$VERSION --prerelease=false --latest --repo $GHREPO"
     else
-      gh release edit "v$VERSION" --repo $GHREPO --prerelease=false || die "could not mark v$VERSION a full release (rerun --promote $VERSION)"
+      # Checked before the GitHub edit as well as before the write below, so a feed that changed meanwhile leaves the release a prerelease.
+      [[ $(digest "$APPCAST") == $SEEN ]] || die "$APPCAST changed while this ran; nothing was changed, rerun it"
+      # Promote only runs when no higher full build is in the feed, so this one is the newest: say so, rather than leave "Latest" to GitHub.
+      gh release edit "v$VERSION" --repo $GHREPO --prerelease=false --latest || die "could not mark v$VERSION a full release (rerun --promote $VERSION)"
       [[ $(gh release view "v$VERSION" --repo $GHREPO --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"') == "false false" ]] \
         || die "v$VERSION on $REPO is still a prerelease or draft (rerun --promote $VERSION)"
     fi

@@ -217,7 +217,7 @@ cmp -s "$FEED" "$E2E/rel-mixed/appcast.xml" || no "a dry run changed the website
 diff <(grep -v 'sparkle:channel' "$E2E/rel-mixed/appcast.xml") "$E2E/promote-dry/appcast.xml" >/dev/null || no "--promote changed more than the channel line"
 promote promote-real || { cat "$E2E/promote-real.log"; no "release.sh --promote"; }
 has promote-real "\"version\": \"$BETA_V\""
-grep -q -- '--prerelease=false' "$GH_STUB_LOG" || no "the GitHub release was not marked a full release"
+grep -q -- '--prerelease=false --latest' "$GH_STUB_LOG" || no "the GitHub release was not marked a full, latest release"
 cmp -s "$FEED" "$E2E/promote-dry/appcast.xml" || no "the website appcast is not the dry run's"
 if promote promote-again; then no "a second --promote was accepted"; fi
 has promote-again 'is not a beta'

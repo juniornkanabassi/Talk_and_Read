@@ -45,6 +45,16 @@ $PY withdraw $T/2.xml $T/5.xml 1.1.0 >/dev/null; /usr/bin/xmllint --noout $T/5.x
 fails "expected exactly one" $PY withdraw $T/2.xml $T/x.xml 9.9.9
 ok "withdraw: removes that item only; an unknown version is refused"
 
+# A withdrawn build stays reserved: a later release may not reuse it, and a lower beta may not be promoted past it.
+grep -q 'withdrawn build 11' $T/5.xml || no "withdraw left no marker"
+fails "must be greater than every build in the appcast (highest 11, withdrawn)" add $T/5.xml $T/x.xml 1.1.1 11
+fails "must be greater" add $T/5.xml $T/x.xml 1.1.1 10
+add $T/5.xml $T/6.xml 1.1.1 12 >/dev/null; /usr/bin/xmllint --noout $T/6.xml; grep -q 'withdrawn build 11' $T/6.xml || no "the marker was lost"
+add $T/1.xml $T/7.xml 1.1.0 11 0 beta >/dev/null; add $T/7.xml $T/8.xml 1.2.0 12 0 beta >/dev/null
+$PY withdraw $T/8.xml $T/9.xml 1.2.0 >/dev/null
+fails "withdrawn build 12" $PY promote $T/9.xml $T/x.xml 1.1.0
+ok "a withdrawn build number cannot be reused, and a lower beta cannot be promoted past it"
+
 # Malformed or unreadable feeds stop it.
 print -- '<rss' > $T/bad.xml
 fails "" add $T/bad.xml $T/x.xml 2.0.0 20

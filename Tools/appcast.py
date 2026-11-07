@@ -71,6 +71,12 @@ def items(text):
     return out
 
 
+def withdrawn(feed):
+    """Builds `withdraw` took out. A comment is the one thing that survives in the feed (outside every item, so a note in
+    an item's text never counts); no later build may reuse one, or copies that installed it would never be offered the fix."""
+    return [int(b) for b in re.findall(r"<!--\s*withdrawn build (\d+)\s*-->", re.sub(BLOCK, "", feed, flags=re.S))]
+
+
 def read(path, missing_ok=False):
     if missing_ok and not os.path.exists(path):
         return NEW_FEED
@@ -108,11 +114,12 @@ def add(source, path, version, build, url, length, sig, notes, resume, min_macos
     blocks = re.findall(BLOCK, feed, re.S)
     if len(blocks) != len(known):
         sys.exit("the appcast's items cannot be matched to its text one to one")
-    top = max((b for b, _, _ in known), default=0)
+    gone = withdrawn(feed)
+    top = max([b for b, _, _ in known] + gone, default=0)
     mine = [k for k in known if k[:2] == (top, version)]
     resumed = int(build) == top and resume == "1" and bool(mine)
     if int(build) <= top and not resumed:
-        sys.exit(f"build {build} must be greater than every build in the appcast (highest {top}); equal only with --resume for the same version")
+        sys.exit(f"build {build} must be greater than every build in the appcast (highest {top}{', withdrawn' if top in gone else ''}); equal only with --resume for the same version")
     if resumed:
         if mine[0][2] != (chan or None):   # never turn a promoted item back into a beta, or a beta into a full release
             sys.exit(f"the appcast's item for {version} is {'a beta' if mine[0][2] else 'a full release'}; --resume must say the same (--promote changes a beta into a full release)")
@@ -147,9 +154,10 @@ def promote(source, path, version):
     if chan != "beta":
         sys.exit(f"the appcast's item for {version} is not a beta: nothing to promote")
     # Sparkle offers the highest build in the allowed channels, so a full release above this one would hide it from everyone.
-    newer = [b for b, _, c in known if c is None and b > build]
+    # A withdrawn build counts too: copies that installed it are above this one as well.
+    newer = [b for b, _, c in known if c is None and b > build] + [b for b in withdrawn(feed) if b > build]
     if newer:
-        sys.exit(f"a full release with build {max(newer)} is already in the feed, above build {build}: installed copies of it would never be offered {version}. Publish a new build instead")
+        sys.exit(f"a full release or withdrawn build {max(newer)} is already above build {build}: installed copies of it would never be offered {version}. Publish a new build instead")
     block = re.sub(r"[ \t]*<sparkle:channel>\s*beta\s*</sparkle:channel>[ \t]*\n?", "", blocks[i], count=1)
     out = feed.replace(blocks[i], block, 1)
     want = [(b, v, None if k == i else c) for k, (b, v, c) in enumerate(known)]
@@ -162,11 +170,12 @@ def promote(source, path, version):
 def withdraw(source, path, version):
     feed = read(source)
     known, blocks, i = locate(feed, version)
-    out = feed.replace(blocks[i], "", 1)
-    if items(out) != known[:i] + known[i + 1:]:
+    build = known[i][0]
+    out = feed.replace(blocks[i], f"    <!-- withdrawn build {build} -->\n", 1)
+    if items(out) != known[:i] + known[i + 1:] or build not in withdrawn(out):
         sys.exit("the item could not be removed cleanly")
     open(path, "w", encoding="utf-8").write(out)
-    print(f"Withdrew {version} (build {known[i][0]}); prepared at {path}. Never reuse build {known[i][0]} or a lower one")
+    print(f"Withdrew {version} (build {build}); prepared at {path}. A comment in the feed keeps build {build} and lower from being reused")
 
 
 def enclosure(source, version):
