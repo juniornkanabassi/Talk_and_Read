@@ -7,8 +7,10 @@ import TalkReadCore
     static func run() async -> Int32 {
         setvbuf(stdout, nil, _IOLBF, 0)
         if CommandLine.arguments.contains("--corrupt-cache") { return await corruptCache() }
-        guard !NeuralEngine.modelInstalled(), !Transcriber.isDownloaded else {
-            print("FAIL model-downloads: use an unseeded disposable HOME and TALKREAD_HOME")
+        // The installed-state fixture writes into this HOME's model caches, so it must be disposable.
+        guard let user = ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"], TalkReadMain.isDisposableHome(user),
+              !NeuralEngine.modelInstalled(), !Transcriber.isDownloaded else {
+            print("FAIL model-downloads: use an unseeded disposable HOME, CFFIXED_USER_HOME and TALKREAD_HOME")
             return 2
         }
         let model = AppModel.shared

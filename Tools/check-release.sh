@@ -357,6 +357,11 @@ rules() {
       else fail E4 "$name headless self-test failed (exit $(rc $name))"; fi
     fi
   done
+  if R storage; then   # D12: damaged vocabulary, pronunciations and dictation history are kept aside, never saved over
+    n=$(grep -c ' keeps damaged bytes unchanged$' "$OUT/storage.txt")
+    if [[ $(rc storage) == 0 && $n -ge 3 ]]; then pass D12 "storage self-test: $n damaged-file copies kept with their bytes unchanged (word lists, pronunciations, dictation history)"
+    else fail D12 "storage self-test: only $n damaged-file copies proven (exit $(rc storage))"; fi
+  fi
 
   # ---- long read, R10 and R1
   if R long; then
