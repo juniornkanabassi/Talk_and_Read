@@ -40,6 +40,8 @@ Select some text and press ⌃A to hear it, or hold left Option and click the pl
 
 Talk & Read checks for updates each time it opens and once a day while it runs, and shows you the release notes before anything changes. It installs an update only when you say yes, unless you tick the option to install updates automatically. Check for Updates… in the menu bar menu checks straight away.
 
+The checks can be turned off in Settings ▸ General ▸ Check for updates automatically (`talkread settings-set automaticUpdateChecks off`); Check for Updates… still works.
+
 Early builds come first to anyone who turns on Settings ▸ General ▸ Get beta updates (or runs `talkread settings-set betaUpdates on`). It is off by default, so nobody sees a beta unless they ask. Turning it off later does not go back to an earlier version; the next full release simply replaces the beta.
 
 ## Privacy

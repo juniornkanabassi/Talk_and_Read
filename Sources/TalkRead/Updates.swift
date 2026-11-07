@@ -32,6 +32,7 @@ import TalkReadCore
         guard Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil else { return }
         let c = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: self, userDriverDelegate: self)
         controller = c
+        c.updater.automaticallyChecksForUpdates = AppModel.shared.settings.automaticUpdateChecks   // Settings is the one source
         // Sparkle's scheduler alone waits out the rest of its 24 h after a relaunch; PLAN says launch and daily.
         if begin(c.updater), c.updater.automaticallyChecksForUpdates { c.updater.checkForUpdatesInBackground() }
     }

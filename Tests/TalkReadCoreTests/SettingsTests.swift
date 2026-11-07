@@ -50,6 +50,16 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(t.dictationEngine, "apple", "a rejected engine changes nothing")
     }
 
+    func testAutomaticUpdateChecks() throws {
+        XCTAssertTrue(Settings().automaticUpdateChecks, "checking stays on, as SUEnableAutomaticChecks ships")
+        var s = Settings()
+        try s.set("automaticUpdateChecks", to: "off"); XCTAssertFalse(s.automaticUpdateChecks)
+        try s.save(to: file); XCTAssertFalse(Settings.load(from: file).automaticUpdateChecks)
+        try Data(#"{"voiceID":"af_heart"}"#.utf8).write(to: file)
+        XCTAssertTrue(Settings.load(from: file).automaticUpdateChecks, "a file from before the setting stays on")
+        XCTAssertThrowsError(try s.set("automaticUpdateChecks", to: "maybe"))
+    }
+
     func testBetaUpdates() throws {
         XCTAssertFalse(Settings().betaUpdates, "beta updates are opt in")
         var s = Settings()
@@ -255,7 +265,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃A"))
         XCTAssertEqual(json["skipForwardShortcut"]?.objectValue, ["keyCode": .number(14), "modifiers": .number(524_288), "display": .string("⌥E")])
         XCTAssertNil(json["miniPlayerOrigin"])
-        XCTAssertEqual(Settings.keys.count, 44)   // + readHereShortcut, readHereKey, readHereHover, readHereHoverApps (1.0); + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + showHighlight, tintHex, skipCitations, skipHeadersAndFooters; + dictationLanguages; + betaUpdates
+        XCTAssertEqual(Settings.keys.count, 45)   // + readHereShortcut, readHereKey, readHereHover, readHereHoverApps (1.0); + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + showHighlight, tintHex, skipCitations, skipHeadersAndFooters; + dictationLanguages; + betaUpdates, automaticUpdateChecks
         XCTAssertNil(json["tintHex"], "the tint follows the word colour until one is chosen")
         XCTAssertEqual(json["skipCitations"], .bool(true))
         XCTAssertEqual(json["skipHeadersAndFooters"], .bool(true))

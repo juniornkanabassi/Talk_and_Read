@@ -142,6 +142,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var launchAtLogin = true
     /// Opt in: also offered updates the appcast tags `<sparkle:channel>beta</sparkle:channel>` (`Updates.allowedChannels`).
     public var betaUpdates = false
+    /// Sparkle's "Check for updates automatically" (launch and daily), on as SUEnableAutomaticChecks ships; `Updates` applies it.
+    public var automaticUpdateChecks = true
     public var onboardingDone = false
     public var historyLimit = 200
 
@@ -169,7 +171,7 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.skipCitations, &skipCitations); get(.skipHeadersAndFooters, &skipHeadersAndFooters)
         get(.removeFillers, &removeFillers); get(.paragraphs, &paragraphs); get(.polishWithAppleIntelligence, &polishWithAppleIntelligence)
         get(.dictationEngine, &dictationEngine); get(.dictationLanguages, &dictationLanguages); get(.learnCorrections, &learnCorrections); get(.britishSpelling, &britishSpelling)
-        get(.unloadAfterMinutes, &unloadAfterMinutes); get(.launchAtLogin, &launchAtLogin); get(.betaUpdates, &betaUpdates)
+        get(.unloadAfterMinutes, &unloadAfterMinutes); get(.launchAtLogin, &launchAtLogin); get(.betaUpdates, &betaUpdates); get(.automaticUpdateChecks, &automaticUpdateChecks)
         get(.onboardingDone, &onboardingDone); get(.historyLimit, &historyLimit)
     }
 
@@ -360,6 +362,7 @@ public struct Settings: Codable, Equatable, Sendable {
         case "unloadAfterMinutes": unloadAfterMinutes = Int(try number())
         case "launchAtLogin": launchAtLogin = try bool()
         case "betaUpdates": betaUpdates = try bool()
+        case "automaticUpdateChecks": automaticUpdateChecks = try bool()
         case "onboardingDone": onboardingDone = try bool()
         case "historyLimit": historyLimit = Int(try number())
         case "miniPlayerOrigin":

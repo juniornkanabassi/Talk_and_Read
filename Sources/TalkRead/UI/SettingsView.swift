@@ -85,11 +85,12 @@ struct SettingsContent: View {
                 Toggle("Open Talk & Read at login", isOn: $model.settings.launchAtLogin)
             }
             Section {
+                Toggle("Check for updates automatically", isOn: $model.settings.automaticUpdateChecks)
                 Toggle("Get beta updates", isOn: $model.settings.betaUpdates)
             } header: {
                 Text("Updates")
             } footer: {
-                Text("Early builds, offered before they reach everyone. They may have rough edges, and turning this off does not go back to an earlier version.").foregroundStyle(.secondary)
+                Text("Checking asks juniornkanabassi.com for the list of releases and sends no profile of your Mac. Beta builds are offered before they reach everyone, may have rough edges, and turning the option off does not go back to an earlier version.").foregroundStyle(.secondary)
             }
             Section("Mini player") {
                 Toggle("Show the mini player when reading", isOn: $model.settings.showMiniPlayer)

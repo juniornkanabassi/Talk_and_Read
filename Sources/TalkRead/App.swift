@@ -200,6 +200,7 @@ enum TalkReadMain {
         // Reloading recreates the event tap, so only shortcut changes do it (not every speed-slider step).
         if Self.keys(s) != Self.keys(old) || s.dictationHoldKey != old.dictationHoldKey || s.readHereKey != old.readHereKey { hotkeys?.reload(s) }
         if s.launchAtLogin != old.launchAtLogin { updateLoginItem(s.launchAtLogin) }
+        if s.automaticUpdateChecks != old.automaticUpdateChecks { Updates.shared.updater?.automaticallyChecksForUpdates = s.automaticUpdateChecks }
     }
 
     private static func keys(_ s: TalkReadCore.Settings) -> [TalkReadCore.Settings.Shortcut] {
