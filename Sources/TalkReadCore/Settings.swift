@@ -140,6 +140,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var britishSpelling = true
     public var unloadAfterMinutes = 10
     public var launchAtLogin = true
+    /// Opt in: also offered updates the appcast tags `<sparkle:channel>beta</sparkle:channel>` (`Updates.allowedChannels`).
+    public var betaUpdates = false
     public var onboardingDone = false
     public var historyLimit = 200
 
@@ -167,7 +169,7 @@ public struct Settings: Codable, Equatable, Sendable {
         get(.skipCitations, &skipCitations); get(.skipHeadersAndFooters, &skipHeadersAndFooters)
         get(.removeFillers, &removeFillers); get(.paragraphs, &paragraphs); get(.polishWithAppleIntelligence, &polishWithAppleIntelligence)
         get(.dictationEngine, &dictationEngine); get(.dictationLanguages, &dictationLanguages); get(.learnCorrections, &learnCorrections); get(.britishSpelling, &britishSpelling)
-        get(.unloadAfterMinutes, &unloadAfterMinutes); get(.launchAtLogin, &launchAtLogin)
+        get(.unloadAfterMinutes, &unloadAfterMinutes); get(.launchAtLogin, &launchAtLogin); get(.betaUpdates, &betaUpdates)
         get(.onboardingDone, &onboardingDone); get(.historyLimit, &historyLimit)
     }
 
@@ -357,6 +359,7 @@ public struct Settings: Codable, Equatable, Sendable {
         case "britishSpelling": britishSpelling = try bool()
         case "unloadAfterMinutes": unloadAfterMinutes = Int(try number())
         case "launchAtLogin": launchAtLogin = try bool()
+        case "betaUpdates": betaUpdates = try bool()
         case "onboardingDone": onboardingDone = try bool()
         case "historyLimit": historyLimit = Int(try number())
         case "miniPlayerOrigin":

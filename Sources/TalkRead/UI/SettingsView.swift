@@ -84,6 +84,13 @@ struct SettingsContent: View {
             Section {
                 Toggle("Open Talk & Read at login", isOn: $model.settings.launchAtLogin)
             }
+            Section {
+                Toggle("Get beta updates", isOn: $model.settings.betaUpdates)
+            } header: {
+                Text("Updates")
+            } footer: {
+                Text("Early builds, offered before they reach everyone. They may have rough edges, and turning this off does not go back to an earlier version.").foregroundStyle(.secondary)
+            }
             Section("Mini player") {
                 Toggle("Show the mini player when reading", isOn: $model.settings.showMiniPlayer)
                 Picker("Hide it after reading stops or pauses", selection: $model.settings.miniPlayerAutoHideSeconds) {

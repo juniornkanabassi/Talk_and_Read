@@ -50,6 +50,16 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(t.dictationEngine, "apple", "a rejected engine changes nothing")
     }
 
+    func testBetaUpdates() throws {
+        XCTAssertFalse(Settings().betaUpdates, "beta updates are opt in")
+        var s = Settings()
+        try s.set("betaUpdates", to: "on"); XCTAssertTrue(s.betaUpdates)
+        try s.save(to: file); XCTAssertTrue(Settings.load(from: file).betaUpdates)
+        try Data(#"{"voiceID":"af_heart"}"#.utf8).write(to: file)
+        XCTAssertFalse(Settings.load(from: file).betaUpdates, "a file from before the setting stays off")
+        XCTAssertThrowsError(try s.set("betaUpdates", to: "maybe"))
+    }
+
     func testDictationLanguages() throws {
         XCTAssertEqual(Settings().dictationLanguages, ["en"])
         XCTAssertFalse(Settings().dictatesMultilingual)
@@ -245,7 +255,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(json["readShortcut"]?.objectValue?["display"], .string("⌃A"))
         XCTAssertEqual(json["skipForwardShortcut"]?.objectValue, ["keyCode": .number(14), "modifiers": .number(524_288), "display": .string("⌥E")])
         XCTAssertNil(json["miniPlayerOrigin"])
-        XCTAssertEqual(Settings.keys.count, 43)   // + readHereShortcut, readHereKey, readHereHover, readHereHoverApps (1.0); + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + showHighlight, tintHex, skipCitations, skipHeadersAndFooters; + dictationLanguages
+        XCTAssertEqual(Settings.keys.count, 44)   // + readHereShortcut, readHereKey, readHereHover, readHereHoverApps (1.0); + dictationMicrophone (0.5.0); + dictationEngine, learnCorrections, britishSpelling (V-G); + paragraphs (0.6.0); + showHighlight, tintHex, skipCitations, skipHeadersAndFooters; + dictationLanguages; + betaUpdates
         XCTAssertNil(json["tintHex"], "the tint follows the word colour until one is chosen")
         XCTAssertEqual(json["skipCitations"], .bool(true))
         XCTAssertEqual(json["skipHeadersAndFooters"], .bool(true))

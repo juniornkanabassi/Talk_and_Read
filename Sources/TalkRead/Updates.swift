@@ -83,6 +83,9 @@ import TalkReadCore
 
     func allowedSystemProfileKeys(for updater: SPUUpdater) -> [String]? { [] }
 
+    /// Sparkle always offers untagged items; this adds the appcast's `beta` ones, only when Settings ▸ General says so.
+    func allowedChannels(for updater: SPUUpdater) -> Set<String> { AppModel.shared.settings.betaUpdates ? ["beta"] : [] }
+
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
         checkID = updateCheck == .updates ? reservedID ?? UUID().uuidString : UUID().uuidString
         (checking, reservedID, result) = (true, nil, nil)   // each check reports only its own outcome
