@@ -119,7 +119,7 @@ extension AppModel {
             let id = try validVoice(raw)
             try claim(r)
             setVoice(id)
-            let v = voice(for: id)
+            let v = everyday(voice(for: id))
             return ["voice": .string(id), "language": .string(v.language), "speaking": .string(v.id)]
 
         case "mic":

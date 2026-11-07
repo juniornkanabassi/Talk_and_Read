@@ -27,13 +27,19 @@ enum BritishSpelling {
     /// Whether the system dictionary for `language` accepts `word`; nil when the spell server did not answer. It raises
     /// NSXPCSpellServerTimeoutException then, and an exception unwinding through Swift and SwiftUI froze the app for
     /// good (work Mac, 7 Nov 2026).
+    /// After a timeout the server is skipped for a minute, so one slow dictation does not wait on it word after word.
     @MainActor static func spelledRight(_ word: String, _ language: String) -> Bool? {
+        guard ProcessInfo.processInfo.systemUptime > spellServerBackAt else { return nil }
         var found = NSNotFound
         let failed = TRCatchException {
             found = NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0, language: language, wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location
         }
-        return failed == nil ? found == NSNotFound : nil
+        guard let failed else { return found == NSNotFound }
+        spellServerBackAt = ProcessInfo.processInfo.systemUptime + 60
+        Log.write("spell checker failed (\((failed as NSError).domain)); skipped for 60 s")
+        return nil
     }
+    @MainActor private static var spellServerBackAt: TimeInterval = 0
 
     @MainActor static func apply(_ text: String, keepingWordsOf others: [String] = []) -> String {
         let accepted = spelledRight

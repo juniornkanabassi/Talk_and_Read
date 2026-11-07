@@ -183,7 +183,7 @@ extension EngineKind {
         guard liveSession == nil else { return }
         if modelSwitchPending { return freeUnchosenModels() }
         // ponytail: no warm-up right after an unload (the unload and a prepare race inside the engine); the next read loads it.
-        warm(settings.voiceID != old.voiceID ? voice(for: settings.voiceID) : voice(for: settings.frenchVoiceID, language: "fr"))
+        warm(everyday(settings.voiceID != old.voiceID ? voice(for: settings.voiceID) : voice(for: settings.frenchVoiceID, language: "fr")))
     }
 
     private func freeUnchosenModels() {
@@ -217,7 +217,7 @@ extension EngineKind {
     // ponytail: Qwen3 is not loaded at login (4–5 GB); it loads when picked or at its first read.
     func warmUp() {
         Player.warmOutput()
-        let v = voice(for: settings.voiceID)
+        let v = everyday(voice(for: settings.voiceID))
         let voiceWarm = v.engine == .neural ? warm(v) : nil
         Task {
             await voiceWarm?.value
@@ -267,6 +267,15 @@ extension EngineKind {
     }
 
     /// The Kokoro voice a read in `language` switches to if its model falls behind (V3); nil when not installed.
+    /// Macs with 8 GB or less: Qwen3 and Breeze hold 4–6 GB once loaded and pushed the work Mac deep into swap (7 Nov
+    /// 2026), so the chosen voice reads with Kokoro there. A voice asked for by name (CLI, MCP) is still honoured.
+    static let lowMemory = ProcessInfo.processInfo.physicalMemory <= 8 << 30
+
+    func everyday(_ v: Voice) -> Voice {
+        guard Self.lowMemory, v.engine.isLarge, let k = kokoroFallback(v.language) else { return v }
+        return k
+    }
+
     private func kokoroFallback(_ language: String) -> Voice? {
         let id = language == "fr" ? "ff_siwis" : settings.fallbackVoiceID
         return voices.first { $0.id == id && $0.installed }
@@ -604,7 +613,7 @@ extension EngineKind {
     func startSession(_ text: String, capture: Capture?, id: UUID, startToken: Int = 0, voice: Voice? = nil,
                       rate: Float? = nil, source: String? = nil, item: UUID? = nil, skip: [Range<Int>] = []) -> ReadSession {
         // One language per read (PLAN 0.3.0 rev. 8): French text reads with the French voice; an explicit voice wins.
-        let v = voice ?? (Language.detect(text) == "fr" ? self.voice(for: settings.frenchVoiceID, language: "fr") : self.voice(for: settings.voiceID))
+        let v = voice ?? everyday(Language.detect(text) == "fr" ? self.voice(for: settings.frenchVoiceID, language: "fr") : self.voice(for: settings.voiceID))
         let r = rate ?? settings.speed
         let s = ReadSession(text: text, capture: capture, voice: v, rate: r, startToken: startToken, engines: engines,
                             lexicon: Self.loadJSON(Paths.pronunciations) ?? [:], fallback: v.engine.isLarge ? kokoroFallback(v.language) : nil,

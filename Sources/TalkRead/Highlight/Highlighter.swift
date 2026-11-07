@@ -264,6 +264,12 @@ import TalkReadCore
         guard Self.needsQuery(index: index, shown: shownIndex, forced: requery, sinceLast: now - queriedAt) else { return }
         (shownIndex, requery, queriedAt) = (index, false, now)
         let token = session.tokens[index]
+        // Every AX request below waits 0.25 s at most, not the system's default of several seconds: an app that stops
+        // answering (or a Mac deep in swap) must not hold the main thread (work Mac, 7 Nov 2026).
+        PointerCapture.bounded(0.25) { locate(index: index, token: token, locator: locator) }
+    }
+
+    private func locate(index: Int, token: Token, locator: Locator) {
         let wordRect = locator.rect(forWord: token.range)
         if debug, lastLogged != index {
             lastLogged = index

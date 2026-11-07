@@ -158,7 +158,9 @@ import TalkReadCore
         // toolbar's timestamps) counts as chrome too, so the visible copy of a sentence is the one boxed.
         var stack: [(element: AXUIElement, chrome: Bool, inside: Bool, web: HiddenText.Visibility?)] = [(window, false, false, nil)]
         var visited = 0
-        while let (node, parentChrome, parentInside, parentWeb) = stack.popLast(), visited < 8000 {
+        // A partial map is fine (the next rebuild, a second later, continues from the spoken word); a frozen read is not.
+        let deadline = ContinuousClock.now + .seconds(1)
+        while let (node, parentChrome, parentInside, parentWeb) = stack.popLast(), visited < 8000, visited % 64 != 0 || ContinuousClock.now < deadline {
             visited += 1
             let children = axAttribute(node, kAXChildrenAttribute) as? [AXUIElement]
             let role = axAttribute(node, kAXRoleAttribute) as? String
