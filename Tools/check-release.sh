@@ -1,63 +1,75 @@
 #!/bin/zsh
 # Talk & Read acceptance checker: walks every line of 00 Project State/Acceptance checklist.md against a built app.
 #
-# Usage: zsh /private/tmp/talkread-checker/check.sh [--gpu] [--serial] [--static-only] [--no-netdeny] [--no-wait-batch]
+# Usage: zsh /private/tmp/talkread-checker/check.sh [--gpu] [--serial] [--static-only] [--local-build] [--no-netdeny] [--no-wait-batch]
 #                                                   [APP]      (default /Applications/JuniorOS Apps/Talk & Read.app)
 #   APP may also be a bare TalkRead executable (dry run: the signature, bundle and version rows are NOT-RUN).
 #   --gpu           also run the Qwen3 and Breeze self-tests (loads the models; needs mains power and a quiet Mac)
 #   --serial        run the two test lanes one after the other (about 13 min) instead of side by side (about 7 min)
-#   --static-only   bundle, signature and CLI checks only (seconds)
+#   --static-only   bundle, signature, CLI and UI grid checks only (seconds)
+#   --local-build   Gatekeeper/public-download approval is not applicable; signatures remain required
+# Fixture sources must be explicit: TALKREAD_FIXTURE_USER and TALKREAD_MODEL_FIXTURES are cloned into /private/tmp.
 #   --no-netdeny    run the self-tests without the outbound-network deny (the E5 runtime proof is then NOT-RUN)
 #   --no-wait-batch run even while the GPU batch (BATCH-runner.txt) has not printed ALL DONE
 #   --report DIR    run nothing: read the results already in DIR (an earlier run-... folder) and print the table again
 # Statuses: PASS (shown headless), FAIL, OWED-JUNIOR (needs his hands, ears or live apps), NOT-RUN (needs --gpu, or only
-# a unit test covers it). Exit 0 when nothing FAILs. Never opens a window, sends input or touches the real data folder.
-setopt pipefail
+# a unit test covers it), NOT-APPLICABLE (excluded from a local build). Exit 0 when nothing FAILs. Never opens a window, sends input or touches the real data folder.
+setopt pipefail no_bg_nice
 zmodload zsh/datetime
 
-PROJECT="${TALKREAD_PROJECT:-$HOME/Documents/JuniorOS/02 Projects/Development/Talk & Read}"
-SRC="$PROJECT/Source"
+SRC="${TALKREAD_SOURCE:-${0:A:h:h}}"
+PROJECT="${TALKREAD_PROJECT:-${SRC:h}}"
 CHECKLIST="${TALKREAD_CHECKLIST:-$PROJECT/00 Project State/Acceptance checklist.md}"
 ROOT="${TALKREAD_CHECK_ROOT:-/private/tmp/talkread-checker}"
 EXPECT_VERSION="${TALKREAD_EXPECT_VERSION:-$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$SRC/Resources/Info.plist")}"   # the source's version (also from a copy of this script)
 BATCH_DIR=/private/tmp/talkread-b-a
 BATCH_LOG=$BATCH_DIR/final/BATCH-runner.txt
-GPU=0 SERIAL=0 STATIC_ONLY=0 NETDENY_ON=1 WAIT_BATCH=1 SELFCHECK=0 APP="" REPORT="" prev=""
+GPU=0 SERIAL=0 STATIC_ONLY=0 LOCAL_BUILD=0 NETDENY_ON=1 WAIT_BATCH=1 SELFCHECK=0 APP="" REPORT="" prev=""
 for a in "$@"; do if [[ $prev == --report ]]; then REPORT=$a; prev=""; continue; fi; case $a in
   --report) prev=--report;;
-  --gpu) GPU=1;; --serial) SERIAL=1;; --static-only) STATIC_ONLY=1;; --no-netdeny) NETDENY_ON=0;;
+  --local-build) LOCAL_BUILD=1;; --gpu) GPU=1;; --serial) SERIAL=1;; --static-only) STATIC_ONLY=1;; --no-netdeny) NETDENY_ON=0;;
   --no-wait-batch) WAIT_BATCH=0;; --selfcheck) SELFCHECK=1;; -h|--help) sed -n 2,14p "$0"; exit 0;;
   -*) print -u2 "unknown option $a"; exit 2;; *) APP=$a;; esac; done
 APP="${APP:-/Applications/JuniorOS Apps/Talk & Read.app}"
 
 # ---------------------------------------------------------------- evidence bookkeeping
-typeset -A OKN BAD OWE SKP EV
+typeset -A OKN BAD OWE SKP NA EV
 add() { local k=$1 kind=$2 sym=$3; shift 3
   case $kind in OKN) OKN[$k]=$(( ${OKN[$k]:-0} + 1 ));; BAD) BAD[$k]=$(( ${BAD[$k]:-0} + 1 ));;
-                OWE) OWE[$k]=$(( ${OWE[$k]:-0} + 1 ));; SKP) SKP[$k]=$(( ${SKP[$k]:-0} + 1 ));; esac
+                OWE) OWE[$k]=$(( ${OWE[$k]:-0} + 1 ));; NA) NA[$k]=$(( ${NA[$k]:-0} + 1 ));; SKP) SKP[$k]=$(( ${SKP[$k]:-0} + 1 ));; esac
   EV[$k]+="${EV[$k]:+; }$sym $*"; }
 pass() { local k=$1; shift; add $k OKN '✓' "$@"; }
 fail() { local k=$1; shift; add $k BAD '✗' "$@"; }
 owe()  { local k=$1; shift; add $k OWE '…owed:' "$@"; }
 nrun() { local k=$1; shift; add $k SKP '○not run:' "$@"; }
-status_of() {   # FAIL beats OWED-JUNIOR beats NOT-RUN beats PASS; no evidence at all is a missing rule
+na() { local k=$1; shift; add $k NA 'not applicable:' "$@"; }
+status_of() {   # FAIL beats OWED-JUNIOR beats NOT-RUN beats NOT-APPLICABLE beats PASS; no evidence at all is a missing rule
   local k=$1
   if (( ${BAD[$k]:-0} )); then print FAIL
   elif (( ${OWE[$k]:-0} )); then print OWED-JUNIOR
   elif (( ${SKP[$k]:-0} )); then print NOT-RUN
+  elif (( ${NA[$k]:-0} )); then print NOT-APPLICABLE
   elif (( ${OKN[$k]:-0} )); then print PASS
   else print NO-RULE; fi
 }
+grid_passed() { [[ $1 == 0 && $2 == 'PASS UI grid: 0 off-grid gaps' ]]; }
 if (( SELFCHECK )); then   # the aggregator's one runnable check
   pass t1 a; [[ $(status_of t1) == PASS ]] || { print "selfcheck: pass"; exit 1; }
   nrun t1 b; [[ $(status_of t1) == NOT-RUN ]] || { print "selfcheck: nrun"; exit 1; }
   owe t1 c; [[ $(status_of t1) == OWED-JUNIOR ]] || { print "selfcheck: owe"; exit 1; }
   fail t1 d; [[ $(status_of t1) == FAIL ]] || { print "selfcheck: fail"; exit 1; }
   [[ $(status_of t2) == NO-RULE ]] || { print "selfcheck: none"; exit 1; }
+  na t3 local; [[ $(status_of t3) == NOT-APPLICABLE ]] || { print "selfcheck: na"; exit 1; }
+  pass t3 signature; [[ $(status_of t3) == NOT-APPLICABLE ]] || { print "selfcheck: na with pass"; exit 1; }
+  fail t3 signature; [[ $(status_of t3) == FAIL ]] || { print "selfcheck: failure beats na"; exit 1; }
+  grid_passed 0 'PASS UI grid: 0 off-grid gaps' || { print "selfcheck: grid pass"; exit 1; }
+  ! grid_passed 1 'PASS UI grid: 0 off-grid gaps' || { print "selfcheck: grid nonzero exit"; exit 1; }
+  ! grid_passed 0 'FAIL UI grid: 1 off-grid gaps' || { print "selfcheck: grid verdict"; exit 1; }
   print "selfcheck ok"; exit 0
 fi
 
 # ---------------------------------------------------------------- the app under test
+[[ -f $CHECKLIST ]] || { print -u2 "No acceptance checklist at $CHECKLIST (set TALKREAD_CHECKLIST for a worktree)"; exit 2; }
 BUNDLE=0 DRY=0
 if [[ -d $APP && $APP == *.app ]]; then
   BUNDLE=1; EXE="$APP/Contents/MacOS/TalkRead"; CLI="$APP/Contents/Helpers/talkread"
@@ -66,8 +78,27 @@ elif [[ -f $APP && -x $APP ]]; then
 else print -u2 "No app bundle or executable at: $APP"; exit 2; fi
 [[ -x $EXE ]] || { print -u2 "No executable at $EXE"; exit 2; }
 STAMP=$(date +%Y%m%d-%H%M%S)
-OUT=$ROOT/run-$STAMP; FX=$ROOT/fixtures
-if [[ -n $REPORT ]]; then OUT=${REPORT:A}; WAIT_BATCH=0; else mkdir -p "$OUT" "$ROOT/home"; ln -sfn "$OUT" "$ROOT/latest"; fi
+OUT=$ROOT/run-$STAMP
+if [[ -n $REPORT ]]; then OUT=${REPORT:A}; WAIT_BATCH=0; else mkdir -p "$OUT"; ln -sfn "$OUT" "$ROOT/latest"; fi
+RUNTIME=$(mktemp -d /private/tmp/talkread-check.XXXXXX) || exit 1
+trap 'rm -rf -- "$RUNTIME"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+FX=$RUNTIME/fixtures
+seed_runtime() {
+  local data=$1 user=$2
+  mkdir -p "$data"
+  if [[ -n ${TALKREAD_FIXTURE_USER:-} ]]; then
+    [[ -d $TALKREAD_FIXTURE_USER ]] || { print -u2 "Missing TALKREAD_FIXTURE_USER: $TALKREAD_FIXTURE_USER"; return 1; }
+    /bin/cp -cR "$TALKREAD_FIXTURE_USER" "$user" || return 1
+  else mkdir -p "$user"; fi
+  if [[ -n ${TALKREAD_MODEL_FIXTURES:-} ]]; then
+    [[ -d $TALKREAD_MODEL_FIXTURES ]] || { print -u2 "Missing TALKREAD_MODEL_FIXTURES: $TALKREAD_MODEL_FIXTURES"; return 1; }
+    /bin/cp -cR "$TALKREAD_MODEL_FIXTURES" "$data/Models" || return 1
+  fi
+}
+seed_runtime "$RUNTIME/static-data" "$RUNTIME/static-user" || exit 1
+STATIC_ENV=(HOME="$RUNTIME/static-user" CFFIXED_USER_HOME="$RUNTIME/static-user" TALKREAD_HOME="$RUNTIME/static-data")
 print "Talk & Read checker, $(date '+%a %d %b %H:%M:%S')\nApp: $APP$( (( DRY )) && print ' (bare binary: dry run)')\nOutput: $OUT"
 print "Power: $(pmset -g batt | head -1 | sed 's/Now drawing from //'); load $(sysctl -n vm.loadavg)"
 
@@ -110,8 +141,11 @@ static_checks() {
   grep -q "flags=0x[0-9a-f]*(.*runtime" <<<$sig && pass B-signature "hardened runtime on" || fail B-signature "hardened runtime flag missing"
   hsig=$(/usr/bin/codesign -dvv "$CLI" 2>&1)
   grep -q "Identifier=com.juniornkanabassi.TalkAndRead.cli" <<<$hsig && pass B-signature "helper keeps its own identifier" || fail B-signature "helper identifier changed or unsigned"
-  if v=$(/usr/sbin/spctl --assess --type execute -vv "$APP" 2>&1); then pass B-signature "spctl: ${${v//$'\n'/ }:0:110}"
-  else fail B-signature "Gatekeeper refuses it (spctl): ${${v//$'\n'/ }:0:160}"; fi
+  if (( LOCAL_BUILD )); then
+    na B-gatekeeper "private local build; notarisation and other-Mac Gatekeeper approval excluded"
+    na U2 "public download and notarisation excluded for this private local build"
+  elif v=$(/usr/sbin/spctl --assess --type execute -vv "$APP" 2>&1); then pass B-gatekeeper "spctl: ${${v//$'\n'/ }:0:110}"
+  else fail B-gatekeeper "Gatekeeper refuses it (spctl): ${${v//$'\n'/ }:0:160}"; fi
   # U1-pack (0.7.0): Sparkle is embedded, each nested part signed by the app's team with hardened runtime and a secure
   # timestamp; the feed and the EdDSA public key are set (never the placeholder); the app finds the framework.
   local fw="$APP/Contents/Frameworks/Sparkle.framework" team part psig unsigned="" feed key
@@ -152,7 +186,7 @@ static_checks() {
   n=$(wc -c < "$APP/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib" 2>/dev/null | tr -d ' ')
   (( ${n:-0} > 1000000 )) && pass B-contents "MLX default.metallib $(( n / 1048576 )) MB" || fail B-contents "MLX default.metallib missing or empty"
   local mcp="$APP/Contents/Resources/mcp/talkread-mcp.mjs"
-  if [[ -s $mcp ]] && "$NODE" --check "$mcp" 2>"$OUT/mcp-syntax.err"; then pass B-contents "MCP adapter present, parses"; else fail B-contents "MCP adapter missing or does not parse"; fi
+  if [[ -s $mcp ]] && env "${STATIC_ENV[@]}" "$NODE" --check "$mcp" 2>"$OUT/mcp-syntax.err"; then pass B-contents "MCP adapter present, parses"; else fail B-contents "MCP adapter missing or does not parse"; fi
   [[ -x $CLI ]] && pass B-contents "CLI helper Contents/Helpers/talkread" || fail B-contents "CLI helper missing"
   n=$(find "$APP" \( -name '*.safetensors' -o -name '*.gguf' -o -name '*.mlmodelc' -o -name 'model.bin' \) | wc -l | tr -d ' ')
   local size=$(du -sm "$APP" | cut -f1)
@@ -171,9 +205,9 @@ host_scan() {   # E5: static side. The runtime deny below is the proof; here onl
 
 cli_checks() {
   local help manifest names n missing=""
-  help=$("$CLI" --help 2>&1)
-  manifest=$("$CLI" mcp-manifest 2>/dev/null)
-  names=$(print -r -- "$manifest" | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).map(t=>t.name).join(" "))}catch(e){}})')
+  help=$(env "${STATIC_ENV[@]}" "$CLI" --help 2>&1)
+  manifest=$(env "${STATIC_ENV[@]}" "$CLI" mcp-manifest 2>/dev/null)
+  names=$(print -r -- "$manifest" | env "${STATIC_ENV[@]}" "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).map(t=>t.name).join(" "))}catch(e){}})')
   n=$(wc -w <<<$names | tr -d ' ')
   local c; for c in ${=names}; do grep -q -- "${c//_/-}" <<<$help || missing+="$c "; done
   if (( n >= 21 )) && [[ -z $missing ]]; then pass E1 "CLI: $n commands in the manifest, every one in --help"; else fail E1 "CLI: $n commands, missing from --help: $missing"; fi
@@ -183,10 +217,16 @@ cli_checks() {
   grep -q -- '--caller' <<<$help || grep -q -- 'caller' <<<$help || fail E1 "--caller is not documented"
 }
 
+grid_check() {   # B-design: every custom gap on the four-point scale; runs in --static-only too
+  local out code; out=$(/usr/bin/python3 -I "$SRC/Tools/check-ui-grid.py" 2>&1); code=$?; print -r -- $out > "$OUT/ui-grid.txt"
+  grid_passed "$code" "$out" && pass B-design "${out##*$'\n'}" || fail B-design "${${out//$'\n'/ | }:0:200}"
+}
+
 NODE=$(command -v node || print "$HOME/.local/opt/node-v24.19.0-darwin-arm64/bin/node")
 static_checks
 host_scan
 cli_checks
+grid_check
 
 # ---------------------------------------------------------------- runtime
 fx_prepare() { rm -rf "$FX"; mkdir -p "$FX/Tests"; /bin/cp -cR "$SRC/Tests/Fixtures" "$FX/Tests/Fixtures"; }
@@ -203,33 +243,34 @@ watchdog() { local pid=$1 secs=$2; ( sleep $secs; kill -TERM $pid 2>/dev/null; s
 
 st() {   # st NAME SECONDS ARGS...: one self-test run in its own disposable data folder, output in $OUT/NAME.{txt,err,rc,sec}
   local name=$1 secs=$2; shift 2
-  local home=$ROOT/home/$name t0=$EPOCHREALTIME
-  rm -rf -- "$home"; mkdir -p "$home"
-  (( GPU )) && [[ $name == g-* && -d $BATCH_DIR/home/Models ]] && /bin/cp -cR "$BATCH_DIR/home/Models" "$home/Models"
-  ( cd "$FX" && exec env TALKREAD_HOME="$home" TALKREAD_SHOTS="$OUT/shots-$name" "${NETDENY[@]}" "$EXE" --agent-screen "$@" ) >"$OUT/$name.txt" 2>"$OUT/$name.err" &
+  local home=$RUNTIME/home/$name user=$RUNTIME/users/$name t0=$EPOCHREALTIME
+  mkdir -p "$RUNTIME/users"
+  seed_runtime "$home" "$user" || { print 2 > "$OUT/$name.rc"; return 1; }
+  ( cd "$FX" && exec env HOME="$user" CFFIXED_USER_HOME="$user" TALKREAD_HOME="$home" TALKREAD_SHOTS="$OUT/shots-$name" "${NETDENY[@]}" "$EXE" --agent-screen "$@" ) >"$OUT/$name.txt" 2>"$OUT/$name.err" &
   local pid=$! wd; wd=$(watchdog $pid $secs)
   wait $pid; print -r -- $? > "$OUT/$name.rc"
-  kill $wd 2>/dev/null; pkill -P $wd 2>/dev/null
+  pkill -P $wd 2>/dev/null; kill $wd 2>/dev/null
   printf '%.0f' $(( EPOCHREALTIME - t0 )) > "$OUT/$name.sec"
   print "  $(printf '%-14s' $name) rc $(<"$OUT/$name.rc") in $(<"$OUT/$name.sec") s" >> "$OUT/progress.txt"
 }
 
 control_run() {   # the control self-test, with the CLI and the MCP adapter asked while its socket is up
-  local name=control home=$ROOT/home/control t0=$EPOCHREALTIME mcpapp=$APP
-  rm -rf -- "$home"; mkdir -p "$home"
+  local name=control home=$RUNTIME/home/control user=$RUNTIME/users/control t0=$EPOCHREALTIME mcpapp=$APP
+  mkdir -p "$RUNTIME/users"
+  seed_runtime "$home" "$user" || { print 2 > "$OUT/control.rc"; return 1; }
   if (( ! BUNDLE )); then
-    mcpapp=$ROOT/mcpapp; rm -rf "$mcpapp"; mkdir -p "$mcpapp/Contents/Resources/mcp"
+    mcpapp=$RUNTIME/mcpapp; rm -rf "$mcpapp"; mkdir -p "$mcpapp/Contents/Resources/mcp"
     /bin/cp "$SRC/mcp/talkread-mcp.mjs" "$mcpapp/Contents/Resources/mcp/"; /bin/cp "$SRC/Resources/Info.plist" "$mcpapp/Contents/Info.plist"
   fi
-  ( cd "$FX" && exec env TALKREAD_HOME="$home" "${NETDENY[@]}" "$EXE" --agent-screen --selftest-control ) >"$OUT/control.txt" 2>"$OUT/control.err" &
+  ( cd "$FX" && exec env HOME="$user" CFFIXED_USER_HOME="$user" TALKREAD_HOME="$home" "${NETDENY[@]}" "$EXE" --agent-screen --selftest-control ) >"$OUT/control.txt" 2>"$OUT/control.err" &
   local pid=$! wd i; wd=$(watchdog $pid 420)
   for i in {1..9000}; do [[ -S $home/control.sock ]] && break; kill -0 $pid 2>/dev/null || break; sleep 0.01; done
   if [[ -S $home/control.sock ]]; then
-    TALKREAD_HOME=$home "$CLI" settings-get --json > "$OUT/control-settings.json" 2>&1
-    ( cd "$FX" && TALKREAD_HOME=$home TALKREAD_CLI=$CLI "$NODE" "$SRC/mcp/check-mcp.mjs" "$mcpapp" ) > "$OUT/mcp.txt" 2>&1; print -r -- $? > "$OUT/mcp.rc"
+    env HOME="$user" CFFIXED_USER_HOME="$user" TALKREAD_HOME="$home" "$CLI" settings-get --json > "$OUT/control-settings.json" 2>&1
+    ( cd "$FX" && env HOME="$user" CFFIXED_USER_HOME="$user" TALKREAD_HOME="$home" TALKREAD_CLI="$CLI" "$NODE" "$SRC/mcp/check-mcp.mjs" "$mcpapp" ) > "$OUT/mcp.txt" 2>&1; print -r -- $? > "$OUT/mcp.rc"
   fi
   wait $pid; print -r -- $? > "$OUT/control.rc"
-  kill $wd 2>/dev/null; pkill -P $wd 2>/dev/null
+  pkill -P $wd 2>/dev/null; kill $wd 2>/dev/null
   printf '%.0f' $(( EPOCHREALTIME - t0 )) > "$OUT/control.sec"
   print "  $(printf '%-14s' control) rc $(<"$OUT/control.rc") in $(<"$OUT/control.sec") s (+ CLI settings-get, MCP check)" >> "$OUT/progress.txt"
 }
@@ -246,6 +287,7 @@ lane_speech() {   # timing-sensitive speech runs, one at a time
   st switchfake 200 --selftest-tts $F --switch --fake
 }
 lane_app() {
+  st agent-safety 30 --selftest-agent-safety
   st invisible 30 --selftest-invisible-windows
   st menus 30 --selftest-ui-commands
   st storage 60 --selftest-storage
@@ -289,7 +331,7 @@ crash() { local k=$1 name=$2; fail $k "$name run produced no verdict (exit $(rc 
 rules() {
   local f line v w n name
 
-  for name in invisible menus storage reader window; do
+  for name in agent-safety invisible menus storage reader window; do
     if R $name; then
       if [[ $(rc $name) == 0 ]]; then pass E4 "$name headless self-test passed"
       else fail E4 "$name headless self-test failed (exit $(rc $name))"; fi
@@ -404,7 +446,7 @@ rules() {
     else fail E2 "no control socket appeared, so the MCP adapter was not asked"; fi
     if [[ -s $OUT/control-settings.json ]]; then
       local want got keys="readShortcut:⌃A pauseShortcut:⌃⌥Q screenshotShortcut:⌃⌥⌘X dictationToggleShortcut:⌃\` pasteLastShortcut:⌃⌘V increaseSpeedShortcut:⌥D decreaseSpeedShortcut:⌥S skipBackwardShortcut:⌥W skipForwardShortcut:⌥E" k
-      "$NODE" -e 'const fs=require("fs");const o=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const out=[];(function walk(x,k){if(x&&typeof x==="object"){if(!Array.isArray(x)&&"display" in x&&k)out.push(k+"="+x.display);for(const [a,b] of Object.entries(x))walk(b,a)}else if(k)out.push(k+"="+x)})(o,"");console.log(out.join("\n"))' "$OUT/control-settings.json" > "$OUT/control-settings.flat" 2>/dev/null
+      env HOME="$RUNTIME/users/control" CFFIXED_USER_HOME="$RUNTIME/users/control" TALKREAD_HOME="$RUNTIME/home/control" "$NODE" -e 'const fs=require("fs");const o=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const out=[];(function walk(x,k){if(x&&typeof x==="object"){if(!Array.isArray(x)&&"display" in x&&k)out.push(k+"="+x.display);for(const [a,b] of Object.entries(x))walk(b,a)}else if(k)out.push(k+"="+x)})(o,"");console.log(out.join("\n"))' "$OUT/control-settings.json" > "$OUT/control-settings.flat" 2>/dev/null
       local bad=""
       for k in ${=keys}; do want=${k#*:}; got=$(sed -nE "s/^${k%%:*}=//p" "$OUT/control-settings.flat" | head -1); [[ $got == $want ]] || bad+="${k%%:*} '$got' (want $want); "; done
       grep -q '^dictationHoldKey=rightOption' "$OUT/control-settings.flat" || bad+="dictationHoldKey not rightOption; "
@@ -425,9 +467,11 @@ rules() {
     if [[ -n $w ]] && (( w <= 6 )); then pass T1 "$(print -r -- $line | sed -E 's/^asr: //; s/; latency.*//')"; else fail T1 "WER file '${w:-none}' % (limit 6): $line"; fi
     [[ $(L $OUT/asr.txt '^selftest-asr: ') == *PASS ]] || fail T1 "selftest-asr: $(L $OUT/asr.txt '^selftest-asr: ' || print "exit $(rc asr)")"
     line=$(L $OUT/asr.txt '^hotkeys: ')
-    if [[ $line == *'mappings ok'* && $line == *'active'* ]]; then
-      pass T2 "$(sed -E 's/^hotkeys: //; s/ \(.*//' <<<$line)"; pass S3 "the event tap is active, so matched shortcuts can be swallowed"
-    else fail T2 "${line:-no hotkeys line}"; fi
+    if [[ $line == *'mappings ok'* && $line == *'hidden global event tap blocked'* ]]; then
+      pass T2 "headless mappings pass; global event tap is blocked"
+      pass S3 "headless mode refuses to install a global event tap"
+      owe S3 "live shortcut consumption is not exercised in invisible checks"
+    else fail T2 "${line:-no hotkeys line or hidden tap guard}"; fi
     owe T2 "a real right-Option hold, ⌃\` hands-free, Esc during dictation"
     [[ $(L $OUT/asr.txt '^text: ') == *' ok' ]] && pass T5 "British spelling and one-line terminal paste" || fail T5 "text rules: $(L $OUT/asr.txt '^text: ')"
     [[ $(L $OUT/asr.txt '^ownership: ') == 'ownership: ok'* ]] && pass T3 "ownership and quit paths ok; paste-after-cancel not pasted (private pasteboard)" || fail T3 "$(L $OUT/asr.txt '^ownership: ')"
@@ -499,7 +543,7 @@ if [[ -f $BATCH_DIR/home/Models/breeze-tts-2-8bit/LICENSE && -f $BATCH_DIR/home/
 fi
 if (( ${#NETDENY} )) && (( ! STATIC_ONLY )); then
   clean=1
-  for name in long en25 en2 en4 emma fr fake switchfake invisible menus storage reader window import ui control asr; do [[ -f $OUT/$name.rc ]] || continue; [[ $(<"$OUT/$name.rc") == 0 ]] || clean=0; done
+  for name in long en25 en2 en4 emma fr fake switchfake agent-safety invisible menus storage reader window import ui control asr; do [[ -f $OUT/$name.rc ]] || continue; [[ $(<"$OUT/$name.rc") == 0 ]] || clean=0; done
   (( clean )) && pass E5 "every self-test passed with outbound IP traffic denied (models were already on disk, nothing needed the network)" \
               || nrun E5 "a run failed under the network deny: see its .err file before reading this as a network use (rerun with --no-netdeny to compare)"
 else
@@ -541,13 +585,13 @@ row() { local k=$1 s; s=$(status_of $k)
   if [[ $s == NO-RULE ]]; then s=OWED-JUNIOR; EV[$k]="NO CHECKER RULE for this checklist line yet; read it by hand"; NORULE=$(( NORULE + 1 )); fi
   COUNT[$s]=$(( ${COUNT[$s]:-0} + 1 ))
   ROWS+=("$(printf '%-11s %-12s %s' $k $s "${EV[$k]}")"); }
-for k in B-version B-signature B-contents U1-pack U1 U1-live; do [[ -n ${EV[$k]:-} ]] && (( ! ${ids[(Ie)$k]} )) && row $k; done   # U1 until the checklist has its line
+for k in B-version B-signature B-gatekeeper B-contents B-design U1-pack U1 U1-live; do [[ -n ${EV[$k]:-} ]] && (( ! ${ids[(Ie)$k]} )) && row $k; done   # U1 until the checklist has its line
 for k in $ids; do row $k; done
 {
   print "\nAcceptance checklist, $(basename "$APP"), $(date '+%d %b %H:%M'), ${ELAPSED} s of tests"
   print "ID          STATUS       EVIDENCE (✓ shown headless, ✗ failed, …owed: Junior's, ○not run)"
   print -l -- "${ROWS[@]}"
-  print "\nSummary: ${#ROWS} rows (the checklist lines plus the build rows): ${COUNT[PASS]:-0} PASS, ${COUNT[FAIL]:-0} FAIL, ${COUNT[OWED-JUNIOR]:-0} OWED-JUNIOR, ${COUNT[NOT-RUN]:-0} NOT-RUN$( (( NORULE )) && print ", $NORULE with no checker rule")"
+  print "\nSummary: ${#ROWS} rows (the checklist lines plus the build rows): ${COUNT[PASS]:-0} PASS, ${COUNT[FAIL]:-0} FAIL, ${COUNT[OWED-JUNIOR]:-0} OWED-JUNIOR, ${COUNT[NOT-RUN]:-0} NOT-RUN, ${COUNT[NOT-APPLICABLE]:-0} NOT-APPLICABLE$( (( NORULE )) && print ", $NORULE with no checker rule")"
   (( ${COUNT[FAIL]:-0} )) && print "BLOCKED: a FAIL blocks the install." || print "No FAIL: the install is not blocked by this checker."
 } | tee "$OUT/report.txt"
 (( ${COUNT[FAIL]:-0} == 0 ))

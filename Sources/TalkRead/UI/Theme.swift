@@ -15,12 +15,14 @@ enum Space {
     static let section: CGFloat = 32
 }
 
+/// macOS text styles only, so type follows the system's sizes; Tools/check-design.sh fails on a fixed size here.
 enum TypeStyle {
-    static let caption = Font.system(size: 12)
-    static let label = Font.system(size: 16)
-    static let body = Font.system(size: 16)
-    static let metric = Font.system(size: 24, weight: .semibold, design: .rounded)
-    static let display = Font.system(size: 40, weight: .bold, design: .rounded)
+    static let caption = Font.callout
+    static let label = Font.body
+    /// Reading text (editor, sample, subtitles): one step above interface text.
+    static let body = Font.title3
+    static let metric = Font.system(.title, design: .rounded, weight: .semibold)
+    static let display = Font.system(.largeTitle, design: .rounded, weight: .bold)
 }
 
 enum Theme {

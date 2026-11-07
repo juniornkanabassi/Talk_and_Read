@@ -22,6 +22,8 @@ The built `TalkRead` executable provides these additional checks.
 | `--selftest-ui-snapshots` | Every page and Settings category in both appearances, web sheet, onboarding, colour contrast and blank-image rejection |
 | `--selftest-window --headless` | Existing offscreen highlight checks, without visible windows or probing other apps |
 
+`zsh Tools/check-design.sh OUTPUT_DIR EXECUTABLE` runs the design checks in one go on an already built binary: the grid lint, a type lint (`TypeStyle` must use macOS text styles, never a fixed point size) and only `--agent-screen --selftest-ui-snapshots`, with throwaway `TALKREAD_HOME`, `HOME` and `CFFIXED_USER_HOME` inside the empty OUTPUT_DIR and the PNGs in `OUTPUT_DIR/shots`. It never builds or opens the app. `Tools/check-release.sh` also runs the grid lint as the `B-design` row, `--static-only` included, and a violation is a FAIL.
+
 Set `TALKREAD_SHOTS` to the snapshot output directory. Snapshot rendering deliberately substitutes material for live Liquid Glass. The coverage and blank-image checks supplement visual inspection; they are not pixel-baseline comparison. Keyboard navigation, VoiceOver, drag behaviour, actual hover responsiveness and live glass still need a separate on-screen check.
 
 The library and reading history retain their JSON formats. A serial writer coalesces saves and flushes before normal termination. Removed originals and extracted text stay in `Removed documents` until the saved index is flushed successfully. An interrupted quit recovers held files using the persisted index. Failed writes or file operations keep held copies available for recovery.
