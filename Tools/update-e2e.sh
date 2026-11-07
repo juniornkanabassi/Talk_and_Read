@@ -7,6 +7,9 @@
 #   - a wrong EdDSA signature fails with Sparkle's validation error; the bundle is unchanged
 #   - a correctly signed older build is not offered (Sparkle: newer than latest); the bundle is unchanged
 #   - three checks in a row (found, cancelled while checking, found): three check ids, each with its own result
+#   - beta channel (Settings "Get beta updates", `release.sh --beta`, `--promote`): a beta-only feed offers nothing with the
+#     setting off and the beta with it on; a feed with a full release and a higher beta offers the full release off and
+#     the beta on; `--promote` (gh stubbed, no network) removes only the channel tag and then everyone is offered it
 #   - after every case that must not install: the bundle still verifies and every file is byte for byte the same
 #   - two `update-check` callers: one starts, one is busy with the same check id; `status` reports the result; the
 #     update downloads, verifies and installs in place as the process quits, with no relaunch and no window
@@ -35,16 +38,17 @@ info() { /usr/libexec/PlistBuddy -c "Print $2" "$1/Contents/Info.plist"; }
 cdhash() { /usr/bin/codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p'; }
 V=$(info "$APP_IN" CFBundleShortVersionString) B=$(info "$APP_IN" CFBundleVersion)
 NEW_V="$V-newer-test" NEW_B=$(( B + 1 )) DOWN_V="$V-older-test" DOWN_B=$(( B - 1 ))
+BETA_V="${V%.*}.$(( ${V##*.} + 1 ))" BETA_B=$(( B + 2 ))   # a real x.y.z, which --promote requires
 PUB=$("$BIN/generate_keys" --account "$ACCOUNT" -p)
 OLD="$E2E/install/Talk & Read.app"
-mkdir -p "$E2E"/{install,new,down,site,home,website/lib} "$EVIDENCE"
+mkdir -p "$E2E"/{install,new,down,beta,bin,site,home,website/lib} "$EVIDENCE"
 SERVER="" SILENT=""
 cleanup() {
   [[ -z $SERVER ]] || kill $SERVER 2>/dev/null || true
   [[ -z $SILENT ]] || kill $SILENT 2>/dev/null || true
   /usr/bin/defaults delete "$TEST_ID" 2>/dev/null || true
   rm -rf "$TEST_USER_HOME/Library/Preferences/$TEST_ID.plist" "$TEST_USER_HOME/Library/Caches/$TEST_ID" "$TEST_USER_HOME/Library/HTTPStorages/$TEST_ID" \
-         "$E2E"/{install,new,down} "$E2E"/site/*.{zip,dmg}(N)
+         "$E2E"/{install,new,down,beta} "$E2E"/site/*.{zip,dmg}(N)
 }
 trap cleanup EXIT
 ok() { print "PASS  $*" | tee -a "$E2E/e2e.log"; }
@@ -62,7 +66,8 @@ variant() {   # <folder> <short version> <build>: a re-signed copy under the tes
 variant "$E2E/install" $V $B
 variant "$E2E/new" $NEW_V $NEW_B
 variant "$E2E/down" $DOWN_V $DOWN_B
-for f in new down; do
+variant "$E2E/beta" $BETA_V $BETA_B
+for f in new down beta; do
   base="$E2E/site/Talk_and_Read_$(info "$E2E/$f/Talk & Read.app" CFBundleShortVersionString)"
   /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$E2E/$f/Talk & Read.app" "$base.zip"
   # release.sh wants the website's disk image beside the zip (0.7.1); unsigned here, so a dry run lists it, never stops.
@@ -159,6 +164,71 @@ has sequence "result available $NEW_V\$"; has sequence '^update-sequence: checkI
 unchanged sequence
 ok "three checks in a row: available, cancelled (not the earlier result), available, each with its own checkID; bundle unchanged"
 
+# Beta channel. Feeds come from release.sh --dry-run (--beta) and --promote, so the tag is the one the script writes.
+release rel-beta-only "$E2E/site/Talk_and_Read_$BETA_V.zip" --beta || { cat "$E2E/rel-beta-only.log"; no "release.sh --beta --dry-run"; }
+has rel-beta-only "^Added the item for $BETA_V \\(build $BETA_B, beta\\)"; has rel-beta-only 'gh release create .* --prerelease '
+has rel-beta-only '^Beta: no release object'
+grep -q '<sparkle:channel>beta</sparkle:channel>' "$E2E/rel-beta-only/appcast.xml" || no "the beta item has no channel tag"
+local_feed "$E2E/rel-beta-only/appcast.xml" "$E2E/site/beta-only.xml"
+mkdir -p "$E2E/website/public/apps/talkandread"
+cp "$E2E/rel-new/appcast.xml" "$E2E/website/public/apps/talkandread/appcast.xml"
+release rel-mixed "$E2E/site/Talk_and_Read_$BETA_V.zip" --beta || { cat "$E2E/rel-mixed.log"; no "release.sh --beta --dry-run on a feed with a full release"; }
+local_feed "$E2E/rel-mixed/appcast.xml" "$E2E/site/mixed.xml"
+ok "release.sh --beta --dry-run: the item carries <sparkle:channel>beta</sparkle:channel>, the GitHub release would be a prerelease, no website release object"
+
+run_old beta-off beta-only.xml
+has beta-off '^update-not-found: code 1001 '; has beta-off 'result=upToDate'
+sleep 3; unchanged beta-off
+ok "setting off (the default): a feed with only a beta item offers nothing; status upToDate; bundle unchanged"
+run_old mixed-off mixed.xml --reminder
+has mixed-off "^update-menu: Update available: $NEW_V…"; has mixed-off '^selftest-update: PASS reminder'; unchanged mixed-off
+ok "setting off: a full release (build $NEW_B) is offered, the higher beta (build $BETA_B) is not"
+print '{"betaUpdates":true}' > "$E2E/home/settings.json"
+run_old beta-on beta-only.xml --reminder
+has beta-on "^update-menu: Update available: $BETA_V…"; has beta-on '^selftest-update: PASS reminder'; unchanged beta-on
+run_old mixed-on mixed.xml --reminder
+has mixed-on "^update-menu: Update available: $BETA_V…"; has mixed-on '^selftest-update: PASS reminder'; unchanged mixed-on
+ok "setting on: the beta is offered, from a beta-only feed and above a full release"
+
+# --promote, with gh stubbed: it answers from the local zips and disk images and records edits, never touching the network.
+cat > "$E2E/bin/gh" <<'STUB'
+#!/bin/zsh
+case "$1 $2" in
+  "auth status") exit 0;;
+  "release view") [[ -s $GH_STUB_LOG ]] && print "false false" || print "false true";;
+  "release download") name="" dir=""; while (( $# )); do case $1 in --pattern) name=$2; shift;; --dir) dir=$2; shift;; esac; shift; done
+                      mkdir -p "$dir" && cp "$GH_STUB_SITE/$name" "$dir/$name";;
+  "release edit") print -r -- "$*" >> "$GH_STUB_LOG";;
+  *) print -u2 "gh stub: unexpected: $*"; exit 1;;
+esac
+STUB
+chmod +x "$E2E/bin/gh"
+export GH_STUB_LOG="$E2E/gh-edits.log" GH_STUB_SITE="$E2E/site"; : > "$GH_STUB_LOG"
+[[ $(PATH="$E2E/bin:$PATH" command -v gh) == "$E2E/bin/gh" ]] || no "the gh stub is not first on PATH"
+promote() {   # <log name> [--dry-run --out <dir>]: release.sh --promote against the test website, gh stubbed
+  PATH="$E2E/bin:$PATH" TALKREAD_BUILD_ROOT=$BUILD_ROOT zsh "$SRC/release.sh" --website "$E2E/website" --promote "$BETA_V" "${@:2}" > "$E2E/$1.log" 2>&1
+}
+FEED="$E2E/website/public/apps/talkandread/appcast.xml"
+cp "$E2E/rel-mixed/appcast.xml" "$FEED"
+promote promote-dry --dry-run --out "$E2E/promote-dry" || { cat "$E2E/promote-dry.log"; no "release.sh --promote --dry-run"; }
+has promote-dry '^Zip verified: '; has promote-dry '^dry run, not run: gh release edit'; has promote-dry '^Promoted '
+[[ ! -s $GH_STUB_LOG ]] || no "a dry run edited the GitHub release"
+cmp -s "$FEED" "$E2E/rel-mixed/appcast.xml" || no "a dry run changed the website appcast"
+diff <(grep -v 'sparkle:channel' "$E2E/rel-mixed/appcast.xml") "$E2E/promote-dry/appcast.xml" >/dev/null || no "--promote changed more than the channel line"
+promote promote-real || { cat "$E2E/promote-real.log"; no "release.sh --promote"; }
+has promote-real "\"version\": \"$BETA_V\""
+grep -q -- '--prerelease=false' "$GH_STUB_LOG" || no "the GitHub release was not marked a full release"
+cmp -s "$FEED" "$E2E/promote-dry/appcast.xml" || no "the website appcast is not the dry run's"
+if promote promote-again; then no "a second --promote was accepted"; fi
+has promote-again 'is not a beta'
+ok "release.sh --promote: zip length, EdDSA signature and version checked, only the channel line removed, the GitHub release marked full (stub), release object printed, a second promote refused"
+local_feed "$FEED" "$E2E/site/promoted.xml"
+rm -f "$E2E/home/settings.json"
+run_old promoted promoted.xml --reminder
+has promoted "^update-menu: Update available: $BETA_V…"; has promoted '^selftest-update: PASS reminder'; unchanged promoted
+ok "after --promote, with the setting off: the same item is offered to everyone"
+rm -rf "$E2E/website/public"
+
 run_old install appcast.xml
 has install '^update-callers: 1 started, 1 busy, same checkID true$'; has install "result=available $NEW_V"; has install '^selftest-update: PASS'
 ok "two update-check callers: one started, one busy with the same checkID; status result available $NEW_V"
@@ -184,7 +254,7 @@ ok "after the update: Sparkle's cache holds no update archive or extracted app (
 
 kill $SERVER $SILENT 2>/dev/null || true; SERVER="" SILENT=""
 cleanup
-for f in "$TEST_USER_HOME/Library/Caches/$TEST_ID" "$TEST_USER_HOME/Library/Preferences/$TEST_ID.plist" "$TEST_USER_HOME/Library/HTTPStorages/$TEST_ID" "$E2E"/{install,new,down}; do
+for f in "$TEST_USER_HOME/Library/Caches/$TEST_ID" "$TEST_USER_HOME/Library/Preferences/$TEST_ID.plist" "$TEST_USER_HOME/Library/HTTPStorages/$TEST_ID" "$E2E"/{install,new,down,beta}; do
   [[ ! -e $f ]] || no "the test's own $f is still there after its clean-up"
 done
 ok "the test's own bundles, defaults and caches removed (logs kept in $E2E)"

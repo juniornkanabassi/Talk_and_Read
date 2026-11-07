@@ -1,7 +1,9 @@
 #!/bin/zsh
 # Publishes one Talk & Read release (PLAN 0.7.0 decision 4). Run only on Junior's explicit instruction to publish.
 #
-# Usage: zsh release.sh --website <website checkout> --notes <notes.md> [--zip <zip>] [--dmg <dmg>] [--resume] [--dry-run [--out <dir>]]
+# Usage: zsh release.sh --website <website checkout> --notes <notes.md> [--beta] [--zip <zip>] [--dmg <dmg>] [--resume] [--dry-run [--out <dir>]]
+#        zsh release.sh --website <website checkout> --promote <version> [--dry-run [--out <dir>]]
+#        zsh release.sh --website <website checkout> --withdraw <version> [--dry-run [--out <dir>]]
 #   1. build.sh (sign, notarise, staple; it writes the zip and the disk image), unless --zip names a zip it already made;
 #      --dmg names its disk image (default: the zip's path ending .dmg). The zip must hold only Talk & Read.app, a
 #      notarised build of this clean HEAD (TRSourceCommit) carrying Junior's Developer ID and the source's bundle id,
@@ -23,10 +25,22 @@
 #   7. report the tag (made and pushed in step 5, so the release and the source point at the same commit)
 # Releases up to 0.8.0 were first published on juniornkanabassi/talkandread-releases and were copied here byte for byte
 # on 25 Oct 2026, so the appcast now points every item at this repo.
-# Only x.y.z versions are released; prereleases never are.
+# Only x.y.z versions are released, a beta included: it is a normal version with a higher build number.
+# --beta: the same release, but its appcast item carries <sparkle:channel>beta</sparkle:channel> (only copies whose
+#   Settings ▸ General ▸ Get beta updates is on are offered it), the GitHub release is a prerelease, and no lib/apps.json
+#   release object is printed (the website keeps offering the last full release). Repeat --beta with --resume.
+# --promote <version>: make that beta a full release without rebuilding it. Downloads its zip and disk image from the
+#   GitHub release, checks the zip's length and EdDSA signature (with the key inside the zipped app) against the appcast
+#   item and the app's version and build against it, removes the item's channel tag (the enclosure, signature and length
+#   stay as they are), marks the GitHub release a full release, then replaces the website's appcast.xml (refused if it
+#   changed meanwhile) and prints the lib/apps.json release object. Refused if a full release with a higher build is
+#   already in the feed (Sparkle would never offer this one): publish a new build instead.
+# --withdraw <version>: remove that item from the appcast so the feed stops offering it. Sparkle cannot roll anyone
+#   back: copies that already installed it keep it until a newer build is published. Never reuse its build number.
+#   The GitHub release is left alone (mark it a prerelease or draft by hand).
 # --resume --zip <the zip it published>: finish a release a failed run left behind (never rebuilds): an existing
 #   release and tag are reused only when they match (each asset, if present, must be this file byte for byte; the tag
-#   must be on HEAD); a missing asset is uploaded and a draft is published. A prerelease is refused.
+#   must be on HEAD); a missing asset is uploaded and a draft is published. A prerelease is refused, unless --beta is repeated.
 # --dry-run: everything except the upload and the tag, into --out or a new /private/tmp/talkread-release-dry.XXXXXX;
 #   every check a real run would stop on is listed as "a real run would refuse" instead of stopping.
 # Every step stops the script on failure. It never commits to or pushes the website: the website session does that.
@@ -36,35 +50,146 @@ REPO=juniornkanabassi/Talk_and_Read
 ACCOUNT="${TALKREAD_SPARKLE_ACCOUNT:-talkandread}"
 # Every gh call names github.com, so GH_HOST cannot point publication at another host.
 GHREPO="github.com/$REPO"
-DRY=0 RESUME=0 WEBSITE="" NOTES="" ZIP="" DMG="" OUT=""
+DRY=0 RESUME=0 BETA=0 WEBSITE="" NOTES="" ZIP="" DMG="" OUT="" PROMOTE="" WITHDRAW=""
 die() { print -u2 "release.sh: $*"; exit 1; }
 while (( $# )); do case $1 in
   --dry-run) DRY=1; shift;;
   --resume) RESUME=1; shift;;
+  --beta) BETA=1; shift;;
+  --promote) PROMOTE=${2:-}; shift 2;;
+  --withdraw) WITHDRAW=${2:-}; shift 2;;
   --website) WEBSITE=${2:-}; shift 2;;
   --notes) NOTES=${2:-}; shift 2;;
   --zip) ZIP=${2:-}; shift 2;;
   --dmg) DMG=${2:-}; shift 2;;
   --out) OUT=${2:-}; shift 2;;
-  -h|--help) sed -n 2,32p "$0"; exit 0;;
+  -h|--help) sed -n 2,46p "$0"; exit 0;;
   *) die "unknown argument $1 (see --help)";; esac; done
 [[ -n $WEBSITE && -f $WEBSITE/lib/apps.json ]] || die "--website must be the website checkout (no lib/apps.json in '$WEBSITE')"
-[[ -n $NOTES && -s $NOTES ]] || die "--notes must name a non-empty Markdown file"
-! grep -q -e ']]>' -e '<item' -e '</item>' "$NOTES" || die "the notes may not contain ]]>, <item or </item>"
+if [[ -n $PROMOTE$WITHDRAW ]]; then
+  [[ -z $PROMOTE || -z $WITHDRAW ]] || die "--promote and --withdraw are separate runs"
+  (( ! BETA && ! RESUME )) && [[ -z $NOTES$ZIP$DMG ]] || die "--promote and --withdraw take only --website, --dry-run and --out"
+else
+  [[ -n $NOTES && -s $NOTES ]] || die "--notes must name a non-empty Markdown file"
+  ! grep -q -e ']]>' -e '<item' -e '</item>' "$NOTES" || die "the notes may not contain ]]>, <item or </item>"
+fi
 # A resumed run must reuse the zip already uploaded: rebuilding would replace it with different bytes.
 (( ! RESUME )) || [[ -n $ZIP ]] || die "--resume needs --zip naming the zip the first run published"
 (( DRY )) || [[ -z $OUT ]] || die "--out is for --dry-run only"
 src() { /usr/libexec/PlistBuddy -c "Print $1" "$ROOT/Resources/Info.plist"; }
 SRC_VERSION=$(src CFBundleShortVersionString)
+# A beta is the same release in the appcast's beta channel and a GitHub prerelease; BETAFLAG is for the rerun hints.
+CHANNEL="" PRE=false BETAFLAG="" PREFLAG=()
+(( ! BETA )) || { CHANNEL=beta PRE=true BETAFLAG=" --beta" PREFLAG=(--prerelease); }
 HEAD=$(git -C "$ROOT" rev-parse HEAD)
 STATUS=$(git -C "$ROOT" status --porcelain --untracked-files=all) || die "git status failed"
 CLEAN=$([[ -z $STATUS ]] && print 1 || print 0)
 step() { print "\n== $*"; }
+# The check that matters: the app's own public key (what every installed copy verifies with) accepts the signature.
+verify_sig() {   # <SUPublicEDKey> <signature> <zip>
+  /usr/bin/swift - "$1" "$2" "$3" <<'SWIFT'
+import CryptoKit
+import Foundation
+let a = CommandLine.arguments
+guard let key = Data(base64Encoded: a[1]), let sig = Data(base64Encoded: a[2]),
+      let pk = try? Curve25519.Signing.PublicKey(rawRepresentation: key),
+      pk.isValidSignature(sig, for: try Data(contentsOf: URL(fileURLWithPath: a[3]), options: .alwaysMapped)) else { exit(1) }
+SWIFT
+}
+digest() { [[ -f $1 ]] && shasum -a 256 "$1" | cut -d' ' -f1 || print none; }
+release_object() { cat <<JSON
+{
+  "version": "$VERSION",
+  "date": "$(date +%Y-%m-%d)",
+  "file": null,
+  "url": "$DMG_URL",
+  "bytes": $DMG_BYTES,
+  "sha256": "$DMG_SHA",
+  "minMacOS": "$MIN_MACOS",
+  "arch": "$ARCH",
+  "signing": "$SIGNING",
+  "notes": []
+}
+JSON
+}
 
-# Sparkle compares build numbers and the feed serves only full releases, so prereleases are never published here.
+# --promote and --withdraw edit the live feed only: no build, no zip of this checkout.
+if [[ -n $PROMOTE$WITHDRAW ]]; then
+  VERSION=${PROMOTE:-$WITHDRAW}
+  [[ $VERSION =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || die "'$VERSION' is not a release number (x.y.z)"
+  APPCAST="$WEBSITE/public/apps/talkandread/appcast.xml"
+  [[ -f $APPCAST ]] || die "no appcast at $APPCAST"
+  if (( DRY )); then
+    [[ -n $OUT ]] || OUT=$(mktemp -d /private/tmp/talkread-release-dry.XXXXXX)
+    OUT=${OUT:A}; mkdir -p "$OUT"
+  fi
+  WORK=$(mktemp -d /private/tmp/talkread-release.XXXXXX)
+  trap 'rm -rf "$WORK"' EXIT
+  SEEN=$(digest "$APPCAST")
+  APPCAST_PY=(/usr/bin/python3 -I "$ROOT/Tools/appcast.py")
+  if [[ -n $WITHDRAW ]]; then
+    step "Withdraw $VERSION from the appcast"
+    $APPCAST_PY withdraw "$APPCAST" "$WORK/appcast.xml" "$VERSION" || die "could not prepare the appcast"
+  else
+    step "Promote $VERSION to a full release"
+    gh auth status --hostname github.com >/dev/null 2>&1 || die "gh is not signed in to github.com"
+    ENC=("${(@f)$($APPCAST_PY enclosure "$APPCAST" "$VERSION")}") || die "the appcast has no single item for $VERSION"
+    URL=$ENC[1] LENGTH=$ENC[2] SIG=$ENC[3] BUILD=$ENC[4] MIN_MACOS=$ENC[5]
+    [[ $ENC[6] == beta ]] || die "the appcast's item for $VERSION is not a beta: nothing to promote"
+    DMG_URL="https://github.com/$REPO/releases/download/v$VERSION/Talk_and_Read_$VERSION.dmg"
+    [[ $URL == "https://github.com/$REPO/releases/download/v$VERSION/Talk_and_Read_$VERSION.zip" ]] || die "the item's enclosure is $URL, not this repository's v$VERSION zip"
+    STATE=$(gh release view "v$VERSION" --repo $GHREPO --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"') || die "no GitHub release v$VERSION on $REPO"
+    [[ $STATE == "false "* ]] || die "v$VERSION on $REPO is still a draft"
+    # What the release holds now, downloaded back: the zip must be the one the appcast's signature and length describe.
+    for name in Talk_and_Read_$VERSION.zip Talk_and_Read_$VERSION.dmg; do
+      gh release download "v$VERSION" --repo $GHREPO --pattern "$name" --dir "$WORK/dl" || die "could not download $name"
+    done
+    ZIP="$WORK/dl/Talk_and_Read_$VERSION.zip" DMG="$WORK/dl/Talk_and_Read_$VERSION.dmg"
+    [[ $(stat -f %z "$ZIP") == $LENGTH ]] || die "the release's zip is not $LENGTH bytes, the length in the appcast"
+    /usr/bin/ditto -x -k "$ZIP" "$WORK/app" || die "could not unpack the zip"
+    APP="$WORK/app/Talk & Read.app"
+    plist() { /usr/libexec/PlistBuddy -c "Print $1" "$APP/Contents/Info.plist" 2>/dev/null || true; }
+    [[ $(plist CFBundleShortVersionString) == $VERSION && $(plist CFBundleVersion) == $BUILD ]] \
+      || die "the zipped app is $(plist CFBundleShortVersionString) (build $(plist CFBundleVersion)), not $VERSION (build $BUILD) as the appcast says"
+    KEY=$(plist SUPublicEDKey)
+    verify_sig "$KEY" "$SIG" "$ZIP" || die "the zip's signature in the appcast does not match the app's SUPublicEDKey"
+    print "Zip verified: $LENGTH bytes, signature accepted by the app's own SUPublicEDKey"
+    ARCHS=$(/usr/bin/lipo -archs "$APP/Contents/MacOS/TalkRead") || die "could not read the app's architectures"
+    ARCH=$ARCHS; [[ $ARCH == "x86_64 arm64" || $ARCH == "arm64 x86_64" ]] && ARCH=universal
+    if /usr/bin/xcrun stapler validate -q "$APP" 2>/dev/null; then SIGNING=notarised; else SIGNING=not-notarised; fi
+    DMG_BYTES=$(stat -f %z "$DMG") DMG_SHA=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
+    $APPCAST_PY promote "$APPCAST" "$WORK/appcast.xml" "$VERSION" || die "could not prepare the appcast"
+    if (( DRY )); then
+      print "dry run, not run: gh release edit v$VERSION --prerelease=false --repo $GHREPO"
+    else
+      gh release edit "v$VERSION" --repo $GHREPO --prerelease=false || die "could not mark v$VERSION a full release (rerun --promote $VERSION)"
+      [[ $(gh release view "v$VERSION" --repo $GHREPO --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"') == "false false" ]] \
+        || die "v$VERSION on $REPO is still a prerelease or draft (rerun --promote $VERSION)"
+    fi
+  fi
+  step "Website appcast"
+  if (( DRY )); then
+    APPCAST="$OUT/appcast.xml"
+    /bin/cp "$WORK/appcast.xml" "$APPCAST"
+  else
+    [[ $(digest "$APPCAST") == $SEEN ]] || die "$APPCAST changed while this ran; rerun it"
+    /bin/cp "$WORK/appcast.xml" "$APPCAST.tmp.$$" && /bin/mv -f "$APPCAST.tmp.$$" "$APPCAST" || die "could not write $APPCAST"
+  fi
+  print "Wrote $APPCAST"
+  if [[ -n $PROMOTE ]]; then
+    print "\nRelease object for lib/apps.json (the website session commits it with $APPCAST):"
+    release_object
+  else
+    print "The website session commits $APPCAST. Copies that already installed $VERSION keep it: publish a higher build to move them on."
+  fi
+  exit 0
+fi
+
+# Beta versions are ordinary x.y.z numbers: Sparkle compares build numbers, and the beta channel tag keeps an item
+# from copies that have not opted in.
 EXISTS=0 TAGGED=0
 preflight=()   # read-only checks: a real run stops on any of them, a dry run lists them
-[[ $SRC_VERSION =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || preflight+=("version '$SRC_VERSION' is not a release number (x.y.z); prereleases are not published")
+[[ $SRC_VERSION =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || preflight+=("version '$SRC_VERSION' is not a release number (x.y.z)")
 (( CLEAN )) || preflight+=("the source has uncommitted changes; commit them first")
 # The tag is pushed to origin and the release is made on $REPO, so they must be the same repository.
 ORIGIN=$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)
@@ -212,14 +337,7 @@ DMG_BYTES=$(stat -f %z "$DMG")
 DMG_SHA=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
 "$SIGN_UPDATE" --account "$ACCOUNT" --verify "$ZIP" "$SIG" || die "sign_update --verify rejected the signature"
 # The check that matters: the app's own public key (what every installed copy verifies with) accepts the signature.
-/usr/bin/swift - "$KEY" "$SIG" "$ZIP" <<'SWIFT' || die "the signature does not match the app's SUPublicEDKey (wrong keychain account?)"
-import CryptoKit
-import Foundation
-let a = CommandLine.arguments
-guard let key = Data(base64Encoded: a[1]), let sig = Data(base64Encoded: a[2]),
-      let pk = try? Curve25519.Signing.PublicKey(rawRepresentation: key),
-      pk.isValidSignature(sig, for: try Data(contentsOf: URL(fileURLWithPath: a[3]), options: .alwaysMapped)) else { exit(1) }
-SWIFT
+verify_sig "$KEY" "$SIG" "$ZIP" || die "the signature does not match the app's SUPublicEDKey (wrong keychain account?)"
 print "Signature verified against the app's SUPublicEDKey ($BYTES bytes)"
 
 step "3. Appcast (prepared privately; the website copy changes only after the asset is verified)"
@@ -227,118 +345,14 @@ URL="https://github.com/$REPO/releases/download/v$VERSION/Talk_and_Read_$VERSION
 # Versioned, because the website checks each stored release against its own bytes and sha256.
 DMG_URL="https://github.com/$REPO/releases/download/v$VERSION/Talk_and_Read_$VERSION.dmg"
 APPCAST="$WEBSITE/public/apps/talkandread/appcast.xml"
-digest() { [[ -f $1 ]] && shasum -a 256 "$1" | cut -d' ' -f1 || print none; }
 SEEN=$(digest "$APPCAST")
-/usr/bin/python3 -I - "$APPCAST" "$WORK/appcast.xml" "$VERSION" "$BUILD" "$URL" "$BYTES" "$SIG" "$NOTES" "$RESUME" "$MIN_MACOS" <<'PY' || die "could not prepare the appcast"
-import email.utils, html, os, re, sys, xml.etree.ElementTree as ET
-source, path, version, build, url, length, sig, notes, resume, min_macos = sys.argv[1:]
-SP = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
-notes = open(notes, encoding="utf-8").read().strip()
-e = lambda s: html.escape(s, quote=True)
-if os.path.exists(source):
-    feed = open(source, encoding="utf-8").read()
-else:
-    feed = """<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel>
-    <title>Talk &amp; Read</title>
-    <link>https://juniornkanabassi.com/apps/talkandread/</link>
-    <description>Updates for Talk &amp; Read</description>
-    <language>en</language>
-  </channel>
-</rss>
-"""
-def one(item, name):
-    """A value Sparkle reads from any of the item's elements (it picks one by language) or from the enclosure's
-    attribute; values that differ are ambiguous."""
-    enclosure = item.find("enclosure")
-    if any(len(el) for el in item.findall(SP + name)):   # Sparkle reads all nested text; refuse rather than differ
-        sys.exit(f"an appcast item's {name} holds child elements: refusing to guess")
-    values = [el.text or "" for el in item.findall(SP + name)] + ([] if enclosure is None else [enclosure.get(SP + name)])
-    found = {v.strip() for v in values if v is not None}
-    if len(found) > 1:
-        sys.exit(f"an appcast item has two {name} values {sorted(found)}: refusing to guess")
-    return next(iter(found), None)
-
-def items(text):
-    """Every item's build and version; anything this script cannot read for certain stops it."""
-    if any(uri != SP[1:-1] for uri in re.findall(r'xmlns:sparkle\s*=\s*["\']([^"\']*)', text)):
-        sys.exit("the appcast binds the sparkle prefix to another namespace, which Sparkle would still read: refusing to guess")
-    # New items are written with the sparkle prefix, so the rss element itself must bind it to Sparkle's namespace.
-    if not re.search(r'<rss\b[^>]*\bxmlns:sparkle\s*=\s*["\']' + re.escape(SP[1:-1]) + '["\']', text):
-        sys.exit("the appcast's rss element does not declare xmlns:sparkle")
-    root = ET.fromstring(text.encode("utf-8"))
-    channels = root.findall("channel")
-    if root.tag != "rss" or len(channels) != 1 or len(root.findall(".//item")) != len(channels[0].findall("item")):
-        sys.exit("the appcast must be one RSS channel holding every item")
-    out = []
-    for item in channels[0].findall("item"):
-        if len(item.findall("enclosure")) != 1:
-            sys.exit(f"an appcast item has {len(item.findall('enclosure'))} enclosures; only one download per item is supported")
-        if not (item.find("enclosure").get("url") or "").startswith("https://"):
-            sys.exit("an appcast item's enclosure has no https url, which makes Sparkle reject the whole feed")
-        b = one(item, "version")
-        if b is None or not b.isdigit():
-            sys.exit(f"an appcast item's build number is {b!r}, not a whole number")
-        out.append((int(b), one(item, "shortVersionString")))
-    if len({b for b, _ in out}) != len(out):
-        sys.exit("the appcast lists one build number twice")
-    return out
-
-# Installed copies compare build numbers, so every release needs a higher one; only a resumed release may repeat its own.
-if not build.isdigit():
-    sys.exit(f"CFBundleVersion '{build}' is not a whole number")
-known = items(feed)
-blocks = re.findall(r"[ \t]*<item\b.*?</item>[ \t]*\n?", feed, re.S)
-if len(blocks) != len(known):
-    sys.exit("the appcast's items cannot be matched to its text one to one")
-top = max((b for b, _ in known), default=0)
-resumed = int(build) == top and resume == "1" and (top, version) in known
-if int(build) <= top and not resumed:
-    sys.exit(f"build {build} must be greater than every build in the appcast (highest {top}); equal only with --resume for the same version")
-if resumed:
-    feed = feed.replace(blocks[known.index((top, version))], "", 1)
-item = f"""    <item>
-      <title>Version {e(version)}</title>
-      <pubDate>{email.utils.formatdate(usegmt=True)}</pubDate>
-      <sparkle:version>{e(build)}</sparkle:version>
-      <sparkle:shortVersionString>{e(version)}</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>{e(min_macos)}</sparkle:minimumSystemVersion>
-      <description sparkle:format="markdown"><![CDATA[{notes}]]></description>
-      <enclosure url="{e(url)}" length="{e(length)}" type="application/octet-stream" sparkle:edSignature="{e(sig)}"/>
-    </item>
-"""
-at = feed.find("<item")
-at = at if at >= 0 else feed.index("</channel>")
-line = feed.rfind("\n", 0, at) + 1
-if not feed[line:at].strip():   # only indentation before it: insert at the start of that line
-    at = line
-feed = feed[:at] + item + feed[at:]
-if items(feed)[0] != (int(build), version):   # the whole feed still reads, with the new item first
-    sys.exit("the new item did not read back as the first item")
-open(path, "w", encoding="utf-8").write(feed)
-print(f"{'Replaced' if resumed else 'Added'} the item for {version} (build {build}); prepared at {path}")
-PY
+/usr/bin/python3 -I "$ROOT/Tools/appcast.py" add "$APPCAST" "$WORK/appcast.xml" "$VERSION" "$BUILD" "$URL" "$BYTES" "$SIG" "$NOTES" "$RESUME" "$MIN_MACOS" "$CHANNEL" || die "could not prepare the appcast"
 
 step "4. Release object for lib/apps.json (newest first in the app's releases)"
 ARCH=$ARCHS
 [[ $ARCH == "x86_64 arm64" || $ARCH == "arm64 x86_64" ]] && ARCH=universal
-release_object() { cat <<JSON
-{
-  "version": "$VERSION",
-  "date": "$(date +%Y-%m-%d)",
-  "file": null,
-  "url": "$DMG_URL",
-  "bytes": $DMG_BYTES,
-  "sha256": "$DMG_SHA",
-  "minMacOS": "$MIN_MACOS",
-  "arch": "$ARCH",
-  "signing": "$SIGNING",
-  "notes": []
-}
-JSON
-}
-if (( DRY )); then release_object; else print "Printed after step 5, once both assets are verified on the release"; fi
+if (( BETA )); then print "Beta: no release object; the website keeps offering the last full release (--promote prints it)"
+elif (( DRY )); then release_object; else print "Printed after step 5, once both assets are verified on the release"; fi
 
 # The files are copied under their asset names for gh; WANT maps each name to its sha256.
 NAMES=("Talk_and_Read_$VERSION.zip" "Talk_and_Read_$VERSION.dmg")
@@ -348,13 +362,13 @@ typeset -A WANT=("Talk_and_Read_$VERSION.zip" $SHA "Talk_and_Read_$VERSION.dmg" 
 step "5. GitHub release v$VERSION on $REPO"
 if (( DRY )); then
   print "dry run, not run: git tag -a v$VERSION -m 'Talk & Read $VERSION' $HEAD; git push origin refs/tags/v$VERSION"
-  print "dry run, not run: gh release create v$VERSION --draft --verify-tag ${(q)NAMES} --repo $GHREPO --title 'Talk & Read $VERSION' --notes-file '$NOTES'"
+  print "dry run, not run: gh release create v$VERSION --draft ${PREFLAG[@]} --verify-tag ${(q)NAMES} --repo $GHREPO --title 'Talk & Read $VERSION' --notes-file '$NOTES'"
   print "asset Talk_and_Read_$VERSION.zip: $BYTES bytes, sha256 $SHA (Sparkle appcast enclosure)"
   print "asset Talk_and_Read_$VERSION.dmg: $DMG_BYTES bytes, sha256 $DMG_SHA (website download)"
   # Only when the zip is this source's version: a different one is already listed above as a refusal.
   if (( EXISTS )) && [[ $VERSION == $SRC_VERSION ]]; then
-    [[ $(gh release view "v$VERSION" --repo $GHREPO --json isPrerelease --jq .isPrerelease) == false ]] \
-      || print "dry run: a real run would refuse: v$VERSION on $REPO is a prerelease"
+    [[ $(gh release view "v$VERSION" --repo $GHREPO --json isPrerelease --jq .isPrerelease) == $PRE ]] \
+      || print "dry run: a real run would refuse: v$VERSION on $REPO is not a $( (( BETA )) && print "beta prerelease" || print "full release" )"
     HAVE=$(gh release view "v$VERSION" --repo $GHREPO --json assets --jq '.assets[].name')
     for name in $NAMES; do
       print -r -- "$HAVE" | grep -qx "$name" || { print "dry run: $name would be uploaded"; continue; }
@@ -374,16 +388,17 @@ else
     git -C "$ROOT" tag -a "v$VERSION" -m "Talk & Read $VERSION" "$HEAD" || die "git tag failed"
     TAGGED=1
   fi
-  git -C "$ROOT" push origin "refs/tags/v$VERSION" || die "could not push tag v$VERSION (rerun with --resume --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
+  git -C "$ROOT" push origin "refs/tags/v$VERSION" || die "could not push tag v$VERSION (rerun with --resume$BETAFLAG --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
   RTAGS=$(git -C "$ROOT" ls-remote origin "refs/tags/v$VERSION" "refs/tags/v$VERSION^{}") \
-    || die "could not read tag v$VERSION back from origin; nothing uploaded (rerun with --resume --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
+    || die "could not read tag v$VERSION back from origin; nothing uploaded (rerun with --resume$BETAFLAG --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
   RTAG=$(print -r -- "$RTAGS" | sort -k2 | tail -1 | cut -f1)
   [[ $RTAG == $HEAD ]] || die "tag v$VERSION on origin is '$RTAG', not $HEAD; nothing uploaded"
   if (( EXISTS )); then
-    # A prerelease is not what /releases/latest serves, so the appcast and website must not point at it. A draft is
-    # what an interrupted gh release create leaves: it is finished below once its assets check out.
+    # A full release must not be a prerelease (it is not what /releases/latest serves, so the website must not point
+    # at it), and a beta must be one. A draft is what an interrupted gh release create leaves: it is finished below
+    # once its assets check out.
     STATE=$(gh release view "v$VERSION" --repo $GHREPO --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')
-    [[ $STATE == *" false" ]] || die "v$VERSION on $REPO is a prerelease; make it a full release first, then rerun with --resume --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG}"
+    [[ $STATE == *" $PRE" ]] || die "v$VERSION on $REPO is not a $( (( BETA )) && print "beta prerelease" || print "full release" ) (--beta must match the earlier run; --promote publishes a beta); nothing uploaded"
     HAVE=$(gh release view "v$VERSION" --repo $GHREPO --json assets --jq '.assets[].name')
     missing=()
     for name in $NAMES; do   # every asset already there is checked first; only then is a missing one uploaded
@@ -399,25 +414,24 @@ else
     for name in $missing; do gh release upload "v$VERSION" "$WORK/$name" --repo $GHREPO || die "gh release upload $name failed"; done
   else
     # Created as a draft and published only after both assets are downloaded back and verified, below.
-    STATE="true false"
-    gh release create "v$VERSION" --draft --verify-tag "$WORK/Talk_and_Read_$VERSION.zip" "$WORK/Talk_and_Read_$VERSION.dmg" --repo $GHREPO --title "Talk & Read $VERSION" --notes-file "$NOTES" || die "gh release create failed (rerun with --resume --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
+    STATE="true $PRE"
+    gh release create "v$VERSION" --draft "${PREFLAG[@]}" --verify-tag "$WORK/Talk_and_Read_$VERSION.zip" "$WORK/Talk_and_Read_$VERSION.dmg" --repo $GHREPO --title "Talk & Read $VERSION" --notes-file "$NOTES" || die "gh release create failed (rerun with --resume$BETAFLAG --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
   fi
   for name in $NAMES; do
-    gh release download "v$VERSION" --repo $GHREPO --pattern "$name" --dir "$WORK/remote" || die "could not download $name back (rerun with --resume --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
+    gh release download "v$VERSION" --repo $GHREPO --pattern "$name" --dir "$WORK/remote" || die "could not download $name back (rerun with --resume$BETAFLAG --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
     [[ $(shasum -a 256 "$WORK/remote/$name" | cut -d' ' -f1) == $WANT[$name] ]] \
       || die "v$VERSION on $REPO holds a different $name (sha256 differs): refusing a conflicting release; the website appcast is unchanged"
     print "Verified $name on the release (sha256 $WANT[$name])"
   done
   if [[ $STATE == "true "* ]]; then
-    gh release edit "v$VERSION" --repo $GHREPO --draft=false --verify-tag || die "could not publish the draft v$VERSION (rerun with --resume --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
+    gh release edit "v$VERSION" --repo $GHREPO --draft=false --verify-tag || die "could not publish the draft v$VERSION (rerun with --resume$BETAFLAG --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG})"
   fi
-  [[ $(gh release view "v$VERSION" --repo $GHREPO --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"') == "false false" ]] \
-    || die "v$VERSION on $REPO is still a draft or prerelease"
+  [[ $(gh release view "v$VERSION" --repo $GHREPO --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"') == "false $PRE" ]] \
+    || die "v$VERSION on $REPO is still a draft, or its prerelease flag is not $PRE"
   print "Published v$VERSION"
   print "Zip (appcast): $URL"
   print "DMG (website): $DMG_URL"
-  print "\nRelease object for lib/apps.json:"
-  release_object
+  (( BETA )) || { print "\nRelease object for lib/apps.json:"; release_object; }
 fi
 
 step "6. Website appcast"
@@ -425,7 +439,7 @@ if (( DRY )); then
   APPCAST="$OUT/appcast.xml"
   /bin/cp "$WORK/appcast.xml" "$APPCAST"
 else
-  [[ $(digest "$APPCAST") == $SEEN ]] || die "$APPCAST changed while this ran; rerun with --resume --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG}"
+  [[ $(digest "$APPCAST") == $SEEN ]] || die "$APPCAST changed while this ran; rerun with --resume$BETAFLAG --zip ${(q)SRC_ZIP} --dmg ${(q)SRC_DMG}"
   mkdir -p "${APPCAST:h}"
   /bin/cp "$WORK/appcast.xml" "$APPCAST.tmp.$$" && /bin/mv -f "$APPCAST.tmp.$$" "$APPCAST" || die "could not write $APPCAST"
 fi
@@ -436,5 +450,5 @@ if (( DRY )); then
   print "dry run: the tag is made and pushed in step 5"
   print "\nDry run done: appcast $APPCAST"
 else
-  print "v$VERSION is on HEAD and origin. The website session commits $APPCAST and the release object above."
+  print "v$VERSION is on HEAD and origin. The website session commits $APPCAST$( (( BETA )) || print " and the release object above" )."
 fi

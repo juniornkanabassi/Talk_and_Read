@@ -12,7 +12,7 @@ How to review changes to Talk & Read. The shared rules (lanes, check results, fi
 
 ## Always High
 
-Insertion and the pasteboard, persistence of user files, Accessibility waking (`AXEnhancedUserInterface`), Sparkle and the update feed, `build.sh`, `release.sh`, `install.sh`.
+Insertion and the pasteboard, persistence of user files, Accessibility waking (`AXEnhancedUserInterface`), Sparkle and the update feed (the beta channel and `Tools/appcast.py` included), `build.sh`, `release.sh`, `install.sh`.
 
 ## Always check
 
@@ -30,7 +30,8 @@ Each check is listed with its last result in the review workflow rollout (1 Nov 
 | `zsh Tools/check-release.sh --selfcheck` | the status aggregator, and that a version mismatch FAILs | PASS (branch `review/checker-version`) |
 | `zsh Tools/check-release.sh --static-only <app>` | bundle, signature, Sparkle packaging, CLI help | PASS on the 1.0.1 zip, FAIL as expected on a stale bundle |
 | `zsh Tools/check-release.sh <app>` | every checklist line headless | NOT RUN |
-| `Tools/update-e2e.sh` | updater discovery, bad signature, downgrade, install | NOT RUN |
+| `Tools/update-e2e.sh` | updater discovery, bad signature, downgrade, install, and the beta channel (off by default, on, `--promote`) | NOT RUN |
+| `zsh Tools/test-appcast.sh` | the appcast edits behind `--beta`, `--promote` and `--withdraw`, on fixtures | not in the 1 Nov table; PASS on `beta-channel` |
 
 ## Skip
 

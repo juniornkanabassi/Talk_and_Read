@@ -40,6 +40,8 @@ Select some text and press ⌃A to hear it, or hold left Option and click the pl
 
 Talk & Read checks for updates each time it opens and once a day while it runs, and shows you the release notes before anything changes. It installs an update only when you say yes, unless you tick the option to install updates automatically. Check for Updates… in the menu bar menu checks straight away.
 
+Early builds come first to anyone who turns on Settings ▸ General ▸ Get beta updates (or runs `talkread settings-set betaUpdates on`). It is off by default, so nobody sees a beta unless they ask. Turning it off later does not go back to an earlier version; the next full release simply replaces the beta.
+
 ## Privacy
 
 Reading and dictation run on your Mac, so your text, audio and documents are not sent anywhere. There are no accounts and no analytics. The voices and the dictation model download from Hugging Face when you choose them. If you skip the dictation model, the app uses Apple's speech recogniser when that is already installed, and otherwise your first dictation downloads the model. The app checks juniornkanabassi.com for updates and downloads them from GitHub, and it fetches a web page only when you ask it to open one. If you connect an AI assistant, the commands you let it run can pass your text and history to that assistant.
@@ -90,7 +92,7 @@ Nearly everything you can do in the windows and the menu has a command:
 - Library: `open`, `open-url`, `library`, `library-open`, `library-remove`.
 - Dictation: `dictate-start`, `dictate-stop`, `dictate-cancel`, `dictate-file`, `dictation-last`, `insert-again`, `mic`, `vocabulary`, `vocabulary-set`, `vocabulary-remove`, `vocabulary-suggestion`.
 - History: `history`, `history-delete`.
-- Settings: `settings-get`, `settings-set` (shortcuts included), `shortcuts-reset`, `pronunciations`, `pronunciation-set`, `pronunciation-remove`, `models`, `update-check`, `status`.
+- Settings: `settings-get`, `settings-set` (shortcuts included), `shortcuts-reset`, `pronunciations`, `pronunciation-set`, `pronunciation-remove`, `models`, `update-check`, `status`. `settings-set betaUpdates on` opts in to beta updates.
 
 Several assistants can work at once. A request retried with the same `--request-id` within a few minutes acts only once, as long as the app and the MCP server have not restarted, and anything that removes something (`library-remove`, `history-delete`, `vocabulary-remove`, `pronunciation-remove`, `shortcuts-reset`) is refused without `--yes`. A few things stay in the app on purpose: granting permissions, the first-run setup, the screenshot and listen drag, window placement, and downloading the Breeze voices, which only start beside their licence in Settings ▸ Models.
 
@@ -103,7 +105,7 @@ swift build --scratch-path /private/tmp/talkread-build
 swift test  --scratch-path /private/tmp/talkread-build
 ```
 
-`build.sh` makes a signed `Talk & Read.app` and a zip. It signs with my Developer ID when that certificate is in the keychain, and then also notarises it and makes the disk image. Without it, run `TALKREAD_ALLOW_ADHOC=1 ./build.sh` for an ad hoc copy, which has updates turned off. `install.sh` only accepts my Developer ID builds, so unzip an ad hoc copy and move the app into Applications yourself. `install.sh` installs a build into `/Applications/JuniorOS Apps/` (set `TALKREAD_INSTALL_ROOT` to change it, and adjust the paths in the examples above to match), and `./release.sh --website <checkout> --notes notes.md [--dry-run]` publishes a release, which only I do. Builds go to `../Outputs`, outside the clone, unless you set `TALKREAD_OUTPUT_ROOT`. These scripts are written for my own Mac.
+`build.sh` makes a signed `Talk & Read.app` and a zip. It signs with my Developer ID when that certificate is in the keychain, and then also notarises it and makes the disk image. Without it, run `TALKREAD_ALLOW_ADHOC=1 ./build.sh` for an ad hoc copy, which has updates turned off. `install.sh` only accepts my Developer ID builds, so unzip an ad hoc copy and move the app into Applications yourself. `install.sh` installs a build into `/Applications/JuniorOS Apps/` (set `TALKREAD_INSTALL_ROOT` to change it, and adjust the paths in the examples above to match), and `./release.sh --website <checkout> --notes notes.md [--beta] [--dry-run]` publishes a release, which only I do. `--beta` puts it in the appcast's beta channel (and makes the GitHub release a prerelease) for people who opted in, `--promote <version>` later makes that same build a full release without rebuilding it, and `--withdraw <version>` takes an item out of the feed (Sparkle cannot roll anyone back, so a fix needs a higher build number). Builds go to `../Outputs`, outside the clone, unless you set `TALKREAD_OUTPUT_ROOT`. These scripts are written for my own Mac.
 
 The source folder on my Mac is synced with iCloud, so I always build with a scratch path outside it, as above. Design notes live outside this repository.
 
