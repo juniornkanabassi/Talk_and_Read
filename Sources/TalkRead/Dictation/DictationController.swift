@@ -210,6 +210,9 @@ enum DictationError: LocalizedError, Equatable {
         }
     }
 
+    /// When the key was let go, for the log's "text N ms after release".
+    private var releasedAt: TimeInterval?
+
     func stop(insert: Bool, caller: String, force: Bool = false) throws {
         guard let current = owner else { return }
         guard current == caller || caller == Self.user || force else { throw DictationError.busy(owner: current) }
@@ -218,6 +221,7 @@ enum DictationError: LocalizedError, Equatable {
         feed?.finish()                                            // the recogniser finishes while the input stops
         feed = nil
         _ = audio.stop()
+        releasedAt = ProcessInfo.processInfo.systemUptime
         micNotice = nil
         state = .transcribing
         play("Pop")
@@ -357,6 +361,8 @@ enum DictationError: LocalizedError, Equatable {
         guard gen == generation else { return nil }               // discard() has already stopped the input
         if let notice = audio.fallbackNotice { micNotice = notice }   // the chosen mic went away after it was resolved
         if case .recording = state {} else { _ = audio.stop() }   // stopped while the microphone was starting
+        let began = ProcessInfo.processInfo.systemUptime
+        releasedAt = nil
         let raw: Transcript
         do { raw = try await transcript.value } catch {
             guard gen == generation else { return nil }
@@ -364,7 +370,9 @@ enum DictationError: LocalizedError, Equatable {
             show(failure: .failed("Could not transcribe: \(error.localizedDescription)"))
             return nil
         }
+        let heard = ProcessInfo.processInfo.systemUptime
         let text = await clean(raw, languages: languages)
+        let cleaned = ProcessInfo.processInfo.systemUptime
         guard gen == generation else { return nil }
         guard !text.isEmpty else {
             owner = nil
@@ -376,6 +384,7 @@ enum DictationError: LocalizedError, Equatable {
         // Re-checked inside the pasteboard transaction right before the paste: a cancelled utterance is never typed.
         let result = insertOnStop ? await insert(text, nil, true, { [weak self] in self?.generation == gen }) : .inserted(confirmed: false)
         guard gen == generation else { return nil }
+        Log.write("dictation: \(text.split(whereSeparator: \.isWhitespace).count) words into \(app ?? "?"), held \(String(format: "%.1f", (releasedAt ?? heard) - began)) s, text \(Int((heard - (releasedAt ?? heard)) * 1000)) ms after release, cleanup \(Int((cleaned - heard) * 1000)) ms, insert \(Int((ProcessInfo.processInfo.systemUptime - cleaned) * 1000)) ms, \(result.landed ? "inserted" : "not inserted")")
         if result != .refusedSecure {
             remember(text, app: app, bundleID: bundleID)   // never keep what was said into a password field
         }
@@ -568,6 +577,7 @@ enum DictationError: LocalizedError, Equatable {
 
     /// `text`: what was said, kept in the history, so Copy offers it (never after a password field refused it).
     private func show(failure: InsertResult, text: String? = nil) {
+        if case .failed(let reason) = failure { Log.write("dictation failed: \(reason)") }
         switch failure {
         case .refusedSecure: state = .failed(Inserter.refusal()); copyable = nil
         case .failed(let reason): state = .failed(reason); copyable = text

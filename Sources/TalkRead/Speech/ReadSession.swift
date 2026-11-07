@@ -161,7 +161,13 @@ import TalkReadCore
         producer?.cancel()
         ticker?.cancel()
         player.reset()
-        if state != .finished { state = .finished }
+        if state != .finished { logEnd("stopped"); state = .finished }
+    }
+
+    /// One line per read in talkread.log, so a bad day on one Mac can be read back afterwards (Junior, 7 Nov 2026).
+    private func logEnd(_ how: String) {
+        let seconds = startedAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
+        Log.write("read ended: \(how) at word \((currentToken ?? 0) + 1) of \(tokens.count) after \(seconds) s, first audio \(firstAudioMs.map { "\($0) ms" } ?? "none")")
     }
 
     func skip(sentences: Int) {
@@ -559,6 +565,7 @@ import TalkReadCore
         producer?.cancel()
         ticker?.cancel()
         player.reset()
+        logEnd("finished")
         state = .finished
     }
 
@@ -567,6 +574,7 @@ import TalkReadCore
         producer?.cancel()
         ticker?.cancel()
         player.reset()
+        logEnd("failed (\(message))")
         state = .failed(message)
     }
 }
