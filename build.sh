@@ -18,7 +18,7 @@ trap cleanup EXIT
 export MODULE_CACHE_PATH="$BUILD_ROOT/ModuleCache"
 export CLANG_MODULE_CACHE_PATH="$BUILD_ROOT/ClangModuleCache"
 export SWIFT_MODULECACHE_PATH="$BUILD_ROOT/SwiftModuleCache"
-BUILD_ARGS=(--package-path "$ROOT" --configuration release --scratch-path "$BUILD_ROOT"
+BUILD_ARGS=(--package-path "$ROOT" --configuration release --force-resolved-versions --scratch-path "$BUILD_ROOT"
             --cache-path "$BUILD_ROOT/Cache" --config-path "$BUILD_ROOT/Config" --security-path "$BUILD_ROOT/Security")
 # The commit this builds, taken before compiling ("-dirty" with uncommitted changes). release.sh publishes only a
 # clean HEAD's build; packaging stops below if HEAD or the worktree moves while it runs.
