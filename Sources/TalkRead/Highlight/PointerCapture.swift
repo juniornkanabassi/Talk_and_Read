@@ -194,7 +194,8 @@ enum PointerCapture {
     /// In T3 Code only the chat's timeline is read: the thread sidebar, the composer and the footer never get a glyph
     /// (Junior, 1 Nov). Elsewhere every paragraph counts.
     private static func inChat(_ element: AXUIElement, pid: pid_t, area: AXUIElement) -> Bool {
-        guard NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.t3tools.t3code" else { return true }
+        guard NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.t3tools.t3code",
+              ReadHere.isT3Interface(url: axAttribute(area, "AXURL") as? URL) else { return true }
         var current = element
         for _ in 0..<40 {
             if ((axAttribute(current, "AXDOMClassList") as? [String]) ?? []).contains(where: { $0.hasPrefix("messages-timeline-scroll") }) { return true }

@@ -56,6 +56,13 @@ public struct RevealState: Equatable, Sendable {
 }
 
 public enum ReadHere {
+    /// Whether a web area in T3 Code is the app's own interface (served from `t3code://`), where only the chat timeline
+    /// is read. Its HTML previews and artifacts (srcdoc frames, data: pages, webviews, localhost) are pages of their own,
+    /// read like any web page. No URL: assume the interface, as before (Junior, 7 Nov).
+    public static func isT3Interface(url: URL?) -> Bool {
+        url.map { $0.scheme?.lowercased() == "t3code" } ?? true
+    }
+
     /// The UTF-16 offset where the paragraph holding `index` starts in `text`: just after the last line break before it.
     public static func paragraphStart(_ text: String, at index: Int) -> Int {
         let ns = text as NSString

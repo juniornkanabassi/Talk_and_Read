@@ -4,6 +4,14 @@ import XCTest
 /// Read from here (1.0): the reveal key's state machine, a paragraph's start in plain text, the node join, and the
 /// two settings.
 final class ReadHereTests: XCTestCase {
+    func testOnlyT3CodesOwnInterfaceIsLimitedToTheChat() {
+        XCTAssertTrue(ReadHere.isT3Interface(url: URL(string: "t3code://app/thread/1")))
+        XCTAssertTrue(ReadHere.isT3Interface(url: nil), "no URL keeps the chat-only rule")
+        for preview in ["about:srcdoc", "data:text/html,<p>hi</p>", "http://localhost:5173/", "https://claude.ai/artifact/x", "file:///tmp/a.html"] {
+            XCTAssertFalse(ReadHere.isT3Interface(url: URL(string: preview)), preview)
+        }
+    }
+
     func testGlyphShowsOnceTheKeyIsHeldAloneForTheDelay() {
         var r = RevealState()
         XCTAssertEqual(r.handle(.keyDown, at: 0), [])
