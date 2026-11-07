@@ -101,8 +101,8 @@ extension EngineKind {
         let engine = self.engines.engine(for: Voice(id: voice, name: "", accent: "", gender: "", engine: .neural, installed: true))
         try await engine.prepare(voice: voice)
     }
-    lazy var downloadDictationFiles: (Bool, @escaping (Double) -> Void) async throws -> Void = { [weak self] boosting, progress in
-        try await Transcriber.downloadFiles(includeBoosting: boosting, progress: progress)
+    lazy var downloadDictationFiles: (@escaping (Double) -> Void) async throws -> Void = { [weak self] progress in
+        try await Transcriber.downloadFiles(progress: progress)
         try Task.checkCancellation()
         guard let self else { throw CancellationError() }
         try await self.dictation.asr.loadCached()
@@ -279,10 +279,10 @@ extension EngineKind {
         }
         if rows != models { models = rows }
         guard downloadTask == nil else { return }
-        if case .failed = voiceModel {}
-        else if NeuralEngine.modelInstalled() { voiceModel = .ready } else { voiceModel = .missing(megabytes: Self.voiceMegabytes) }
-        if case .failed = dictationModel {}
-        else if Transcriber.isDownloaded { dictationModel = .ready } else { dictationModel = .missing(megabytes: Self.dictationMegabytes) }
+        if NeuralEngine.modelInstalled() { voiceModel = .ready }
+        else if case .failed = voiceModel {} else { voiceModel = .missing(megabytes: Self.voiceMegabytes) }
+        if Transcriber.isDownloaded { dictationModel = .ready }
+        else if case .failed = dictationModel {} else { dictationModel = .missing(megabytes: Self.dictationMegabytes) }
     }
 
     /// Downloads one of `engines.downloadables()` (Qwen3, Parakeet v3, the Kokoro French pack). Only from the user's
@@ -320,6 +320,8 @@ extension EngineKind {
         updateActivity()
     }
 
+    func isCancellingDownload(_ title: String) -> Bool { optionalDownloads[title]?.task.isCancelled == true }
+
     /// Keep ownership until the cancelled URLSession work drains; a retry cannot reuse its staging folder yet.
     func cancelDownload(_ title: String) {
         optionalDownloads[title]?.task.cancel()
@@ -346,9 +348,8 @@ extension EngineKind {
                 }
             }
             if dictationModel != .ready, !Task.isCancelled {
-                let vocabulary: [String: String] = Self.loadJSON(Paths.vocabulary) ?? [:]
                 await download(\.dictationModel, id: id, pollDir: nil) { report in
-                    try await self.downloadDictationFiles(!vocabulary.isEmpty, report)
+                    try await self.downloadDictationFiles(report)
                 }
             }
             guard defaultDownloadID == id else { return }

@@ -3,6 +3,14 @@
 #import <objc/runtime.h>
 #import "ObjCExceptionCatch.h"
 
+static IMP expectedSilentResponderIMP;
+
+BOOL TRInvisibleChecksSilencesResponder(void) {
+  // Inspect the installed method without risking an audible fallback when the guard is missing.
+  return expectedSilentResponderIMP != NULL &&
+    class_getMethodImplementation(NSResponder.class, @selector(noResponderFor:)) == expectedSilentResponderIMP;
+}
+
 static void swap(Class type, SEL original, SEL replacement) {
   Method old = class_getInstanceMethod(type, original), new = class_getInstanceMethod(type, replacement);
   if (!old || !new) return;
@@ -39,6 +47,7 @@ void TRInstallInvisibleChecks(void) {
     BOOL enabled = NSProcessInfo.processInfo.environment[@"XCTestConfigurationFilePath"] != nil;
     for (NSString *arg in args) enabled |= [arg isEqualToString:@"--agent-screen"] || [arg hasPrefix:@"--selftest-"];
     if (!enabled) return;
+    expectedSilentResponderIMP = class_getMethodImplementation(NSResponder.class, @selector(trInvisibleChecks_noResponderFor:));
     swap(NSResponder.class, @selector(noResponderFor:), @selector(trInvisibleChecks_noResponderFor:));
     Class window = NSWindow.class, app = NSApplication.class;
     swap(window, @selector(setAlphaValue:), @selector(trInvisibleChecks_setAlphaValue:));

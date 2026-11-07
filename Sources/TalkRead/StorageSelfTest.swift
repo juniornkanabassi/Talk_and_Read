@@ -22,6 +22,71 @@ import TalkReadCore
             undo.beginUndoGrouping(); action(); undo.endUndoGrouping()
         }
         do {
+            let fm = FileManager.default
+            let recoveryFixtures = Paths.dataRoot.appendingPathComponent("storage-recovery-\(UUID().uuidString)", isDirectory: true)
+            try fm.createDirectory(at: recoveryFixtures, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: recoveryFixtures) }
+            func backups(of url: URL) throws -> Set<URL> {
+                Set(try fm.contentsOfDirectory(at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+                    .filter { $0.lastPathComponent.hasPrefix(url.lastPathComponent + ".bad-") })
+            }
+            func checkKeptBytes(_ urls: Set<URL>, equalTo damaged: Data, name: String) throws {
+                check(urls.count == 1, "\(name) keeps exactly one damaged-file backup")
+                let bytes = try urls.map { try Data(contentsOf: $0) }
+                check(bytes == [damaged], "\(name) keeps damaged bytes unchanged")
+            }
+            for filename in ["vocabulary.json", "pronunciations.json"] {
+                let url = recoveryFixtures.appendingPathComponent(filename)
+                let damaged = Data("{\"damaged \(filename)\": [\u{0000}\u{00ff}".utf8)
+                try damaged.write(to: url)
+                check(WordMapEditor.load(url).isEmpty, "\(filename) recovers to an empty word list")
+                check(!fm.fileExists(atPath: url.path), "\(filename) moves the damaged source aside")
+                let kept = try backups(of: url)
+                try checkKeptBytes(kept, equalTo: damaged, name: filename)
+                let reloaded = WordMapEditor.load(url)
+                let backupsAfterReload = try backups(of: url)
+                check(reloaded.isEmpty && backupsAfterReload == kept,
+                      "\(filename) reload does not replace or duplicate the backup")
+                let recovered = ["Recovery example": "Preserved replacement"]
+                try WordMapEditor.save(recovered, to: url)
+                check(WordMapEditor.load(url) == recovered, "\(filename) accepts a valid word list after recovery")
+                check(try backups(of: url) == kept, "\(filename) save leaves the damaged-file backup in place")
+                try checkKeptBytes(kept, equalTo: damaged, name: "\(filename) after save")
+            }
+            // DictationController has a fixed history URL; the entry guard proves this disposable file is ours.
+            do {
+                let existingBackups = try backups(of: Paths.history)
+                defer {
+                    try? fm.removeItem(at: Paths.history)
+                    for url in (try? backups(of: Paths.history).subtracting(existingBackups)) ?? [] {
+                        try? fm.removeItem(at: url)
+                    }
+                }
+                let damaged = Data("[{\"text\":\"Damaged dictation\",\"id\":\"not-a-UUID\"}]".utf8)
+                try damaged.write(to: Paths.history)
+                let recoveredController = DictationController()
+                recoveredController.quiet = true
+                check(recoveredController.history.isEmpty, "dictation history recovers invalid records to an empty history")
+                check(!fm.fileExists(atPath: Paths.history.path), "dictation history moves the damaged source aside")
+                let kept = try backups(of: Paths.history).subtracting(existingBackups)
+                try checkKeptBytes(kept, equalTo: damaged, name: "dictation history")
+                let missing: [DictationEntry]? = AppModel.loadJSON(Paths.history)
+                let backupsAfterReload = try backups(of: Paths.history).subtracting(existingBackups)
+                check(missing == nil && backupsAfterReload == kept,
+                      "dictation history reload does not replace or duplicate the backup")
+                let replacement = DictationEntry(id: UUID(), date: Date(), text: "Recovered dictation", app: "Notes")
+                AppModel.saveJSON([replacement], to: Paths.history)
+                let loadedController = DictationController()
+                loadedController.quiet = true
+                check(loadedController.history.map(\.id) == [replacement.id], "dictation history loads a valid replacement after recovery")
+                loadedController.delete(replacement.id)
+                loadedController.flushHistory()
+                let emptied: [DictationEntry]? = AppModel.loadJSON(Paths.history)
+                check(emptied?.isEmpty == true, "dictation history persists changes after recovery")
+                check(try backups(of: Paths.history).subtracting(existingBackups) == kept,
+                      "dictation history save leaves the damaged-file backup in place")
+                try checkKeptBytes(kept, equalTo: damaged, name: "dictation history after save")
+            }
             let store = LibraryStore()
             let undo = UndoManager()
             undo.groupsByEvent = false

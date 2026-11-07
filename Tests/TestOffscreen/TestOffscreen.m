@@ -8,6 +8,14 @@
 
 void TestOffscreenInstalled(void) {}
 
+static IMP expectedSilentResponderIMP;
+
+BOOL TestOffscreenSilencesResponder(void) {
+  // Inspect the installed method without risking an audible fallback when the guard is missing.
+  return expectedSilentResponderIMP != NULL &&
+    class_getMethodImplementation(NSResponder.class, @selector(noResponderFor:)) == expectedSilentResponderIMP;
+}
+
 static void swap(Class type, SEL original, SEL replacement) {
   Method old = class_getInstanceMethod(type, original), new = class_getInstanceMethod(type, replacement);
   if (!old || !new) return;
@@ -38,6 +46,7 @@ static void swap(Class type, SEL original, SEL replacement) {
 @end
 
 __attribute__((constructor)) static void installTestOffscreen(void) {
+  expectedSilentResponderIMP = class_getMethodImplementation(NSResponder.class, @selector(testOffscreen_noResponderFor:));
   swap(NSResponder.class, @selector(noResponderFor:), @selector(testOffscreen_noResponderFor:));
   Class window = NSWindow.class, app = NSApplication.class;
   swap(window, @selector(setAlphaValue:), @selector(testOffscreen_setAlphaValue:));

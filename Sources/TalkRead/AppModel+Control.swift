@@ -425,8 +425,11 @@ extension AppModel {
                 if let name = a["model"] {
                     try downloadOptional(name)               // returns at once; `models` shows the progress
                 } else {
+                    if downloadTask?.isCancelled == true { throw Self.downloadStopping() }
                     downloadModels()
-                    await downloadTask?.value
+                    let task = downloadTask
+                    await task?.value
+                    if task?.isCancelled == true { throw Self.downloadStopping() }
                 }
             default: throw AppError.badArgs("models takes status or download.")
             }
@@ -500,7 +503,12 @@ extension AppModel {
         guard let row = models.first(where: { $0.title.lowercased().contains(needle) && !$0.title.lowercased().contains("breeze") }) else {
             throw AppError(code: "unavailable", message: "This copy of Talk & Read offers no \(name) download.")
         }
+        if isCancellingDownload(row.title) { throw Self.downloadStopping() }
         download(row.title)                                  // nothing happens if it is installed or already downloading
+    }
+
+    private static func downloadStopping() -> AppError {
+        AppError(code: "busy", message: "A model download is stopping. Try again after it has stopped.")
     }
 
     /// Waits up to 5 s for the first audio of a read the caller just started.

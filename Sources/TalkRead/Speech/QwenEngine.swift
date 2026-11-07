@@ -207,10 +207,12 @@ enum ModelDownload {
 }
 
 /// One URLSession download with progress, the redirect rule and the move out of URLSession's temporary file.
-private final class FileDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {   // callbacks are serial
+final class FileDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {   // callbacks are serial
     let target: URL
     let progress: (Int64) -> Void
+    private let completionLock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
+    private var completed: Result<Void, Error>?
     private var failure: Error?
 
     init(target: URL, progress: @escaping (Int64) -> Void) { self.target = target; self.progress = progress }
@@ -220,11 +222,30 @@ private final class FileDownload: NSObject, URLSessionDownloadDelegate, @uncheck
         defer { session.finishTasksAndInvalidate() }
         let task = session.downloadTask(with: url)
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-                continuation = c
-                task.resume()
-            }
+            try await waitForCompletion { task.resume() }
         } onCancel: { task.cancel() }
+    }
+
+    /// Cancellation may finish a suspended URLSession task before its waiter is installed.
+    func waitForCompletion(start: () -> Void) async throws {
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+            let result = completionLock.withLock { () -> Result<Void, Error>? in
+                if let completed { return completed }
+                continuation = c
+                return nil
+            }
+            if let result { c.resume(with: result) } else { start() }
+        }
+    }
+
+    func complete(_ result: Result<Void, Error>) {
+        let waiter = completionLock.withLock { () -> CheckedContinuation<Void, Error>? in
+            guard completed == nil else { return nil }
+            completed = result
+            defer { continuation = nil }
+            return continuation
+        }
+        waiter?.resume(with: result)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -248,7 +269,6 @@ private final class FileDownload: NSObject, URLSessionDownloadDelegate, @uncheck
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let e = error ?? failure { continuation?.resume(throwing: e) } else { continuation?.resume() }
-        continuation = nil
+        if let error = error ?? failure { complete(.failure(error)) } else { complete(.success(())) }
     }
 }

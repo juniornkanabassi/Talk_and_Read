@@ -17,7 +17,10 @@
 setopt pipefail no_bg_nice
 zmodload zsh/datetime
 
-SRC="${TALKREAD_SOURCE:-${0:A:h:h}}"
+if [[ -n ${TALKREAD_SOURCE:-} ]]; then SRC=$TALKREAD_SOURCE
+elif [[ -n ${TALKREAD_PROJECT:-} ]]; then SRC="$TALKREAD_PROJECT/Source"
+elif [[ -f ${0:A:h:h}/Resources/Info.plist ]]; then SRC=${0:A:h:h}
+else SRC="$HOME/Documents/JuniorOS/02 Projects/Development/Talk & Read/Source"; fi
 PROJECT="${TALKREAD_PROJECT:-${SRC:h}}"
 CHECKLIST="${TALKREAD_CHECKLIST:-$PROJECT/00 Project State/Acceptance checklist.md}"
 ROOT="${TALKREAD_CHECK_ROOT:-/private/tmp/talkread-checker}"
@@ -65,7 +68,7 @@ if (( SELFCHECK )); then   # the aggregator's one runnable check
   grid_passed 0 'PASS UI grid: 0 off-grid gaps' || { print "selfcheck: grid pass"; exit 1; }
   ! grid_passed 1 'PASS UI grid: 0 off-grid gaps' || { print "selfcheck: grid nonzero exit"; exit 1; }
   ! grid_passed 0 'FAIL UI grid: 1 off-grid gaps' || { print "selfcheck: grid verdict"; exit 1; }
-  print "selfcheck ok"; exit 0
+  print "selfcheck ok (source: $SRC)"; exit 0
 fi
 
 # ---------------------------------------------------------------- the app under test
@@ -586,7 +589,7 @@ owe H3 "read and highlight per app, terminals included (--selftest-window covers
 owe D1 "dictation next to Wispr Flow in real apps (accuracy on his names, speed, formatting)"
 owe S2 "click a key cap and record a new combination in the live Shortcuts page; changes apply at once"
 owe S3 "⌃A in his own apps never moves the caret; ⌥D types ∂ when nothing reads (real keystrokes are forbidden in tests)"
-owe S4 "⌥D and ⌥S step 0.05× live; one click on a preset in the mini player and the menu bar menu"
+owe S4 "⌥D and ⌥S step 0.25× live (S6); one click on a preset in the mini player and the menu bar menu"
 owe S5 "the notice on the Shortcuts page while Speechify is really open"
 owe V1 "the picker on screen: Kokoro, Qwen3 and Breeze; switching applies to the next read and is remembered"
 owe V2 "each designed voice sounds the same from chunk to chunk (by ear), Breeze included"

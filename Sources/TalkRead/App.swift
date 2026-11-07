@@ -418,6 +418,10 @@ extension NSWindow {
 @MainActor private enum SelfTestInvisibleWindows {
     static func safety() async -> Int32 {
         guard TalkReadMain.invisibleChecks else { return 1 }
+        guard TRInvisibleChecksSilencesResponder() else {
+            print("FAIL agent safety: silent responder guard is not installed")
+            return 1
+        }
         var refreshes = 0
         for permission: PermissionKind in [.accessibility, .microphone, .screenRecording] {
             PermissionRequests.request(permission) { refreshes += 1 }
@@ -434,12 +438,15 @@ extension NSWindow {
         let offline = Player(manualRendering: true)
         offline.volume = 1
         guard offline.volume == 1 else { return 1 }
-        NSResponder().noResponder(for: #selector(NSResponder.keyDown(with:)))
         print("PASS agent safety: permission actions suppressed, real microphone blocked, hardware output muted, offline PCM preserved")
         return 0
     }
 
     static func run() -> Int32 {
+        guard TRInvisibleChecksSilencesResponder() else {
+            print("FAIL invisible windows: silent responder guard is not installed")
+            return 1
+        }
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 200),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -451,7 +458,6 @@ extension NSWindow {
             RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.4))
             window.orderOut(nil)
         }
-        NSResponder().noResponder(for: #selector(NSResponder.keyDown(with:)))
         NSApp.activate(ignoringOtherApps: true)
         NSApp.activate()
         guard !NSApp.isActive else { return 1 }

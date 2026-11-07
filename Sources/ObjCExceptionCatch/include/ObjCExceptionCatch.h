@@ -8,5 +8,6 @@ NS_ASSUME_NONNULL_BEGIN
 NSError *_Nullable TRCatchException(NS_NOESCAPE void (^block)(void));
 
 void TRInstallInvisibleChecks(void);
+BOOL TRInvisibleChecksSilencesResponder(void);
 
 NS_ASSUME_NONNULL_END

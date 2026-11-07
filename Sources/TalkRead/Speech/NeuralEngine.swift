@@ -10,6 +10,7 @@ import os
 import TalkReadCore
 
 final class NeuralEngine: SpeechEngine {
+    fileprivate static let cacheQueue = ModelCacheQueue()
     var kind: EngineKind { .neural }
     private let loader = KokoroLoader(variant: .english, voice: KokoroAneConstants.defaultVoice)
     /// The French manager (own G2P: French dictionary and CharsiuG2P); created on the first French voice, released by `unload()`.
@@ -82,15 +83,17 @@ final class NeuralEngine: SpeechEngine {
 
     /// File-only setup is owned by its caller, unlike the shared loader used by active reads.
     static func downloadFiles(voice: String, progress: @escaping (Double) -> Void) async throws {
-        let repo = try await KokoroAneResourceDownloader.ensureModels(variant: .english) { progress($0.fractionCompleted * 0.8) }
-        try Task.checkCancellation()
-        try await KokoroAneResourceDownloader.ensureG2PAssets()
-        try Task.checkCancellation()
-        _ = await KokoroAneResourceDownloader.ensureEnglishLexicon()
-        try Task.checkCancellation()
-        _ = try await KokoroAneResourceDownloader.ensureVoicePack(voice, repoDirectory: repo, variant: .english)
-        try Task.checkCancellation()
-        progress(1)
+        try await cacheQueue.run {
+            let repo = try await KokoroAneResourceDownloader.ensureModels(variant: .english) { progress($0.fractionCompleted * 0.8) }
+            try Task.checkCancellation()
+            try await KokoroAneResourceDownloader.ensureG2PAssets()
+            try Task.checkCancellation()
+            _ = await KokoroAneResourceDownloader.ensureEnglishLexicon()
+            try Task.checkCancellation()
+            _ = try await KokoroAneResourceDownloader.ensureVoicePack(voice, repoDirectory: repo, variant: .english)
+            try Task.checkCancellation()
+            progress(1)
+        }
     }
 
     var speaksFaster: Bool { true }
@@ -235,21 +238,23 @@ final class NeuralEngine: SpeechEngine {
     var isModelInstalled: Bool { NeuralEngine.frenchPackInstalled() }
 
     func downloadModel(progress: @escaping @Sendable (Double) -> Void) async throws {
-        // Weights by size; the shared English chain (about 80 MB) only counts when this Mac has none yet.
-        let chain = NeuralEngine.modelInstalled() ? 0.0 : 0.45
-        let total = chain + 0.55
-        var done = 0.0
-        func stage(_ weight: Double, _ run: (@escaping ProgressHandler) async throws -> Void) async throws {
-            let start = done
-            try await run { p in progress((start + weight * p.fractionCompleted) / total) }
-            done += weight
-            progress(done / total)
+        try await NeuralEngine.cacheQueue.run {
+            // Weights by size; the shared English chain (about 80 MB) only counts when this Mac has none yet.
+            let chain = NeuralEngine.modelInstalled() ? 0.0 : 0.45
+            let total = chain + 0.55
+            var done = 0.0
+            func stage(_ weight: Double, _ run: (@escaping ProgressHandler) async throws -> Void) async throws {
+                let start = done
+                try await run { p in progress((start + weight * p.fractionCompleted) / total) }
+                done += weight
+                progress(done / total)
+            }
+            var repo = URL(fileURLWithPath: "/")
+            try await stage(chain) { repo = try await KokoroAneResourceDownloader.ensureModels(variant: .french, progressHandler: $0) }
+            try await stage(0.1) { _ in _ = try await KokoroAneResourceDownloader.ensureLexiconCache(KokoroAneConstants.frenchLexiconCacheFile) }
+            try await stage(0.4) { try await KokoroAneResourceDownloader.ensureMultilingualG2PAssets(progressHandler: $0) }
+            try await stage(0.05) { _ in _ = try await KokoroAneResourceDownloader.ensureVoicePack(NeuralEngine.frenchVoice, repoDirectory: repo, variant: .french) }
         }
-        var repo = URL(fileURLWithPath: "/")
-        try await stage(chain) { repo = try await KokoroAneResourceDownloader.ensureModels(variant: .french, progressHandler: $0) }
-        try await stage(0.1) { _ in _ = try await KokoroAneResourceDownloader.ensureLexiconCache(KokoroAneConstants.frenchLexiconCacheFile) }
-        try await stage(0.4) { try await KokoroAneResourceDownloader.ensureMultilingualG2PAssets(progressHandler: $0) }
-        try await stage(0.05) { _ in _ = try await KokoroAneResourceDownloader.ensureVoicePack(NeuralEngine.frenchVoice, repoDirectory: repo, variant: .french) }
     }
 }
 
@@ -264,9 +269,11 @@ private actor KokoroLoader {
     func manager() async throws -> KokoroAneManager {
         let (variant, voice) = (self.variant, self.voice)
         let task = self.task ?? Task {
-            let m = KokoroAneManager(variant: variant, defaultVoice: voice, version: .legacy)
-            try await m.initialize()
-            return m
+            try await NeuralEngine.cacheQueue.run {
+                let m = KokoroAneManager(variant: variant, defaultVoice: voice, version: .legacy)
+                try await m.initialize()
+                return m
+            }
         }
         self.task = task
         do { return try await task.value } catch { self.task = nil; throw error }

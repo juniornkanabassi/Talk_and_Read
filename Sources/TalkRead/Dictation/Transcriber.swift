@@ -65,6 +65,7 @@ extension DictationASR {
 
 @MainActor final class Transcriber: DictationASR {
     static let variant = StreamingModelVariant.parakeetUnified640ms
+    private static let cacheQueue = ModelCacheQueue()
     private var manager: StreamingUnifiedAsrManager?
     private(set) var isLoading = false { didSet { onLoadingChange?() } }
     var onLoadingChange: (() -> Void)?
@@ -94,28 +95,28 @@ extension DictationASR {
     }
 
     /// Download and validate with caller-owned cancellation; live callers retain their separate shared load.
-    static func downloadFiles(includeBoosting: Bool, progress: @escaping (Double) -> Void) async throws {
-        let names = ModelNames.ParakeetUnified.self
-        let required: Set<String> = [names.streamingEncoderFile(precision: .int8, contextSuffix: variant.unifiedConfig!.contextSuffix),
-                                     names.decoderFile, names.jointDecisionFile, names.vocab]
-        try await ModelHub.loadWithRecovery(.parakeetUnified, directory: directory.deletingLastPathComponent(),
-                                           requiredFiles: required, progressHandler: { progress($0.fractionCompleted) }) {
-            try Task.checkCancellation()
-            let validation = StreamingUnifiedAsrManager(config: variant.unifiedConfig!, encoderPrecision: .int8)
-            do {
-                try await validation.loadModels(from: directory)
+    static func downloadFiles(progress: @escaping (Double) -> Void) async throws {
+        try await cacheQueue.run {
+            let names = ModelNames.ParakeetUnified.self
+            let required: Set<String> = [names.streamingEncoderFile(precision: .int8, contextSuffix: variant.unifiedConfig!.contextSuffix),
+                                         names.decoderFile, names.jointDecisionFile, names.vocab]
+            try await ModelHub.loadWithRecovery(.parakeetUnified, directory: directory.deletingLastPathComponent(),
+                                               requiredFiles: required, progressHandler: { progress($0.fractionCompleted) }) {
                 try Task.checkCancellation()
-                await validation.cleanup()
-            } catch {
-                await validation.cleanup()
-                // ModelHub must see cancellation, not mistake a cancelled CoreML load for a corrupt cache.
-                try Task.checkCancellation()
-                throw error
+                let validation = StreamingUnifiedAsrManager(config: variant.unifiedConfig!, encoderPrecision: .int8)
+                do {
+                    try await validation.loadModels(from: directory)
+                    try Task.checkCancellation()
+                    await validation.cleanup()
+                } catch {
+                    await validation.cleanup()
+                    // ModelHub must see cancellation, not mistake a cancelled CoreML load for a corrupt cache.
+                    try Task.checkCancellation()
+                    throw error
+                }
             }
+            try Task.checkCancellation()
         }
-        try Task.checkCancellation()
-        if includeBoosting { _ = try await CtcModels.download() }
-        try Task.checkCancellation()
     }
 
     /// Downloads (huggingface.co, first use only) and loads the model; later calls return at once. One load, shared by
@@ -137,22 +138,24 @@ extension DictationASR {
             loadingCached = cachedOnly
             Task {
                 do {
-                    let m = StreamingUnifiedAsrManager(config: Self.variant.unifiedConfig!, encoderPrecision: .int8)
-                    if cachedOnly {
-                        try await m.loadModels(from: Self.directory)
-                    } else {
-                        try await m.loadModels(to: nil, configuration: nil) { p in
-                            Task { @MainActor in progress?(p.fractionCompleted) }
+                    try await Self.cacheQueue.run {
+                        let m = StreamingUnifiedAsrManager(config: Self.variant.unifiedConfig!, encoderPrecision: .int8)
+                        if cachedOnly {
+                            try await m.loadModels(from: Self.directory)
+                        } else {
+                            try await m.loadModels(to: nil, configuration: nil) { p in
+                                Task { @MainActor in progress?(p.fractionCompleted) }
+                            }
                         }
+                        if let boosting = self.boosting {
+                            let ctc: CtcModels
+                            if cachedOnly { ctc = try await CtcModels.loadDirect(from: CtcModels.defaultCacheDirectory()) }
+                            else { ctc = try await CtcModels.downloadAndLoad() }
+                            try await m.configureVocabularyBoosting(vocabulary: boosting, ctcModels: ctc)
+                        }
+                        self.manager = m
+                        self.loadError = nil
                     }
-                    if let boosting {
-                        let ctc: CtcModels
-                        if cachedOnly { ctc = try await CtcModels.loadDirect(from: CtcModels.defaultCacheDirectory()) }
-                        else { ctc = try await CtcModels.downloadAndLoad() }
-                        try await m.configureVocabularyBoosting(vocabulary: boosting, ctcModels: ctc)
-                    }
-                    manager = m
-                    loadError = nil
                 } catch {
                     loadError = error
                 }
