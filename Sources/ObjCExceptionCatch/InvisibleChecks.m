@@ -23,6 +23,10 @@ static void swap(Class type, SEL original, SEL replacement) {
 - (void)trInvisibleChecks_makeKeyAndOrderFront:(id)sender { [self trInvisibleChecks_hide]; [self trInvisibleChecks_makeKeyAndOrderFront:sender]; }
 @end
 
+@implementation NSResponder (trInvisibleChecksSilence)
+- (void)trInvisibleChecks_noResponderFor:(SEL)eventSelector {}
+@end
+
 @implementation NSApplication (TRInvisibleChecks)
 - (void)trInvisibleChecks_activateIgnoringOtherApps:(BOOL)flag {}
 - (void)trInvisibleChecks_activate {}
@@ -35,6 +39,7 @@ void TRInstallInvisibleChecks(void) {
     BOOL enabled = NSProcessInfo.processInfo.environment[@"XCTestConfigurationFilePath"] != nil;
     for (NSString *arg in args) enabled |= [arg isEqualToString:@"--agent-screen"] || [arg hasPrefix:@"--selftest-"];
     if (!enabled) return;
+    swap(NSResponder.class, @selector(noResponderFor:), @selector(trInvisibleChecks_noResponderFor:));
     Class window = NSWindow.class, app = NSApplication.class;
     swap(window, @selector(setAlphaValue:), @selector(trInvisibleChecks_setAlphaValue:));
     swap(window, @selector(orderWindow:relativeTo:), @selector(trInvisibleChecks_orderWindow:relativeTo:));

@@ -129,6 +129,12 @@ import WebKit
         let running = hotkeys.start()
         let active = Hotkeys.ownTapIsActive()
         hotkeys.stop()
+        if TalkReadMain.invisibleChecks {
+            let blocked = !running && !active
+            print("hotkeys: \(cases.count + reveals.count) mappings \(ok ? "ok" : "FAILED"); hidden global event tap \(blocked ? "blocked" : "FAILED")")
+            print("SKIP live global shortcut consumption: forbidden in invisible checks")
+            return ok && blocked
+        }
         print("hotkeys: \(cases.count + reveals.count) mappings \(ok ? "ok" : "FAILED"); event tap \(running ? "created" : "NOT created (Accessibility?)"), "
               + (active ? "active (swallows matched shortcuts)" : "NOT an active tap"))
         return ok && running && active

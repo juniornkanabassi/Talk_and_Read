@@ -87,7 +87,8 @@ final class Recorder: DictationAudio {
     private var session = 0
 
     @MainActor func start() async throws {
-        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { throw RecorderError.noPermission }
+        guard !TalkReadMain.invisibleChecks,
+              AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { throw RecorderError.noPermission }
         _ = stop()
         let id = lock.withLock { session += 1; first = nil; return session }
         try openInput(session: id)
@@ -139,6 +140,7 @@ final class Recorder: DictationAudio {
     /// Reads the input's format, installs the tap and starts `engine` for recording `id`. A failure leaves nothing behind
     /// (the tap removed, the engine stopped), so `openInput` can try again on another engine.
     @MainActor private func begin(_ engine: AVAudioEngine, _ id: Int) throws {
+        guard !TalkReadMain.invisibleChecks else { throw RecorderError.noPermission }
         let onBuffer = onBuffer, onLevel = onLevel                // this session's consumers
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)   // the chosen input, else the system default

@@ -28,6 +28,7 @@ enum TalkReadMain {
             return args[i + 1]
         }
         // Headless switches run, report and exit; they never show a status item, start hotkeys or register a login item.
+        if args.contains("--selftest-agent-safety") { exitAfter { await SelfTestInvisibleWindows.safety() } }
         if args.contains("--selftest-invisible-windows") { exit(MainActor.assumeIsolated { SelfTestInvisibleWindows.run() }) }
         if let file = value(after: "--selftest-asr-cold-start") { exitAfter { await DictationColdStartBench.run(file: file) } }
         if let file = value(after: "--selftest-tts") { exitAfter { await SelfTest.tts(file: file) } }
@@ -89,6 +90,7 @@ enum TalkReadMain {
     private var settingsCloseObserver: NSObjectProtocol?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        guard !TalkReadMain.invisibleChecks else { return }
         let scenes = NSHostingSceneRepresentation {
             SwiftUI.Settings {
                 SettingsView(model: model)
@@ -102,6 +104,15 @@ enum TalkReadMain {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if TalkReadMain.invisibleChecks {
+            // Agent copies expose only their disposable control socket, never global shortcuts or launch side effects.
+            Task {
+                await model.loadVoices()
+                do { controlServer = try ControlServer(path: Paths.controlSocket) { await AppModel.shared.handle($0) } }
+                catch { Log.write("control socket unavailable: \(error)") }
+            }
+            return
+        }
         // Sparkle: checks at launch and daily; installs only after the user agrees in its window. Off without SUFeedURL.
         Updates.shared.start()
         NSApp.mainMenu = Self.mainMenu(delegate: self)
@@ -196,7 +207,7 @@ enum TalkReadMain {
 
     /// Only an installed copy registers as a login item; builds and test runs never touch it.
     private func updateLoginItem(_ on: Bool) {
-        guard Self.isInstalledCopy(Bundle.main.bundleURL.path) else { return }
+        guard !TalkReadMain.invisibleChecks, Self.isInstalledCopy(Bundle.main.bundleURL.path) else { return }
         let service = SMAppService.mainApp
         let path = Bundle.main.bundleURL.path, key = "loginItemRegisteredPath"
         do {
@@ -237,7 +248,7 @@ enum TalkReadMain {
     /// Every 2 s until Accessibility is granted (then the hotkeys start) and while a window is open (live permission
     /// ticks); otherwise permissions refresh on app activation. Never prompts.
     private func startPolling() {
-        guard pollTimer == nil else { return }
+        guard !TalkReadMain.invisibleChecks, pollTimer == nil else { return }
         let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.poll() } }
         timer.tolerance = 0.5
         RunLoop.main.add(timer, forMode: .common)
@@ -246,6 +257,7 @@ enum TalkReadMain {
     }
 
     private func poll() {
+        guard !TalkReadMain.invisibleChecks else { return }
         model.refreshPermissions()
         if hotkeys == nil, model.permissions.accessibility {
             let keys = Hotkeys(settings: model.settings) { [weak self] in self?.perform($0) }
@@ -403,6 +415,29 @@ extension NSWindow {
 }
 
 @MainActor private enum SelfTestInvisibleWindows {
+    static func safety() async -> Int32 {
+        guard TalkReadMain.invisibleChecks else { return 1 }
+        var refreshes = 0
+        for permission: PermissionKind in [.accessibility, .microphone, .screenRecording] {
+            PermissionRequests.request(permission) { refreshes += 1 }
+        }
+        guard refreshes == 3 else { return 1 }
+        let recorder = Recorder()
+        do { try await recorder.start(); return 1 }
+        catch RecorderError.noPermission {} catch { return 1 }
+        do { try recorder.openInput(session: 1); return 1 } catch {}
+        guard recorder.stop().isEmpty else { return 1 }
+        let hardware = Player()
+        hardware.volume = 1
+        guard hardware.volume == 0 else { return 1 }
+        let offline = Player(manualRendering: true)
+        offline.volume = 1
+        guard offline.volume == 1 else { return 1 }
+        NSResponder().noResponder(for: #selector(NSResponder.keyDown(with:)))
+        print("PASS agent safety: permission actions suppressed, real microphone blocked, hardware output muted, offline PCM preserved")
+        return 0
+    }
+
     static func run() -> Int32 {
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 200),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -415,6 +450,7 @@ extension NSWindow {
             RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.4))
             window.orderOut(nil)
         }
+        NSResponder().noResponder(for: #selector(NSResponder.keyDown(with:)))
         NSApp.activate(ignoringOtherApps: true)
         NSApp.activate()
         guard !NSApp.isActive else { return 1 }

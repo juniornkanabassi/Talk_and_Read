@@ -6,6 +6,7 @@ import XCTest
 @MainActor final class TestOffscreenTests: XCTestCase {
   func testEveryWindowATestShowsStaysInvisibleAndClickThrough() {
     TestOffscreenInstalled()
+    NSResponder().noResponder(for: #selector(NSResponder.keyDown(with:)))
     let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     defer { window.close() }

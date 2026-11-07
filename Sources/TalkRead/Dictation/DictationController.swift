@@ -603,7 +603,7 @@ enum DictationError: LocalizedError, Equatable {
     }
 
     private func play(_ name: String) {
-        guard !quiet, let sound = NSSound(named: name) else { return }
+        guard !TalkReadMain.invisibleChecks, !quiet, let sound = NSSound(named: name) else { return }
         sound.volume = 0.25
         sound.play()
     }

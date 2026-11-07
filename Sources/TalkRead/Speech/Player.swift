@@ -35,7 +35,7 @@ import TalkReadCore
     var failNext: Failure?
     var volume: Float {
         get { engine.mainMixerNode.outputVolume }
-        set { engine.mainMixerNode.outputVolume = newValue }
+        set { engine.mainMixerNode.outputVolume = muteHardware ? 0 : newValue }
     }
 
     /// Internal so the self-test can post its configuration-change notification.
@@ -48,6 +48,8 @@ import TalkReadCore
         componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0))
     private let format = AVAudioFormat(standardFormatWithSampleRate: Player.sampleRate, channels: 1)!
     private let manual: Bool
+    /// Offline rendering must retain its PCM for recognition checks; only hardware output is silenced.
+    private var muteHardware: Bool { !manual && TalkReadMain.invisibleChecks }
     private var pending = 0
     private var generation = 0
     /// Media seconds the node clock is ahead of the media timeline (silence the node played while dry).
@@ -84,6 +86,7 @@ import TalkReadCore
         graphReady = Self.guarded("audio graph did not connect") {
             engine.connect(node, to: timePitch, format: format)
             engine.connect(timePitch, to: engine.mainMixerNode, format: format)
+            if muteHardware { engine.mainMixerNode.outputVolume = 0 }
             applyRate()
             engine.prepare()
         }
@@ -185,6 +188,7 @@ import TalkReadCore
     /// Starts the output hardware while the first chunk is still being synthesised, so its ~300 ms start-up overlaps
     /// synthesis instead of following it. Silent until `play()`; a failure here is retried (and reported) by `play()`.
     func warmUp() {
+        if muteHardware { engine.mainMixerNode.outputVolume = 0 }
         guard !manual, graphReady, !engine.isRunning, failNext == nil else { return }
         _ = Self.guarded("output warm-up did not start the engine") { try engine.start() }
     }
@@ -193,6 +197,7 @@ import TalkReadCore
     /// raises, not throws, when the output device never cycles ("player did not see an IO cycle", after blocking up to
     /// ~9 s: heavy load, Low Power Mode, another app holding the device).
     func play() {
+        if muteHardware { engine.mainMixerNode.outputVolume = 0 }
         engineStop?.cancel()
         guard graphReady || connect(),
               Self.guarded("audio engine did not start", {

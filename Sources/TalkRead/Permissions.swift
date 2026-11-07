@@ -18,6 +18,7 @@ extension Permissions {
     private static var prompted: Set<PermissionKind> = []
 
     static func request(_ p: PermissionKind, then refresh: @escaping @MainActor () -> Void) {
+        guard !TalkReadMain.invisibleChecks else { refresh(); return }
         let firstAsk = prompted.insert(p).inserted
         switch p {
         case .accessibility:

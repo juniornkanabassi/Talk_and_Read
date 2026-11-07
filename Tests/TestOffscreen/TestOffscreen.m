@@ -28,12 +28,17 @@ static void swap(Class type, SEL original, SEL replacement) {
 - (void)testOffscreen_makeKeyAndOrderFront:(id)sender { [self testOffscreen_hide]; [self testOffscreen_makeKeyAndOrderFront:sender]; }
 @end
 
+@implementation NSResponder (testOffscreenSilence)
+- (void)testOffscreen_noResponderFor:(SEL)eventSelector {}
+@end
+
 @implementation NSApplication (TestOffscreen)
 - (void)testOffscreen_activateIgnoringOtherApps:(BOOL)flag {}
 - (void)testOffscreen_activate {}
 @end
 
 __attribute__((constructor)) static void installTestOffscreen(void) {
+  swap(NSResponder.class, @selector(noResponderFor:), @selector(testOffscreen_noResponderFor:));
   Class window = NSWindow.class, app = NSApplication.class;
   swap(window, @selector(setAlphaValue:), @selector(testOffscreen_setAlphaValue:));
   swap(window, @selector(orderWindow:relativeTo:), @selector(testOffscreen_orderWindow:relativeTo:));

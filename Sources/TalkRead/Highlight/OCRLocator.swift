@@ -59,7 +59,7 @@ struct MissingBackoff {
     /// Screen Recording preflight; asks the system at most once per launch (never in a loop).
     static func hasAccess(requestOnce: Bool) -> Bool {
         if CGPreflightScreenCaptureAccess() { return true }
-        if requestOnce, !requestedAccess {
+        if requestOnce, !TalkReadMain.invisibleChecks, !requestedAccess {
             requestedAccess = true
             _ = CGRequestScreenCaptureAccess()
         }

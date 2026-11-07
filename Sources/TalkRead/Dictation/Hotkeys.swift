@@ -50,6 +50,7 @@ final class Hotkeys {
     /// Starts the tap; false without Accessibility or when the tap cannot be created. Never prompts. The tap thread
     /// keeps this object alive until `stop()`.
     @discardableResult func start() -> Bool {
+        guard !TalkReadMain.invisibleChecks else { return false }
         if thread != nil { return isRunning }
         guard AXIsProcessTrusted() else { return false }
         let ready = DispatchSemaphore(value: 0)
@@ -96,6 +97,7 @@ final class Hotkeys {
     // MARK: Tap thread
 
     private func createTap() -> Bool {
+        guard !TalkReadMain.invisibleChecks else { return false }
         let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                           eventsOfInterest: CGEventMask(mask), callback: tapCallback,
@@ -117,6 +119,7 @@ final class Hotkeys {
 
     /// Re-enable a tap the system switched off; recreate it if that fails. Also the 5 s health timer.
     private func checkHealth() {
+        guard !TalkReadMain.invisibleChecks else { return }
         if let tap, CGEvent.tapIsEnabled(tap: tap) { return }
         consumer.reset()   // key-ups missed while the tap was off must not leave a key swallowed
         DispatchQueue.main.async { self.onReset?() }   // nor a reveal it never saw end: the glyph starts again from the key
