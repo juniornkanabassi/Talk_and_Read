@@ -1,7 +1,7 @@
 // A frozen main thread restarts the app (work Mac, 7 Nov 2026). An Objective-C exception that AppKit swallows in the
 // middle of a SwiftUI update leaves SwiftUI's lock held, and every later update then waits on it for ever: the menu bar
 // item, hotkeys and the control socket all stop. A background thread asks the main thread to check in every second;
-// after 30 s of awake time with no answer it logs, saves a `sample` of the process to Diagnostics/, starts a fresh copy
+// after 12 s of awake time with no answer it logs, saves a `sample` of the process to Diagnostics/, starts a fresh copy
 // once this process has gone, and exits. On the way it logs every main-thread stall of 1 s or more, and the app's
 // memory and the Mac's swap every 15 minutes, so a slow day can be read back from talkread.log.
 import AppKit
@@ -9,7 +9,7 @@ import Darwin
 import TalkReadCore
 
 enum Watchdog {
-    static let limit: TimeInterval = 30
+    static let limit: TimeInterval = 12
     static let stallLog: TimeInterval = 1
     nonisolated(unsafe) private static var beat = ProcessInfo.processInfo.systemUptime   // uptime stops while the Mac sleeps
     private static let lock = NSLock()

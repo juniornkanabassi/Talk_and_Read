@@ -408,39 +408,40 @@ struct MiniPlayerView: View {
 
 /// One line that keeps the spoken word (yellow pill) centred.
 struct KaraokeStrip: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let line: KaraokeLine
 
+    // No ScrollView: the line was a disabled horizontal ScrollView scrolled to the word, and SwiftUI's scroll prefetch
+    // held its lock for good three times on the work Mac (7 Nov 2026). The spoken word sits in the middle instead, the
+    // words before it right-aligned to its left and the ones after left-aligned to its right, each side clipped.
     var body: some View {
         let words = Self.words(line.current)
         let current = words.firstIndex { w in line.word.map { w.range.overlaps($0) } ?? false } ?? 0
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
-                    ForEach(words.indices, id: \.self) { i in
-                        let on = i == current && line.word != nil
-                        Text(words[i].text)
-                            .font(TypeStyle.body.weight(on ? .semibold : .regular))
-                            .foregroundStyle(on ? Theme.onAccent : .primary)
-                            .padding(.horizontal, Space.xs).padding(.vertical, Space.xs)
-                            .background { if on { Capsule().fill(Theme.accent) } }
-                            .id(i)
-                    }
-                }
-                .padding(.horizontal, Space.xxl)
-            }
-            .scrollDisabled(true)
-            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.06),
-                                         .init(color: .black, location: 0.94), .init(color: .clear, location: 1)],
-                                 startPoint: .leading, endPoint: .trailing))
-            .onAppear { proxy.scrollTo(current, anchor: .center) }
-            .onChange(of: current) { _, i in
-                if reduceMotion { proxy.scrollTo(i, anchor: .center) }
-                else { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(i, anchor: .center) } }
-            }
+        let on = line.word != nil && words.indices.contains(current)
+        HStack(spacing: 0) {
+            run(words.prefix(on ? current : 0)).frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing).clipped()
+            if on { word(words[current].text, on: true) }
+            run(words.dropFirst(on ? current + 1 : 0)).frame(minWidth: 0, maxWidth: .infinity, alignment: .leading).clipped()
         }
+        .clipped()
+        .padding(.horizontal, Space.xxl)
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.06),
+                                     .init(color: .black, location: 0.94), .init(color: .clear, location: 1)],
+                             startPoint: .leading, endPoint: .trailing))
         .accessibilityElement()
         .accessibilityLabel(line.current)
+    }
+
+    private func run(_ words: ArraySlice<(text: String, range: Range<Int>)>) -> some View {
+        HStack(spacing: 0) { ForEach(words.indices, id: \.self) { word(words[$0].text, on: false) } }.fixedSize()
+    }
+
+    private func word(_ text: String, on: Bool) -> some View {
+        Text(text)
+            .font(TypeStyle.body.weight(on ? .semibold : .regular))
+            .foregroundStyle(on ? Theme.onAccent : .primary)
+            .padding(.horizontal, Space.xs).padding(.vertical, Space.xs)
+            .background { if on { Capsule().fill(Theme.accent) } }
+            .fixedSize()
     }
 
     /// Whitespace-separated pieces with their UTF-16 ranges (punctuation stays attached to its word).

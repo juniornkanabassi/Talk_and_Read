@@ -83,10 +83,15 @@ public enum ReadHere {
         let end = text.lastIndex(where: { !junk($0) }).map(text.index(after:)) ?? text.startIndex
         let kept = text[..<end]   // the head is left exactly as captured
         guard let lastBreak = kept.lastIndex(where: { $0.isNewline || $0 == "\u{FFFC}" || $0 == "\u{FFFD}" }) else { return text }
-        guard HiddenText.isTimestamp(String(kept[kept.index(after: lastBreak)...])) else { return text }
+        let tail = String(kept[kept.index(after: lastBreak)...]).trimmingCharacters(in: .whitespaces)
+        guard HiddenText.isTimestamp(tail) || trailingButtons.contains(tail) else { return text }
         let cut = kept[..<lastBreak]
-        return String(cut[..<(cut.lastIndex(where: { !junk($0) }).map(cut.index(after:)) ?? cut.startIndex)])
+        // Again: T3 puts the time before its floating "Scroll to end" button ("…MEMORY.md.￼￼4:17￼￼￼Scroll to end￼").
+        return withoutTrailingTimestamp(String(cut[..<(cut.lastIndex(where: { !junk($0) }).map(cut.index(after:)) ?? cut.startIndex)]))
     }
+
+    /// Labels of T3 Code's controls that end a captured message, read aloud as words before (Junior, 7 Nov 2026).
+    static let trailingButtons: Set<String> = ["Scroll to end", "Copy", "Copied", "Copy message"]
 
     /// The text of a page's text nodes in reading order, for an app that cannot give one range from a paragraph to the
     /// end. Nodes on the same line or the next one are joined with a space; a gap below the last node of more than 0.4 of a

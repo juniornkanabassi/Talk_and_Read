@@ -66,6 +66,8 @@ final class ReadHereTests: XCTestCase {
         XCTAssertEqual(ReadHere.withoutTrailingTimestamp("  Lead space kept.\r\nToday\r\n"), "  Lead space kept.")
         XCTAssertEqual(ReadHere.withoutTrailingTimestamp("Meet at 22:48"), "Meet at 22:48")
         XCTAssertEqual(ReadHere.withoutTrailingTimestamp("22:48"), "22:48")
+        XCTAssertEqual(ReadHere.withoutTrailingTimestamp("I saved this plan.\u{FFFC}\u{FFFC}4:17\u{FFFC}\u{FFFC}\u{FFFC}Scroll to end\u{FFFC}"), "I saved this plan.")
+        XCTAssertEqual(ReadHere.withoutTrailingTimestamp("Press Copy"), "Press Copy", "a word in the sentence stays")
     }
 
     func testJoinKeepsLinesTogetherAndParagraphsApart() {
