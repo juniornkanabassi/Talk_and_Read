@@ -57,3 +57,9 @@ UserDefaults cleanup audit: no root or vendored test creates a named UserDefault
 The release retry uses the corrected no-window criterion authorised on 6 November: no visible windows belonging to the test/app or its descendants, and no test/app process frontmost or active. Foreground changes between unrelated apps are recorded as diagnostics and do not fail the run. The external sampler checks both active and frontmost state on every sample; the compiled guard prevents window visibility and activation between samples. Window and insertion self-tests apply the same own-process criterion. No speech code or performance limit changed, so the recorded Qwen3 comparison remains applicable.
 
 The full release-build test results and cumulative acceptance walk belong in the project's Outputs/2026-11-06 release verification folder. Live keyboard, pointer, microphone, external-app highlighting, VoiceOver, actual material/PDF rendering and voice-quality checks remain for Junior.
+
+## Cancellable downloads and council checks
+
+Model rows in onboarding, Settings and Voices expose Cancel while downloading. User-started file transfers own their cancellation and retain ownership until the operation finishes, preventing a retry from reusing its staging files too early. Late progress from an old request is ignored. Reading and dictation retain their shared model loaders. Download failures remain visible until retried.
+
+`--selftest-model-downloads` uses an unseeded disposable home to check cancellation, retry ordering, late progress and preservation of installed bytes. Its `--corrupt-cache` mode uses a seeded disposable home, checks a healthy model, rejects a damaged vocabulary without deleting the offline cache, restores the bytes and checks again. Both run in the normal release checker; the latter needs the documented model fixtures.

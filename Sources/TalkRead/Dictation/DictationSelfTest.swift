@@ -210,7 +210,7 @@ import WebKit
             ("no role", t(nil, nil, false, false, false), nil),
         ]
         let failed = cases.filter { $0.1 != $0.2 }.map(\.0)
-        let tips = DictationPillStatus.pasteTip(Settings().pasteLastShortcut) == "Didn't land? Press ⌃⌘V to paste it"
+        let tips = DictationPillStatus.pasteTip(Settings().pasteLastShortcut) == "Not typed? Press ⌃⌘V to paste it"
             && DictationPillStatus.pasteTip(.off) == nil
         print("focus: \(cases.count) focus cases \(failed.isEmpty ? "ok" : "FAIL \(failed)"); paste-last tip from the shortcut, hidden when off \(tips ? "ok" : "FAIL")")
         return failed.isEmpty && tips

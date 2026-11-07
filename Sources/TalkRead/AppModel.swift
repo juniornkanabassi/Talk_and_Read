@@ -89,6 +89,24 @@ extension EngineKind {
     /// Published so a speed shown from `activeSpeed` refreshes when only the live read's rate changes (a paused preview).
     @Published private(set) var sessionInfo = (source: "", rate: Float(1), item: UUID?.none)
     private(set) var downloadTask: Task<Void, Never>?
+    private var defaultDownloadID: UUID?
+    private var optionalDownloads: [String: (id: UUID, task: Task<Void, Never>)] = [:]
+    /// File downloads are cancellation-owned; the later cached warm-up never cancels another caller's shared load.
+    lazy var downloadVoiceFiles: (String, @escaping (Double) -> Void) async throws -> Void = { [weak self] voice, progress in
+        try await NeuralEngine.downloadFiles(voice: voice, progress: progress)
+        try Task.checkCancellation()
+        guard let self else { throw CancellationError() }
+        // Missing optional lexicon still allows reading; avoid a fresh download in the shared warm-up.
+        guard NeuralEngine.hasEnglishLexicon else { return }
+        let engine = self.engines.engine(for: Voice(id: voice, name: "", accent: "", gender: "", engine: .neural, installed: true))
+        try await engine.prepare(voice: voice)
+    }
+    lazy var downloadDictationFiles: (Bool, @escaping (Double) -> Void) async throws -> Void = { [weak self] boosting, progress in
+        try await Transcriber.downloadFiles(includeBoosting: boosting, progress: progress)
+        try Task.checkCancellation()
+        guard let self else { throw CancellationError() }
+        try await self.dictation.asr.loadCached()
+    }
     /// Optional downloads in flight or failed, by title; the rest show installed or missing.
     private var downloadStates: [String: ModelState] = [:]
     /// The user left Qwen3 or Breeze while something was reading: free it when the read ends (PLAN 0.3.0 rev. 5, V7).
@@ -261,77 +279,103 @@ extension EngineKind {
         }
         if rows != models { models = rows }
         guard downloadTask == nil else { return }
-        voiceModel = NeuralEngine.modelInstalled() ? .ready : .missing(megabytes: Self.voiceMegabytes)
-        dictationModel = Transcriber.isDownloaded ? .ready : .missing(megabytes: Self.dictationMegabytes)
+        if case .failed = voiceModel {}
+        else if NeuralEngine.modelInstalled() { voiceModel = .ready } else { voiceModel = .missing(megabytes: Self.voiceMegabytes) }
+        if case .failed = dictationModel {}
+        else if Transcriber.isDownloaded { dictationModel = .ready } else { dictationModel = .missing(megabytes: Self.dictationMegabytes) }
     }
 
     /// Downloads one of `engines.downloadables()` (Qwen3, Parakeet v3, the Kokoro French pack). Only from the user's
     /// click on the Models or Voices page (PLAN 0.3.0 rev. 6), or an explicit `talkread models download --model`, which
     /// never offers Breeze (its licence is shown beside its download): nothing calls this on its own.
     func download(_ title: String) {
-        guard let d = engines.downloadables().first(where: { $0.title == title }), !d.isModelInstalled else { return }
-        if case .downloading = downloadStates[title] { return }
+        guard let d = engines.downloadables().first(where: { $0.title == title }),
+              !d.isModelInstalled, optionalDownloads[title] == nil else { return }
+        let id = UUID()
         downloadStates[title] = .downloading(progress: 0)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await d.downloadModel { [weak self] p in
+                    Task { @MainActor in self?.downloadProgress(title, p, id: id) }
+                }
+                try Task.checkCancellation()
+                guard optionalDownloads[title]?.id == id else { return }
+                downloadStates[title] = nil
+            } catch {
+                guard optionalDownloads[title]?.id == id else { return }
+                if Task.isCancelled || error is CancellationError { downloadStates[title] = nil }
+                else {
+                    downloadStates[title] = .failed(error.localizedDescription)
+                    Log.write("\(title) download failed: \(error)")
+                }
+            }
+            guard optionalDownloads[title]?.id == id else { return }
+            optionalDownloads[title] = nil
+            updateActivity()
+            await loadVoices()
+        }
+        optionalDownloads[title] = (id, task)
         refreshModelStates()
         updateActivity()
-        Task { [weak self] in
-            do {
-                try await d.downloadModel { p in Task { @MainActor in self?.downloadProgress(title, p) } }
-                self?.downloadStates[title] = nil
-            } catch {
-                self?.downloadStates[title] = .failed(error.localizedDescription)
-                Log.write("\(title) download failed: \(error)")
-            }
-            guard let self else { return }
-            updateActivity()
-            await loadVoices()   // installed flags and rows
-        }
+    }
+
+    /// Keep ownership until the cancelled URLSession work drains; a retry cannot reuse its staging folder yet.
+    func cancelDownload(_ title: String) {
+        optionalDownloads[title]?.task.cancel()
     }
 
     /// Whole percents only, so a chatty downloader does not redraw every window per packet.
-    private func downloadProgress(_ title: String, _ p: Double) {
-        guard case .downloading(let old) = downloadStates[title], Int(p * 100) != Int(old * 100) else { return }
+    private func downloadProgress(_ title: String, _ p: Double, id: UUID) {
+        guard let job = optionalDownloads[title], job.id == id, !job.task.isCancelled,
+              case .downloading(let old) = downloadStates[title], Int(p * 100) != Int(old * 100) else { return }
         downloadStates[title] = .downloading(progress: min(0.99, max(0, p)))
         refreshModelStates()
     }
 
     func downloadModels() {
         guard downloadTask == nil else { return }
+        let id = UUID()
+        defaultDownloadID = id
         downloadTask = Task { [weak self] in
             guard let self else { return }
             if voiceModel != .ready {
-                let id = voices.first { $0.id == self.settings.voiceID && $0.engine == .neural && $0.language == "en" }?.id ?? settings.fallbackVoiceID
-                let kokoro = engines.engine(for: Voice(id: id, name: "", accent: "", gender: "", engine: .neural, installed: false))
-                await download(\.voiceModel, pollDir: Self.voiceModelDir) { _ in try await kokoro.prepare(voice: id) }
+                let voice = voices.first { $0.id == settings.voiceID && $0.engine == .neural && $0.language == "en" }?.id ?? settings.fallbackVoiceID
+                await download(\.voiceModel, id: id, pollDir: Self.voiceModelDir) { report in
+                    try await self.downloadVoiceFiles(voice, report)
+                }
             }
             if dictationModel != .ready, !Task.isCancelled {
-                await download(\.dictationModel, pollDir: nil) { report in try await self.dictation.asr.load(progress: report) }
+                let vocabulary: [String: String] = Self.loadJSON(Paths.vocabulary) ?? [:]
+                await download(\.dictationModel, id: id, pollDir: nil) { report in
+                    try await self.downloadDictationFiles(!vocabulary.isEmpty, report)
+                }
             }
-            guard !Task.isCancelled else { return }   // cancelModelDownload has already reset the states
-            modelsWarm = true
+            guard defaultDownloadID == id else { return }
+            if !Task.isCancelled { modelsWarm = true }
+            defaultDownloadID = nil
             downloadTask = nil
-            updateActivity()                          // the idle unload starts counting now (Sol #16)
+            refreshModelStates()
+            updateActivity()
             await loadVoices()
         }
         updateActivity()
     }
 
-    /// Stops waiting for the download; whatever finished stays, the rest shows as missing again.
+    /// Cancels the owned file downloads, without cancelling shared loads used by a read or dictation.
     func cancelModelDownload() {
         downloadTask?.cancel()
-        downloadTask = nil
-        refreshModelStates()
-        updateActivity()
     }
 
-    /// The transcriber reports its own progress; Kokoro's `prepare` reports none through the contract, so its progress
-    /// is the bytes on disk against the expected size.
-    private func download(_ state: ReferenceWritableKeyPath<AppModel, ModelState>, pollDir: URL?,
+    /// The transcriber reports its own progress; Kokoro's disk polling also covers its ancillary assets.
+    private func download(_ state: ReferenceWritableKeyPath<AppModel, ModelState>, id: UUID, pollDir: URL?,
                           load: @escaping (@escaping (Double) -> Void) async throws -> Void) async {
+        guard defaultDownloadID == id, !Task.isCancelled else { return }
         self[keyPath: state] = .downloading(progress: 0)
         let report: (Double) -> Void = { [weak self] p in
             Task { @MainActor in
-                guard let self, case .downloading = self[keyPath: state] else { return }   // never undo .ready
+                guard let self, self.defaultDownloadID == id, self.downloadTask?.isCancelled == false,
+                      case .downloading = self[keyPath: state] else { return }
                 self[keyPath: state] = .downloading(progress: min(0.99, max(0, p)))
             }
         }
@@ -342,13 +386,14 @@ extension EngineKind {
                 if !Task.isCancelled { report(Double(Self.bytes(in: pollDir)) / Double(Self.voiceMegabytes << 20)) }
             }
         }
+        defer { poll.cancel() }
         do {
             try await load(report)
-            poll.cancel()
+            try Task.checkCancellation()
+            guard defaultDownloadID == id else { return }
             self[keyPath: state] = .ready
         } catch {
-            poll.cancel()
-            guard !Task.isCancelled else { return refreshModelStates() }
+            guard defaultDownloadID == id, !Task.isCancelled, !(error is CancellationError) else { return }
             self[keyPath: state] = .failed(error.localizedDescription)
             Log.write("model download failed: \(error)")
         }

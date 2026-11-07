@@ -13,10 +13,11 @@ struct DictationPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // D2 keeps this quick microphone choice alongside Settings and the menu bar.
             MicrophonePicker(model: model).frame(width: 420).padding(.top, Space.lg)
             Picker("Show", selection: $showVocabulary) {
                 Text("History").tag(false)
-                Text("Vocabulary and clean-up").tag(true)
+                Text("Vocabulary").tag(true)
             }
             .pickerStyle(.segmented).labelsHidden().frame(width: 320).padding(.vertical, Space.lg)
             if showVocabulary { vocabulary } else { history }
@@ -64,15 +65,12 @@ struct DictationPane: View {
 
     private var vocabulary: some View {
         Form {
-            Section {
-                Toggle("Remove filler words (um, uh, er)", isOn: $model.settings.removeFillers)
-                Toggle("Polish with Apple Intelligence", isOn: $model.settings.polishWithAppleIntelligence)
-            } header: {
-                Text("Clean-up")
-            } footer: {
-                Text("Polish fixes punctuation and grammar on this Mac. It is off unless you turn it on.").foregroundStyle(.secondary)
-            }
             VocabularySection(dictation: model.dictation, revision: model.wordListsRevision)
+            Section {
+                Button("Dictation settings…") { WindowRouter.shared.openSettings(.dictation) }
+            } footer: {
+                Text("Language and clean-up options are in Settings.").foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)

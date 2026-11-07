@@ -201,7 +201,7 @@ struct DictationPillStatus: View {
     var copied = false
     /// The ✕ closes a result rather than cancelling a dictation (its VoiceOver label).
     var closes = false
-    /// "Didn't land? Press ⌃⌘V to paste it", or while recording the English-only notice (nil: hidden).
+    /// "Not typed? Press ⌃⌘V to paste it", or while recording the English-only notice (nil: hidden).
     var tip: String? = nil
     /// Inside the mini player: its width, a microphone in front to tell it from the reading, no surface of its own.
     var docked = false
@@ -209,7 +209,7 @@ struct DictationPillStatus: View {
 
     /// The tip for the paste-last shortcut as the Shortcuts page shows it; nil when that shortcut is turned off.
     static func pasteTip(_ shortcut: TalkReadCore.Settings.Shortcut) -> String? {
-        shortcut.isOff ? nil : "Didn't land? Press \(shortcut.display) to paste it"
+        shortcut.isOff ? nil : "Not typed? Press \(shortcut.display) to paste it"
     }
 
     private static let accent = Theme.accent

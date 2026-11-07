@@ -213,7 +213,7 @@ private struct ReaderPage: View {
             SpeedMenu(model: model)
             VoiceMenu(voices: data.voices, english: model.settings.voiceID, french: model.settings.frenchVoiceID) { model.setVoice($0) }
             if doc.pdf == nil {
-                SymbolButton(symbol: "textformat.size", label: wider ? "Normal spacing" : "Wider spacing") { wider.toggle() }
+                SymbolButton(symbol: "arrow.up.and.down.text.horizontal", label: wider ? "Normal line spacing" : "Wider line spacing") { wider.toggle() }
                     .foregroundStyle(wider ? AnyShapeStyle(Theme.accentText) : AnyShapeStyle(.primary))
             }
         }

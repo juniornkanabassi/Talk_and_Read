@@ -93,6 +93,31 @@ extension DictationASR {
             .allSatisfy { FileManager.default.fileExists(atPath: dir.appendingPathComponent($0).path) }
     }
 
+    /// Download and validate with caller-owned cancellation; live callers retain their separate shared load.
+    static func downloadFiles(includeBoosting: Bool, progress: @escaping (Double) -> Void) async throws {
+        let names = ModelNames.ParakeetUnified.self
+        let required: Set<String> = [names.streamingEncoderFile(precision: .int8, contextSuffix: variant.unifiedConfig!.contextSuffix),
+                                     names.decoderFile, names.jointDecisionFile, names.vocab]
+        try await ModelHub.loadWithRecovery(.parakeetUnified, directory: directory.deletingLastPathComponent(),
+                                           requiredFiles: required, progressHandler: { progress($0.fractionCompleted) }) {
+            try Task.checkCancellation()
+            let validation = StreamingUnifiedAsrManager(config: variant.unifiedConfig!, encoderPrecision: .int8)
+            do {
+                try await validation.loadModels(from: directory)
+                try Task.checkCancellation()
+                await validation.cleanup()
+            } catch {
+                await validation.cleanup()
+                // ModelHub must see cancellation, not mistake a cancelled CoreML load for a corrupt cache.
+                try Task.checkCancellation()
+                throw error
+            }
+        }
+        try Task.checkCancellation()
+        if includeBoosting { _ = try await CtcModels.download() }
+        try Task.checkCancellation()
+    }
+
     /// Downloads (huggingface.co, first use only) and loads the model; later calls return at once. One load, shared by
     /// every caller, runs to the end even when its callers are cancelled (`isLoading` until then), so the idle unload
     /// sees it (Sol #24) and a cancelled caller is not held up by it (Sol #23).

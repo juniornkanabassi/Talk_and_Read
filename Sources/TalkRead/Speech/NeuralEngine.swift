@@ -74,6 +74,25 @@ final class NeuralEngine: SpeechEngine {
         _ = try await manager.synthesizeDetailed(text: french ? "Prêt." : "Ready.", voice: voice, speed: 1)
     }
 
+    /// The lexicon is optional for reading, but a shared warm-up would retry its missing download.
+    static var hasEnglishLexicon: Bool {
+        guard let root = try? TtsCacheDirectory.ensure() else { return false }
+        return FileManager.default.fileExists(atPath: root.appendingPathComponent("Models/kokoro/us_lexicon_cache.json").path)
+    }
+
+    /// File-only setup is owned by its caller, unlike the shared loader used by active reads.
+    static func downloadFiles(voice: String, progress: @escaping (Double) -> Void) async throws {
+        let repo = try await KokoroAneResourceDownloader.ensureModels(variant: .english) { progress($0.fractionCompleted * 0.8) }
+        try Task.checkCancellation()
+        try await KokoroAneResourceDownloader.ensureG2PAssets()
+        try Task.checkCancellation()
+        _ = await KokoroAneResourceDownloader.ensureEnglishLexicon()
+        try Task.checkCancellation()
+        _ = try await KokoroAneResourceDownloader.ensureVoicePack(voice, repoDirectory: repo, variant: .english)
+        try Task.checkCancellation()
+        progress(1)
+    }
+
     var speaksFaster: Bool { true }
 
     func synthesize(_ text: String, voice: String) async throws -> SynthChunk { try await synthesize(text, voice: voice, speed: 1) }

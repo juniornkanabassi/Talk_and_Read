@@ -186,13 +186,14 @@ struct VoiceSection: View {
     @ViewBuilder private func download(_ kind: EngineKind, _ voices: [Voice]) -> some View {
         if voices.contains(where: { !$0.installed }) {
             if kind == .neural && !french {
-                ModelStatusRow(kind: .voice, state: data.voiceModel) { model.downloadModels() }
+                ModelStatusRow(kind: .voice, state: data.voiceModel, cancel: { model.cancelModelDownload() }) { model.downloadModels() }
             } else {
                 let matched = data.models.filter { VoiceGroups.needs(kind, language: language, title: $0.title) }
                 let rows = matched.isEmpty ? data.models.filter { $0.state != .ready } : matched
                 let state = ModelStatusRow.combined(rows)
                 ModelStatusRow(symbol: "square.and.arrow.down", title: "\(kind.modelName) needs a download",
-                               what: "Another voice reads until it is ready", megabytes: ModelStatusRow.megabytes(rows), state: state) {
+                               what: "Another voice reads until it is ready", megabytes: ModelStatusRow.megabytes(rows), state: state,
+                               cancel: { for row in rows { model.cancelDownload(row.title) } }) {
                     for r in rows where r.state != .ready { model.download(r.title) }
                 }
             }

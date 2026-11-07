@@ -109,21 +109,21 @@ struct OnboardingContent: View {
         let busy = [data.voiceModel, data.dictationModel].contains { if case .downloading = $0 { true } else { false } }
         let done = data.voiceModel == .ready && data.dictationModel == .ready
         return VStack(alignment: .leading, spacing: Space.xl) {
-            header("Download the voices", "A natural voice and a dictation model. They download once, then work offline.")
+            header("Download the voice and dictation model", "A natural voice and a dictation model. They download once, then work offline.")
             VStack(spacing: 0) {
-                ModelStatusRow(kind: .voice, state: data.voiceModel)
+                ModelStatusRow(kind: .voice, state: data.voiceModel, cancel: { model.cancelModelDownload() })
                 Divider().padding(.leading, 64)
-                ModelStatusRow(kind: .dictation, state: data.dictationModel)
+                ModelStatusRow(kind: .dictation, state: data.dictationModel, cancel: { model.cancelModelDownload() })
             }
             .card(padding: 0)
             HStack(spacing: Space.lg) {
                 if !done {
                     Button(busy ? "Downloading…" : "Download both, \(total) MB") { model.downloadModels() }
                         .buttonStyle(AccentButtonStyle()).disabled(busy)
-                    Button("Skip, use the built-in voices") { step += 1 }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                    Button(busy ? "Continue while downloading" : "Skip, use the built-in voices") { step += 1 }.buttonStyle(.borderless).foregroundStyle(.secondary)
                 }
             }
-            Text("The built-in Apple voices work straight away. Dictation needs its model.").font(.callout).foregroundStyle(.secondary)
+            Text(busy ? "Downloads continue in the background. You can use the built-in Apple voices now." : "The built-in Apple voices work straight away. Dictation needs its model.").font(.callout).foregroundStyle(.secondary)
         }
     }
 

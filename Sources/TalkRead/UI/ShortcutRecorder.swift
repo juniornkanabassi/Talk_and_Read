@@ -59,7 +59,7 @@ struct ShortcutRecorder: View {
             .accessibilityLabel(recording ? "Listening for a new shortcut" : shortcut.isOff ? "No shortcut. Record a shortcut" : "Shortcut \(shortcut.display). Record a new one")
             if recording {
                 Text(focus.refusal ?? "Esc cancels · Delete turns it off")
-                    .font(.caption).foregroundStyle(focus.refusal == nil ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.orange))
+                    .font(.callout).foregroundStyle(focus.refusal == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(Theme.warning))
                     .multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
             }
         }

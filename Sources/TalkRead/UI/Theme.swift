@@ -282,7 +282,10 @@ struct PermissionRow: View {
             if granted {
                 Label { Text("Allowed") } icon: { Tick() }.font(.callout).foregroundStyle(.secondary)
             } else {
-                Button(buttonTitle, action: request)
+                VStack(alignment: .trailing, spacing: Space.xs) {
+                    Text("Not allowed").font(.callout).foregroundStyle(.primary)
+                    Button(buttonTitle, action: request)
+                }
             }
         }
         .padding(Space.lg)
@@ -300,23 +303,24 @@ struct ModelStatusRow: View {
     let megabytes: Int
     let state: ModelState
     /// nil hides the row's own button (onboarding has one button for both).
+    var cancel: (() -> Void)?
     var download: (() -> Void)?
 
-    init(symbol: String, title: String, what: String, megabytes: Int, state: ModelState, download: (() -> Void)? = nil) {
-        (self.symbol, self.title, self.what, self.megabytes, self.state, self.download) = (symbol, title, what, megabytes, state, download)
+    init(symbol: String, title: String, what: String, megabytes: Int, state: ModelState, cancel: (() -> Void)? = nil, download: (() -> Void)? = nil) {
+        (self.symbol, self.title, self.what, self.megabytes, self.state, self.cancel, self.download) = (symbol, title, what, megabytes, state, cancel, download)
     }
 
     /// Kokoro's English voice and the dictation model.
-    init(kind: Kind, state: ModelState, download: (() -> Void)? = nil) {
+    init(kind: Kind, state: ModelState, cancel: (() -> Void)? = nil, download: (() -> Void)? = nil) {
         self.init(symbol: kind == .voice ? "waveform" : "mic", title: kind == .voice ? "Natural voice" : "Dictation model",
                   what: kind == .voice ? "Kokoro, American and British voices" : "Parakeet, fast and accurate English",
-                  megabytes: Self.megabytes(kind, state), state: state, download: download)
+                  megabytes: Self.megabytes(kind, state), state: state, cancel: cancel, download: download)
     }
 
     /// One optional download (Models page).
-    init(row: ModelRow, download: (() -> Void)? = nil) {
+    init(row: ModelRow, cancel: (() -> Void)? = nil, download: (() -> Void)? = nil) {
         let p = VoiceGroups.purpose(row.title)
-        self.init(symbol: p.symbol, title: row.title, what: p.what, megabytes: row.megabytes, state: row.state, download: download)
+        self.init(symbol: p.symbol, title: row.title, what: p.what, megabytes: row.megabytes, state: row.state, cancel: cancel, download: download)
     }
 
     static func megabytes(_ kind: Kind, _ state: ModelState) -> Int {
@@ -360,7 +364,10 @@ struct ModelStatusRow: View {
             case .ready:
                 Label { Text("Ready") } icon: { Tick() }.font(.callout).foregroundStyle(.secondary)
             case .downloading(let p):
-                Text("\(Int((p * 100).rounded())) %").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                HStack(spacing: Space.sm) {
+                    Text("\(Int((p * 100).rounded()))%").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                    if let cancel { Button("Cancel", action: cancel) }
+                }
             case .missing:
                 if let download { Button("Download", action: download) }
             case .failed:

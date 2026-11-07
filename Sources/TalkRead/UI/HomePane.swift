@@ -76,7 +76,7 @@ struct HomePane: View {
             IconTile(symbol: "text.cursor", size: 38)
             VStack(alignment: .leading, spacing: Space.xs) {
                 Text("Read anything on your Mac").font(.headline)
-                Text("Select text in any app and press the shortcut. Press it again to stop.").font(.callout).foregroundStyle(.secondary)
+                Text("Use Read selection: select text in any app and press the shortcut. Press it again to stop.").font(.callout).foregroundStyle(.secondary)
             }
             Spacer(minLength: Space.md)
             KeyCaps(display: model.settings.readShortcut.display)

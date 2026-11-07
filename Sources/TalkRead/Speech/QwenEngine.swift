@@ -199,6 +199,7 @@ enum ModelDownload {
             guard size == file.bytes else { throw Failure.size(file.path, expected: file.bytes, got: size) }
             done += file.bytes
         }
+        try Task.checkCancellation()
         try? fm.removeItem(at: folder)   // a half-installed or older copy
         try fm.moveItem(at: staging, to: folder)
         progress(1)

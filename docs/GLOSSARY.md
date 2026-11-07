@@ -9,8 +9,11 @@ The voice is calm, direct and brief. Labels and commands use sentence case, incl
 | Remove an imported document | Remove from library |
 | Replay a history entry | Read again |
 | Reinsert dictated text | Insert again |
+| Read selected text in another app | Read selection |
 | Start or pause playback | Play, Pause, Resume |
 | Change reading speed | Faster, Slower |
 | Open app preferences | Settings… |
 
 An ellipsis means the command needs more input. Error messages say what failed and remain available until dismissed or replaced by the next action. Settings apply immediately.
+
+Dictation history and Vocabulary live in the main window. Clean-up, language and recognition options live in Settings ▸ Dictation. The microphone picker is also available in the main Dictation page and the menu bar as a required quick-access control; all three change the same choice.

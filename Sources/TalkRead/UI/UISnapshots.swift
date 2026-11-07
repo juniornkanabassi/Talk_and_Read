@@ -370,7 +370,7 @@ import TalkReadCore
         let refusals = [ShortcutRecorder.make(keyCode: 15, flags: [.shift], characters: "r"), ShortcutRecorder.make(keyCode: 15, flags: [], characters: "r"),
                         ShortcutRecorder.make(keyCode: 12, flags: [.command], characters: "q"), ShortcutRecorder.make(keyCode: 0, flags: [.control], characters: "a")]
             .map { s in defaults.refusal(s, for: "pauseShortcut").map { ShortcutsPage.message($0, s) } ?? "accepted" }
-        check(refusals[0].contains("Add ⌃") && refusals[1].contains("Add ⌃") && refusals[2].contains("macOS") && refusals[3].contains("Start reading"),
+        check(refusals[0].contains("Add ⌃") && refusals[1].contains("Add ⌃") && refusals[2].contains("macOS") && refusals[3].contains("Read selection"),
               "refusal messages", refusals.joined(separator: " | "))
         // Sol #15: the hotkeys stand down while a recorder listens; only one listens; a stale end changes nothing.
         let focus = RecorderFocus.shared, a = "readShortcut", b = "pauseShortcut"

@@ -42,18 +42,19 @@ struct SettingsContent: View {
 
     /// Nine categories use the standard selectable sidebar, including arrow-key navigation.
     var body: some View {
-        HStack(spacing: 0) {
+        NavigationSplitView {
             List(selection: Binding<Tab?>(get: { tab }, set: { if let value = $0 { tab = value } })) {
                 ForEach(Tab.allCases, id: \.self) { category in
                     Label(category.title, systemImage: category.symbol).tag(category)
                 }
             }
             .listStyle(.sidebar)
-            .frame(width: 200)
-            Divider()
-            page.frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
+        } detail: {
+            page
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .navigationTitle(tab.title)
         }
-        .navigationTitle(tab.title)
         .onChange(of: tab) { _, value in
             if !offscreen { WindowRouter.shared.settingsTab = value }
         }
@@ -90,7 +91,7 @@ struct SettingsContent: View {
                     Text("Half a second").tag(0.5)
                     ForEach([3.0, 5, 10, 30], id: \.self) { Text("\(Int($0)) seconds").tag($0) }
                 }
-                Toggle("Show three lines of subtitles", isOn: $model.settings.subtitlesExpanded)
+                Toggle("Show the sentences before and after", isOn: $model.settings.subtitlesExpanded)
             }
             Section {
                 Toggle("Skip citations and footnote marks", isOn: $model.settings.skipCitations)
@@ -133,7 +134,7 @@ struct SettingsContent: View {
             Section {
                 Toggle("Highlight the spoken word in other apps", isOn: $model.settings.showHighlight)
             } footer: {
-                Text("Off reads aloud with nothing drawn over the app. The reader window always highlights.").foregroundStyle(.secondary)
+                Text("When off, text is read aloud without highlighting other apps. The reader window always highlights.").foregroundStyle(.secondary)
             }
             Section {
                 HighlightPreview(colour: NSColor(hex: model.settings.highlightHex) ?? Theme.accentNS,
@@ -194,7 +195,7 @@ struct SettingsContent: View {
                 }
                 if model.settings.dictatesMultilingual, let row = multilingualRow, row.state != .ready {
                     ModelStatusRow(symbol: "globe.europe.africa", title: "Multilingual dictation model",
-                                   what: "Parakeet v3, also used for word timing", megabytes: row.megabytes, state: row.state) {
+                                   what: "Parakeet v3, also used for word timing", megabytes: row.megabytes, state: row.state, cancel: { model.cancelDownload(row.title) }) {
                         model.download(row.title)
                     }
                 }
@@ -271,15 +272,15 @@ struct SettingsContent: View {
     private var models: some View {
         Form {
             Section {
-                ModelStatusRow(kind: .voice, state: data.voiceModel) { model.downloadModels() }
-                ModelStatusRow(kind: .dictation, state: data.dictationModel) { model.downloadModels() }
+                ModelStatusRow(kind: .voice, state: data.voiceModel, cancel: { model.cancelModelDownload() }) { model.downloadModels() }
+                ModelStatusRow(kind: .dictation, state: data.dictationModel, cancel: { model.cancelModelDownload() }) { model.downloadModels() }
             } footer: {
                 Text("Downloaded once from Hugging Face, then everything runs offline on this Mac.").foregroundStyle(.secondary)
             }
             if !data.models.isEmpty {
                 Section {
                     ForEach(data.models) { row in
-                        ModelStatusRow(row: row) { model.download(row.title) }
+                        ModelStatusRow(row: row, cancel: { model.cancelDownload(row.title) }) { model.download(row.title) }
                         if row.title.contains("Breeze") { BreezeLicence() }   // V8: under its row, with the full text
                     }
                 } header: {
@@ -289,11 +290,11 @@ struct SettingsContent: View {
                 }
             }
             Section {
-                Picker("Free other speech models after", selection: $model.settings.unloadAfterMinutes) {
+                Picker("Keep unused models in memory for", selection: $model.settings.unloadAfterMinutes) {
                     ForEach([5, 10, 20, 30, 60], id: \.self) { Text("\($0) minutes").tag($0) }
                 }
             } footer: {
-                Text("When idle, Qwen, Breeze, French Kokoro and dictation models are freed from memory. English Kokoro stays ready. Freed models reload when needed.").foregroundStyle(.secondary)
+                Text("When idle, Qwen, Breeze, French Kokoro and dictation models are removed from memory, not deleted. English Kokoro stays ready. Other models reload when needed.").foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -324,11 +325,12 @@ struct ShortcutsPage: View {
         !NSRunningApplication.runningApplications(withBundleIdentifier: "com.cliffweitzman.speechifymacagent").isEmpty
     }
     @State private var speechifyOpen = false
+    @State private var confirmingReset = false
 
     static let rows: [String: (title: String, detail: String)] = [
         "dictationToggleShortcut": ("Hands-free dictation", "Tap once to start, tap again to stop and type"),
         "pasteLastShortcut": ("Paste last transcript", "Types your latest dictation again"),
-        "readShortcut": ("Start reading", "Reads the selected text; press again to stop"),
+        "readShortcut": ("Read selection", "Reads the selected text; press again to stop"),
         "readHereShortcut": ("Read from here", "Reads from the paragraph under the pointer, nothing selected"),
         "pauseShortcut": ("Pause or resume", "Holds or carries on with the current read"),
         "screenshotShortcut": ("Screenshot and listen", "Drag over part of the screen to hear its text"),
@@ -352,10 +354,7 @@ struct ShortcutsPage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.md) {
-                VStack(alignment: .leading, spacing: Space.xs) {
-                    Text("Shortcuts").font(.title2.weight(.bold))
-                    Text("Keys that work in every app. Click a shortcut to change it.").foregroundStyle(.secondary)
-                }
+                Text("Keys that work in every app. Click a shortcut to change it.").foregroundStyle(.secondary)
                 if speechifyOpen { speechifyNotice }
                 section("Dictation") {
                     row("Start dictation", "Hold the key on its own, speak, then let go") {
@@ -387,7 +386,7 @@ struct ShortcutsPage: View {
                         .labelsHidden().pickerStyle(.menu).fixedSize()
                     }
                     Divider()
-                    row("Play button on hover", "No key: shows ▶ when the pointer rests on a web page's paragraph") {
+                    row("Play button on hover", "Shows ▶ beside a web page paragraph when you rest the pointer on it, without holding a key") {
                         Toggle("Play button on hover", isOn: $model.settings.readHereHover).labelsHidden().toggleStyle(.switch)
                     }
                     ForEach(Self.readingKeys, id: \.self) { key in
@@ -396,7 +395,13 @@ struct ShortcutsPage: View {
                     }
                 }
                 row("Reset shortcuts", "Puts every key back to how it started") {
-                    Button("Reset") { model.settings.resetShortcuts() }
+                    Button("Reset") { confirmingReset = true }
+                        .confirmationDialog("Reset every shortcut to its default?", isPresented: $confirmingReset, titleVisibility: .visible) {
+                            Button("Reset shortcuts", role: .destructive) { model.settings.resetShortcuts() }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("This replaces your custom shortcuts and hold-to-dictate key.")
+                        }
                 }
                 .card(padding: 0)
                 .padding(.top, Space.lg)
@@ -434,7 +439,7 @@ struct ShortcutsPage: View {
         HStack(spacing: Space.md) {
             VStack(alignment: .leading, spacing: Space.xs) {
                 Text(title).font(.body.weight(.semibold))
-                Text(detail).font(.callout).foregroundStyle(.secondary).lineLimit(1).help(detail)
+                Text(detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: Space.md)
             trailing()

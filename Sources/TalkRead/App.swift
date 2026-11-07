@@ -28,6 +28,7 @@ enum TalkReadMain {
             return args[i + 1]
         }
         // Headless switches run, report and exit; they never show a status item, start hotkeys or register a login item.
+        if args.contains("--selftest-model-downloads") { exitAfter { await ModelDownloadSelfTest.run() } }
         if args.contains("--selftest-agent-safety") { exitAfter { await SelfTestInvisibleWindows.safety() } }
         if args.contains("--selftest-invisible-windows") { exit(MainActor.assumeIsolated { SelfTestInvisibleWindows.run() }) }
         if let file = value(after: "--selftest-asr-cold-start") { exitAfter { await DictationColdStartBench.run(file: file) } }

@@ -459,9 +459,9 @@ struct Subtitles: View {
     let line: KaraokeLine
     var body: some View {
         VStack(spacing: Space.xs) {
-            Text(line.previous ?? " ").lineLimit(1).foregroundStyle(.tertiary)
+            Text(line.previous ?? " ").lineLimit(1).foregroundStyle(.primary.opacity(0.85))
             Text(highlighted).font(TypeStyle.body).lineLimit(3).multilineTextAlignment(.center)
-            Text(line.next ?? " ").lineLimit(1).foregroundStyle(.tertiary)
+            Text(line.next ?? " ").lineLimit(1).foregroundStyle(.primary.opacity(0.85))
         }
         .font(TypeStyle.label)
         .padding(.horizontal, Space.xxl)

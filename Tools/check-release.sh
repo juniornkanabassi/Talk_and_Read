@@ -245,7 +245,11 @@ st() {   # st NAME SECONDS ARGS...: one self-test run in its own disposable data
   local name=$1 secs=$2; shift 2
   local home=$RUNTIME/home/$name user=$RUNTIME/users/$name t0=$EPOCHREALTIME
   mkdir -p "$RUNTIME/users"
-  seed_runtime "$home" "$user" || { print 2 > "$OUT/$name.rc"; return 1; }
+  if [[ $name == model-downloads ]]; then
+    mkdir -p "$home" "$user"   # cancellation fixtures must start with no installed models
+  else
+    seed_runtime "$home" "$user" || { print 2 > "$OUT/$name.rc"; return 1; }
+  fi
   ( cd "$FX" && exec env HOME="$user" CFFIXED_USER_HOME="$user" TALKREAD_HOME="$home" TALKREAD_SHOTS="$OUT/shots-$name" "${NETDENY[@]}" "$EXE" --agent-screen "$@" ) >"$OUT/$name.txt" 2>"$OUT/$name.err" &
   local pid=$! wd; wd=$(watchdog $pid $secs)
   wait $pid; print -r -- $? > "$OUT/$name.rc"
@@ -287,6 +291,8 @@ lane_speech() {   # timing-sensitive speech runs, one at a time
   st switchfake 200 --selftest-tts $F --switch --fake
 }
 lane_app() {
+  st model-downloads 45 --selftest-model-downloads
+  st model-cache 180 --selftest-model-downloads --corrupt-cache
   st agent-safety 30 --selftest-agent-safety
   st invisible 30 --selftest-invisible-windows
   st menus 30 --selftest-ui-commands
@@ -330,6 +336,17 @@ crash() { local k=$1 name=$2; fail $k "$name run produced no verdict (exit $(rc 
 
 rules() {
   local f line v w n name
+
+  if R model-downloads; then
+    line=$(L "$OUT/model-downloads.txt" "^model-downloads: [0-9]+/[0-9]+ passed")
+    if [[ $(rc model-downloads) == 0 && -n $line ]]; then pass E10 "$line; cancellation, retry and installed-file preservation"
+    else fail E10 "download cancellation: ${line:-no verdict}, exit $(rc model-downloads)"; fi
+  else nrun E10 "download cancellation self-test not run"; fi
+  if R model-cache; then
+    line=$(L "$OUT/model-cache.txt" "^model-cache-validation: 3/3 passed")
+    if [[ $(rc model-cache) == 0 && -n $line ]]; then pass E10 "$line; cloned corrupt cache rejected and restored"
+    else fail E10 "model cache validation: ${line:-no verdict}, exit $(rc model-cache)"; fi
+  else nrun E10 "corrupt model-cache self-test not run"; fi
 
   for name in agent-safety invisible menus storage reader window; do
     if R $name; then
@@ -543,7 +560,7 @@ if [[ -f $BATCH_DIR/home/Models/breeze-tts-2-8bit/LICENSE && -f $BATCH_DIR/home/
 fi
 if (( ${#NETDENY} )) && (( ! STATIC_ONLY )); then
   clean=1
-  for name in long en25 en2 en4 emma fr fake switchfake agent-safety invisible menus storage reader window import ui control asr; do [[ -f $OUT/$name.rc ]] || continue; [[ $(<"$OUT/$name.rc") == 0 ]] || clean=0; done
+  for name in long en25 en2 en4 emma fr fake switchfake model-downloads model-cache agent-safety invisible menus storage reader window import ui control asr; do [[ -f $OUT/$name.rc ]] || continue; [[ $(<"$OUT/$name.rc") == 0 ]] || clean=0; done
   (( clean )) && pass E5 "every self-test passed with outbound IP traffic denied (models were already on disk, nothing needed the network)" \
               || nrun E5 "a run failed under the network deny: see its .err file before reading this as a network use (rerun with --no-netdeny to compare)"
 else
